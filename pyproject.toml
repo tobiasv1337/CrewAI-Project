@@ -1,0 +1,23 @@
+[project]
+name = "tu-notenmanager"
+version = "0.1.0"
+description = "Interaktives Python-Tool zur Planung, Verwaltung und Berechnung von Abschlussnoten"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.56.0",
+    "pydantic",
+    "pandas",
+    "plotly",
+    "matplotlib",
+    "beautifulsoup4",
+    "pytest",
+    "crewai",
+    "crewai-tools",
+    "playwright",
+    "requests",
+    "python-dotenv",
+]
+
+[tool.pytest.ini_options]
+pythonpath = "."

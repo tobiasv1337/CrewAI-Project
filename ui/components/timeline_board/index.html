@@ -1,0 +1,1560 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Timeline Board</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: 'Source Sans 3', 'Source Sans Pro', 'Segoe UI', sans-serif;
+        --ink: #0f172a;
+        --ink-secondary: #334155;
+        --muted: #64748b;
+        --muted-light: #94a3b8;
+        --border: #e2e8f0;
+        --border-subtle: rgba(226, 232, 240, 0.85);
+        --surface: #ffffff;
+        --surface-2: #f1f5f9;
+        --surface-3: #f8fafc;
+        --brand: #1d4ed8;
+        --brand-soft: rgba(29, 78, 216, 0.10);
+        --teal: #0f766e;
+        --amber: #c2410c;
+        --danger: #dc2626;
+        --success: #15803d;
+        --shadow-sm: 0 6px 18px rgba(15, 23, 42, 0.06);
+        --shadow-md: 0 16px 30px rgba(15, 23, 42, 0.10);
+        --term-shadow: 0 18px 40px -34px rgba(15, 23, 42, 0.22), 0 8px 16px -14px rgba(15, 23, 42, 0.08);
+        --module-shadow-rest: 0 18px 34px -28px rgba(15, 23, 42, 0.30), 0 8px 16px -14px rgba(15, 23, 42, 0.12);
+        --module-shadow-hover: 0 26px 42px -30px rgba(15, 23, 42, 0.34), 0 12px 20px -16px rgba(15, 23, 42, 0.15);
+        --module-shadow-candidate: 0 14px 30px -28px rgba(15, 23, 42, 0.22), 0 6px 12px -12px rgba(15, 23, 42, 0.10);
+        --radius-card: 14px;
+        --radius-inset: 10px;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; background: transparent; color: var(--ink); }
+      button { font: inherit; }
+
+      /* ── Main layout ───────────────────────────────── */
+      .board-wrapper {
+        position: relative;
+        min-height: 200px;
+      }
+
+      .board-layout {
+        position: relative;
+      }
+
+      .lanes-area {
+        display: grid;
+        gap: 0.85rem;
+        padding: 0.25rem 0;
+      }
+
+      /* ── Semester card ─────────────────────────────── */
+      .term-card {
+        display: grid;
+        grid-template-columns: minmax(155px, 195px) 1fr;
+        gap: 1rem;
+        padding: 1rem;
+        border-radius: var(--radius-card);
+        border: 1px solid var(--border);
+        background: var(--surface);
+        box-shadow: var(--term-shadow);
+      }
+
+      .term-sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+      }
+
+      .term-header {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 0.6rem;
+      }
+
+      .term-label {
+        font-size: 1.1rem;
+        font-weight: 600;
+        letter-spacing: -0.01em;
+      }
+
+      .term-header-actions {
+        display: flex;
+        gap: 0.35rem;
+        flex-wrap: nowrap;
+        justify-content: flex-start;
+      }
+
+      .term-action-btn {
+        border: 1px solid rgba(148, 163, 184, 0.55);
+        background: var(--surface-3);
+        color: var(--ink-secondary);
+        border-radius: 999px;
+        padding: 0.18rem 0.55rem;
+        font-size: 0.68rem;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      .term-action-btn:hover {
+        background: var(--surface-2);
+        border-color: rgba(100, 116, 139, 0.65);
+      }
+
+      .term-action-btn:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+
+      .term-meta {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.15rem;
+      }
+
+      .term-meta-candidate { color: var(--muted-light); }
+      .term-meta-additional { color: var(--muted); }
+
+      /* ── Drop zone ─────────────────────────────────── */
+      .term-dropzone {
+        min-height: 110px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+        gap: 0.85rem;
+        padding: 0.3rem;
+        border-radius: var(--radius-inset);
+        transition: background 0.15s ease, box-shadow 0.15s ease;
+      }
+
+      .term-dropzone.is-active-valid {
+        background: rgba(29, 78, 216, 0.06);
+        box-shadow: inset 0 0 0 2px rgba(29, 78, 216, 0.22);
+      }
+
+      .term-dropzone.is-active-invalid {
+        background: rgba(220, 38, 38, 0.05);
+        box-shadow: inset 0 0 0 2px rgba(220, 38, 38, 0.18);
+      }
+
+      .term-empty {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 80px;
+        padding: 0.8rem;
+        border: 1px dashed rgba(148, 163, 184, 0.42);
+        border-radius: var(--radius-inset);
+        color: var(--muted);
+        font-size: 0.86rem;
+        text-align: center;
+        background: var(--surface-3);
+      }
+
+      /* ── Module card ───────────────────────────────── */
+      .module-card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        min-height: 136px;
+        padding: 1.12rem 1rem 1rem 1rem;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-card);
+        background: var(--surface);
+        box-shadow: var(--module-shadow-rest);
+        text-align: left;
+        cursor: grab;
+        text-decoration: none;
+        color: var(--ink);
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+      }
+
+      .module-card:hover {
+        border-color: rgba(71, 85, 105, 0.30);
+        box-shadow: var(--module-shadow-hover);
+        transform: translateY(-2px);
+      }
+
+      .module-card.is-selected {
+        border-color: rgba(29, 78, 216, 0.42);
+        box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.08), var(--module-shadow-hover);
+      }
+
+      /* Greyed-out Possible Candidate style */
+      .module-card.is-candidate {
+        background: linear-gradient(180deg, #fbfdff 0%, #f2f6fa 100%);
+        border-color: rgba(148, 163, 184, 0.44);
+        box-shadow: var(--module-shadow-candidate);
+      }
+
+      .module-card.is-candidate .module-accent-bar {
+        background: #b0bec5 !important;
+      }
+
+      .module-card.is-candidate .module-title,
+      .module-card.is-candidate .module-subtitle {
+        color: var(--muted);
+      }
+
+      .module-card.is-candidate:hover {
+        border-color: rgba(100, 116, 139, 0.55);
+        box-shadow: var(--module-shadow-rest);
+        transform: translateY(-1px);
+      }
+
+      .module-card.is-candidate.is-selected {
+        border-color: rgba(100, 116, 139, 0.65);
+        background: linear-gradient(180deg, #f7fafc 0%, #edf2f7 100%);
+        box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.10), var(--module-shadow-rest);
+      }
+
+      .module-card.is-dragging {
+        opacity: 0.45;
+        transform: rotate(1.5deg) scale(0.97);
+        cursor: grabbing;
+      }
+
+      /* Horizontal accent bar at top (area color) */
+      .module-accent-bar {
+        flex: 0 0 auto;
+        height: 6px;
+        border-radius: 999px;
+        margin-bottom: 0.78rem;
+        background: var(--area-color, var(--muted));
+      }
+
+      /* Vertical left bar (program/degree color) */
+      .module-program-bar {
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        border-radius: var(--radius-card) 0 0 var(--radius-card);
+        background: var(--program-color, transparent);
+      }
+
+      .module-title {
+        font-weight: 600;
+        font-size: 1rem;
+        line-height: 1.22;
+        margin-bottom: 0.38rem;
+        padding-right: 1.2rem;
+      }
+
+      .module-subtitle {
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.65rem;
+        font-weight: 500;
+      }
+
+      .module-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        min-width: 0;
+      }
+
+      /* Group pills by row */
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.35rem;
+      }
+
+      .module-menu-hint {
+        position: absolute;
+        top: 0.98rem;
+        right: 0.82rem;
+        color: var(--muted-light);
+        font-size: 1rem;
+        line-height: 1;
+        opacity: 0.5;
+        transition: opacity 0.15s;
+      }
+
+      .module-card:hover .module-menu-hint { opacity: 1; }
+
+      /* ── Pills (matching original course-pill style) ─── */
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 0.18rem 0.6rem;
+        border-radius: 999px;
+        font-size: 0.69rem;
+        font-weight: 550;
+        line-height: 1.35;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        background: var(--surface-2);
+        white-space: nowrap;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .pill-solid {
+        background: var(--ink);
+        color: #fff;
+        border-color: var(--ink);
+      }
+
+      .pill-status {
+        border-color: var(--pill-color, var(--muted));
+        color: var(--pill-color, var(--muted));
+        background: var(--surface-2);
+      }
+
+      .pill-candidate {
+        background: rgba(100, 116, 139, 0.10);
+        border-color: rgba(100, 116, 139, 0.32);
+        color: #475569;
+      }
+
+      .pill-grade {
+        background: rgba(15, 23, 42, 0.045);
+        border-color: rgba(148, 163, 184, 0.55);
+        color: rgba(15, 23, 42, 0.92);
+      }
+
+      .pill-pass {
+        border-color: rgba(22, 163, 74, 0.28);
+        background: rgba(22, 163, 74, 0.10);
+        color: var(--success);
+      }
+
+      .pill-outline {
+        background: transparent;
+        border-color: rgba(29, 78, 216, 0.35);
+        color: #1e3a8a;
+      }
+
+      .pill-muted {
+        background: #f1f5f9;
+        border-color: #e2e8f0;
+        color: #475569;
+      }
+
+      .pill-default { border-color: rgba(15, 23, 42, 0.12); }
+
+      .pill-program-msc {
+        background: rgba(190, 18, 60, 0.10);
+        border-color: rgba(190, 18, 60, 0.30);
+        color: #be123c;
+      }
+
+      .pill-program-bsc {
+        background: rgba(29, 78, 216, 0.10);
+        border-color: rgba(29, 78, 216, 0.30);
+        color: var(--brand);
+      }
+
+      .pill-program-other {
+        background: rgba(15, 23, 42, 0.03);
+        border-color: rgba(148, 163, 184, 0.55);
+        color: rgba(15, 23, 42, 0.9);
+      }
+
+      .pill-tag-tutor {
+        background: rgba(220, 38, 38, 0.10);
+        border-color: rgba(220, 38, 38, 0.30);
+        color: #b91c1c;
+      }
+
+      .pill-offering-both {
+        border-color: rgba(15, 118, 110, 0.22);
+        background: rgba(15, 118, 110, 0.06);
+        color: var(--teal);
+      }
+
+      .pill-offering-ws {
+        border-color: rgba(29, 78, 216, 0.22);
+        background: rgba(29, 78, 216, 0.06);
+        color: var(--brand);
+      }
+
+      .pill-offering-ss {
+        border-color: rgba(192, 65, 12, 0.22);
+        background: rgba(192, 65, 12, 0.06);
+        color: var(--amber);
+      }
+
+      .pill-forecast-counted {
+        border-color: rgba(220, 38, 38, 0.30);
+        background: rgba(220, 38, 38, 0.08);
+        color: var(--danger);
+      }
+
+      .pill-forecast-discarded {
+        border-color: rgba(15, 118, 110, 0.28);
+        background: rgba(15, 118, 110, 0.08);
+        color: var(--teal);
+      }
+
+      .pill-forecast-protected {
+        border-color: rgba(29, 78, 216, 0.30);
+        background: rgba(29, 78, 216, 0.08);
+        color: var(--brand);
+      }
+
+      .pill-forecast-differs {
+        border-color: rgba(192, 65, 12, 0.30);
+        background: rgba(192, 65, 12, 0.08);
+        color: var(--amber);
+      }
+
+      .pill-forecast-muted {
+        border-color: rgba(100, 116, 139, 0.24);
+        background: rgba(100, 116, 139, 0.08);
+        color: var(--muted);
+      }
+
+      /* ── Shelf drop proxy (right edge of board) ───── */
+      .shelf-drop-edge {
+        position: absolute;
+        right: -4px;
+        top: 0;
+        bottom: 0;
+        width: 48px;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 0 var(--radius-card) var(--radius-card) 0;
+        transition: background 0.15s, box-shadow 0.15s;
+      }
+
+      .shelf-drop-edge.is-drag-hover {
+        background: rgba(29, 78, 216, 0.08);
+        box-shadow: inset -3px 0 0 rgba(29, 78, 216, 0.35);
+      }
+
+      .shelf-drop-edge-label {
+        writing-mode: vertical-rl;
+        transform: rotate(180deg);
+        font-size: 0.65rem;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: transparent;
+        user-select: none;
+        transition: color 0.15s;
+      }
+
+      .shelf-drop-edge.is-drag-hover .shelf-drop-edge-label {
+        color: var(--brand);
+      }
+
+      /* ── Context menu ──────────────────────────────── */
+      .context-menu {
+        position: fixed;
+        z-index: 40;
+        min-width: 220px;
+        max-width: min(300px, calc(100vw - 24px));
+        padding: 0.4rem;
+        border-radius: var(--radius-card);
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.98);
+        box-shadow: 0 20px 45px -20px rgba(15, 23, 42, 0.35);
+        backdrop-filter: blur(8px);
+      }
+
+      .context-menu[hidden] { display: none; }
+
+      .context-title {
+        padding: 0.4rem 0.5rem 0.25rem;
+        font-size: 0.68rem;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: var(--muted);
+      }
+
+      .context-button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        padding: 0.5rem 0.58rem;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--ink);
+        text-align: left;
+        cursor: pointer;
+        font-size: 0.88rem;
+      }
+
+      .context-button:hover { background: var(--surface-2); }
+
+      .context-button.is-current {
+        background: rgba(219, 234, 254, 0.7);
+        color: var(--brand);
+        font-weight: 700;
+      }
+
+      .context-divider {
+        height: 1px;
+        margin: 0.3rem 0.2rem;
+        background: var(--border-subtle);
+      }
+
+      .context-secondary {
+        color: var(--muted);
+        font-size: 0.72rem;
+      }
+
+      /* ── Responsive ────────────────────────────────── */
+      @media (max-width: 820px) {
+        .term-card { grid-template-columns: 1fr; }
+        .term-dropzone { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="context-menu" class="context-menu" hidden></div>
+
+    <script>
+      const root = document.getElementById("root");
+      const contextMenu = document.getElementById("context-menu");
+      let boardData = { terms: [], candidateShelf: [], states: [], summary: {} };
+      let moduleIndex = {};
+      let draggedModuleId = null;
+      let shelfOpen = false;
+      let shelfFilter = "all"; // "all" | "ws" | "ss"
+
+      /* ── Streamlit component protocol ──────────────── */
+      function sendMsg(type, data) {
+        window.parent.postMessage(
+          Object.assign({ isStreamlitMessage: true, type }, data || {}), "*"
+        );
+      }
+
+      function init() {
+        sendMsg("streamlit:componentReady", { apiVersion: 1 });
+        updateHeight();
+      }
+
+      function updateHeight() {
+        const h = Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight,
+          root.scrollHeight + 16
+        );
+        sendMsg("streamlit:setFrameHeight", { height: h });
+      }
+
+      function setComponentValue(v) {
+        sendMsg("streamlit:setComponentValue", { value: v });
+      }
+
+      /* ── Helpers ───────────────────────────────────── */
+      function esc(v) {
+        return String(v || "")
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#39;");
+      }
+
+      function attr(v) { return esc(v).replaceAll("\n", " "); }
+
+      function makeAction(kind, extra) {
+        return Object.assign({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          kind
+        }, extra || {});
+      }
+
+      function termSeason(label) {
+        const v = String(label || "").trim().toUpperCase();
+        if (v.startsWith("WS")) return "WS";
+        if (v.startsWith("SS")) return "SS";
+        return null;
+      }
+
+      function canPlace(mod, termLabel) {
+        const season = termSeason(termLabel);
+        if (!season || !mod) return true;
+        if (!mod.offering || mod.offering === "WS & SS") return true;
+        if (mod.offering === "WS only") return season === "WS";
+        if (mod.offering === "SS only") return season === "SS";
+        return true;
+      }
+
+      function pillCls(pill) {
+        const v = pill.variant || "default";
+        return `pill pill-${v}`;
+      }
+
+      function pillStyle(pill) {
+        if (pill.variant === "status" && pill.color) {
+          return ` style="--pill-color:${attr(pill.color)}"`;
+        }
+        return "";
+      }
+
+      function groupPillsForRows(pills) {
+        if (!pills || !pills.length) return [];
+        const rows = [];
+        let currentRow = [];
+        let currentWeight = 0;
+
+        function flushRow() {
+          if (!currentRow.length) return;
+          rows.push(currentRow);
+          currentRow = [];
+          currentWeight = 0;
+        }
+
+        for (const pill of pills) {
+          const label = String((pill && pill.label) || "");
+          const weight = Math.min(label.length, 24) + (label.includes(" ") ? 2 : 0);
+          const isFirstRow = rows.length === 0;
+          const maxWeight = isFirstRow ? 34 : 30;
+          const shouldBreak = currentRow.length > 0
+            && (currentRow.length >= 3 || currentWeight + weight > maxWeight);
+          if (shouldBreak) flushRow();
+          currentRow.push(pill);
+          currentWeight += weight;
+        }
+
+        flushRow();
+        return rows;
+      }
+
+      function renderPills(pills) {
+        if (!pills || !pills.length) return '';
+        const rows = groupPillsForRows(pills);
+        return rows.map(row => {
+          const items = row.map(p => `<span class="${pillCls(p)}"${pillStyle(p)}>${esc(p.label)}</span>`).join('');
+          return `<div class="pill-row">${items}</div>`;
+        }).join('');
+      }
+
+      /* ── Render: module card ───────────────────────── */
+      function renderModule(mod) {
+        const cls = [
+          "module-card",
+          mod.selected ? "is-selected" : "",
+          mod.candidate ? "is-candidate" : "",
+          mod.draggable === false ? "is-locked" : ""
+        ].filter(Boolean).join(" ");
+
+        const programBar = mod.programColor
+          ? `<div class="module-program-bar" style="--program-color:${attr(mod.programColor)}"></div>`
+          : "";
+
+        return `
+          <button type="button" class="${cls}" draggable="${mod.draggable === false ? "false" : "true"}"
+            data-segment-id="${attr(mod.id)}"
+            data-module-id="${attr(mod.moduleId || mod.id)}"
+            style="--area-color:${attr(mod.accent || '#64748b')}">
+            ${programBar}
+            <div class="module-accent-bar"></div>
+            <div class="module-title">${esc(mod.name)}</div>
+            <div class="module-menu-hint">⋮</div>
+            <div class="module-subtitle">${esc(mod.area)}</div>
+            <div class="module-meta">${renderPills(mod.pills)}</div>
+          </button>
+        `;
+      }
+
+      /* ── Render: semester lane ──────────────────────── */
+      function renderTerm(term) {
+        const modules = term.modules || [];
+        const moduleHtml = modules.length
+          ? modules.map(m => renderModule(m)).join("")
+          : `<div class="term-empty">Drop a module here</div>`;
+
+        const metaHtml = (term.meta || []).map(item => {
+          let cls = "term-meta";
+          if (item.tone === "candidate") cls += " term-meta-candidate";
+          if (item.tone === "additional") cls += " term-meta-additional";
+          return `<div class="${cls}">${esc(item.label)}</div>`;
+        }).join("");
+
+        const actionsHtml = term.manageable ? `
+          <div class="term-header-actions">
+            <button type="button" class="term-action-btn" data-term-action="rename" data-term="${attr(term.label)}">Rename</button>
+            <button type="button" class="term-action-btn" data-term-action="delete" data-term="${attr(term.label)}"${term.canDelete ? "" : " disabled"}>Delete</button>
+          </div>
+        ` : "";
+
+        return `
+          <section class="term-card">
+            <div class="term-sidebar">
+              <div class="term-header">
+                <div class="term-label">${esc(term.label)}</div>
+                ${actionsHtml}
+              </div>
+              ${metaHtml}
+            </div>
+            <div class="term-dropzone" data-term="${attr(term.label)}">
+              ${moduleHtml}
+            </div>
+          </section>
+        `;
+      }
+
+      /* ── Render: candidate shelf ───────────────────── */
+      function filteredShelfModules() {
+        const all = boardData.candidateShelf || [];
+        if (shelfFilter === "ws") return all.filter(m => m.offering === "WS only" || m.offering === "WS & SS");
+        if (shelfFilter === "ss") return all.filter(m => m.offering === "SS only" || m.offering === "WS & SS");
+        return all;
+      }
+
+      /* ── Parent-injected shelf CSS ────────────────── */
+      const SHELF_PARENT_CSS = `
+        .tl-shelf-toggle {
+          position: fixed;
+          right: 0;
+          top: 50%;
+          transform: translateY(-50%);
+          z-index: 99999;
+          width: 36px;
+          padding: 1.1rem 0;
+          border: 1px solid #e2e8f0;
+          border-right: none;
+          border-radius: 14px 0 0 14px;
+          background: #ffffff;
+          box-shadow: -2px 0 12px rgba(15,23,42,0.07);
+          cursor: pointer;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 0.5rem;
+          font-family: 'Source Sans 3','Source Sans Pro','Segoe UI',sans-serif;
+          transition: background 0.15s, box-shadow 0.15s;
+        }
+        .tl-shelf-toggle:hover {
+          background: #f1f5f9;
+          box-shadow: -4px 0 20px rgba(15,23,42,0.12);
+        }
+        .tl-shelf-toggle-text {
+          writing-mode: vertical-rl;
+          transform: rotate(180deg);
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: #64748b;
+          white-space: nowrap;
+          user-select: none;
+        }
+        .tl-shelf-toggle-count {
+          font-size: 0.68rem;
+          font-weight: 800;
+          color: #1d4ed8;
+          background: rgba(29,78,216,0.10);
+          border-radius: 6px;
+          padding: 0.15rem 0.35rem;
+          line-height: 1;
+        }
+        .tl-shelf-backdrop {
+          display: none;
+          position: fixed;
+          inset: 0;
+          z-index: 99998;
+          background: rgba(15,23,42,0.12);
+          backdrop-filter: blur(2px);
+        }
+        .tl-shelf-backdrop.is-visible {
+          display: block;
+        }
+        .tl-shelf-drawer {
+          position: fixed;
+          top: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 99999;
+          width: 340px;
+          max-width: calc(100vw - 40px);
+          display: flex;
+          flex-direction: column;
+          background: #ffffff;
+          border-left: 1px solid #e2e8f0;
+          box-shadow: -8px 0 40px rgba(15,23,42,0.14);
+          transform: translateX(100%);
+          transition: transform 0.3s cubic-bezier(0.22,0.61,0.36,1);
+          font-family: 'Source Sans 3','Source Sans Pro','Segoe UI',sans-serif;
+          color: #0f172a;
+        }
+        .tl-shelf-drawer.is-open {
+          transform: translateX(0);
+        }
+        .tl-shelf-header {
+          flex: 0 0 auto;
+          padding: 0.75rem 0.85rem 0.55rem;
+          border-bottom: 1px solid rgba(226,232,240,0.85);
+          display: flex;
+          flex-direction: column;
+          gap: 0.5rem;
+        }
+        .tl-shelf-header-top {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.5rem;
+        }
+        .tl-shelf-title {
+          font-size: 0.95rem;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+        }
+        .tl-shelf-close-btn {
+          flex: 0 0 auto;
+          width: 30px;
+          height: 30px;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          background: #f1f5f9;
+          color: #64748b;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 0.85rem;
+          font-family: inherit;
+          transition: background 0.12s;
+        }
+        .tl-shelf-close-btn:hover { background: #e2e8f0; }
+        .tl-shelf-stats {
+          display: flex;
+          gap: 0.7rem;
+          font-size: 0.78rem;
+          color: #64748b;
+          font-weight: 600;
+        }
+        .tl-shelf-stats b { color: #0f172a; }
+        .tl-shelf-filter {
+          display: flex;
+          gap: 0;
+          border: 1px solid #e2e8f0;
+          border-radius: 8px;
+          overflow: hidden;
+        }
+        .tl-shelf-filter-btn {
+          flex: 1;
+          padding: 0.32rem 0.5rem;
+          border: none;
+          background: #ffffff;
+          color: #64748b;
+          font-size: 0.72rem;
+          font-weight: 700;
+          cursor: pointer;
+          transition: background 0.12s, color 0.12s;
+          text-align: center;
+          font-family: inherit;
+        }
+        .tl-shelf-filter-btn:not(:last-child) {
+          border-right: 1px solid #e2e8f0;
+        }
+        .tl-shelf-filter-btn:hover { background: #f1f5f9; }
+        .tl-shelf-filter-btn.is-active {
+          background: rgba(29,78,216,0.10);
+          color: #1d4ed8;
+        }
+        .tl-shelf-body {
+          flex: 1;
+          overflow-y: auto;
+          overflow-x: hidden;
+          padding: 0.7rem;
+        }
+        .tl-shelf-dropzone {
+          min-height: 100px;
+          display: flex;
+          flex-direction: column;
+          gap: 0.75rem;
+          padding: 0.2rem;
+          border-radius: 10px;
+          transition: background 0.15s ease, box-shadow 0.15s ease;
+        }
+        .tl-shelf-dropzone.is-active-valid {
+          background: rgba(29,78,216,0.06);
+          box-shadow: inset 0 0 0 2px rgba(29,78,216,0.22);
+        }
+        .tl-shelf-empty {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 80px;
+          padding: 1rem 0.8rem;
+          border: 1px dashed rgba(148,163,184,0.42);
+          border-radius: 10px;
+          color: #64748b;
+          font-size: 0.82rem;
+          text-align: center;
+          background: #f8fafc;
+          line-height: 1.4;
+        }
+        .tl-shelf-drawer .tl-mod-card {
+          position: relative;
+          display: flex;
+          flex-direction: column;
+          width: 100%;
+          min-height: 104px;
+          padding: 0.96rem 0.9rem 0.9rem 0.9rem;
+          border: 1px solid #e2e8f0;
+          border-radius: 14px;
+          background: #ffffff;
+          box-shadow: 0 18px 34px -28px rgba(15,23,42,0.30), 0 8px 16px -14px rgba(15,23,42,0.12);
+          text-align: left;
+          cursor: grab;
+          color: #0f172a;
+          transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+        }
+        .tl-shelf-drawer .tl-mod-card:hover {
+          border-color: rgba(71,85,105,0.30);
+          box-shadow: 0 26px 42px -30px rgba(15,23,42,0.34), 0 12px 20px -16px rgba(15,23,42,0.15);
+          transform: translateY(-2px);
+        }
+        .tl-shelf-drawer .tl-mod-card.is-candidate {
+          background: linear-gradient(180deg, #fbfdff 0%, #f2f6fa 100%);
+          border-color: rgba(148,163,184,0.44);
+          box-shadow: 0 14px 30px -28px rgba(15,23,42,0.22), 0 6px 12px -12px rgba(15,23,42,0.10);
+        }
+        .tl-shelf-drawer .tl-mod-card.is-candidate .tl-mod-accent {
+          background: #b0bec5 !important;
+        }
+        .tl-shelf-drawer .tl-mod-card.is-candidate .tl-mod-title,
+        .tl-shelf-drawer .tl-mod-card.is-candidate .tl-mod-subtitle {
+          color: #64748b;
+        }
+        .tl-shelf-drawer .tl-mod-accent {
+          height: 6px;
+          border-radius: 999px;
+          margin-bottom: 0.68rem;
+        }
+        .tl-shelf-drawer .tl-mod-program-bar {
+          position: absolute;
+          left: 0; top: 0; bottom: 0;
+          width: 4px;
+          border-radius: 14px 0 0 14px;
+        }
+        .tl-shelf-drawer .tl-mod-title {
+          font-weight: 600;
+          font-size: 0.92rem;
+          line-height: 1.22;
+          margin-bottom: 0.3rem;
+        }
+        .tl-shelf-drawer .tl-mod-subtitle {
+          font-size: 0.82rem;
+          color: #64748b;
+          margin-bottom: 0.55rem;
+          font-weight: 500;
+        }
+        .tl-shelf-drawer .tl-mod-meta {
+          display: flex;
+          flex-direction: column;
+          gap: 0.35rem;
+        }
+        .tl-shelf-drawer .tl-pill-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 0.3rem;
+        }
+        .tl-shelf-drawer .tl-pill {
+          display: inline-flex;
+          align-items: center;
+          padding: 0.18rem 0.58rem;
+          border-radius: 999px;
+          font-size: 0.69rem;
+          font-weight: 550;
+          line-height: 1.35;
+          border: 1px solid #e2e8f0;
+          background: #f8fafc;
+          color: #334155;
+          white-space: nowrap;
+        }
+        .tl-shelf-drawer .tl-pill-credits {
+          background: #0f172a;
+          color: #ffffff;
+          border-color: transparent;
+        }
+        .tl-shelf-drawer .tl-pill-status {
+          background: transparent;
+          border-color: currentColor;
+        }
+        .tl-shelf-drawer .tl-pill-program {
+          border-color: currentColor;
+          background: transparent;
+        }
+        @media (max-width: 820px) {
+          .tl-shelf-drawer { width: calc(100vw - 20px); }
+        }
+      `;
+
+      /* ── Inject shelf into parent document ──────────── */
+      let parentShelfContainer = null;
+
+      function cleanupParentShelf() {
+        try {
+          const pdoc = window.parent.document;
+          const root = pdoc.getElementById('tl-shelf-root');
+          if (root) root.remove();
+          const style = pdoc.getElementById('tl-shelf-css');
+          if (style) style.remove();
+          parentShelfContainer = null;
+        } catch (e) {
+          parentShelfContainer = null;
+        }
+      }
+
+      function ensureParentShelf() {
+        try {
+          const pdoc = window.parent.document;
+          if (!pdoc) return false;
+          if (!pdoc.getElementById('tl-shelf-css')) {
+            const style = pdoc.createElement('style');
+            style.id = 'tl-shelf-css';
+            style.textContent = SHELF_PARENT_CSS;
+            pdoc.head.appendChild(style);
+          }
+          if (!pdoc.getElementById('tl-shelf-root')) {
+            const div = pdoc.createElement('div');
+            div.id = 'tl-shelf-root';
+            pdoc.body.appendChild(div);
+          }
+          parentShelfContainer = pdoc.getElementById('tl-shelf-root');
+          return true;
+        } catch (e) {
+          return false;
+        }
+      }
+
+      function renderShelfModule(mod) {
+        const cls = ['tl-mod-card', mod.candidate ? 'is-candidate' : ''].filter(Boolean).join(' ');
+        const accent = mod.accent || '#64748b';
+        const programBar = mod.programColor
+          ? `<div class="tl-mod-program-bar" style="background:${attr(mod.programColor)}"></div>`
+          : '';
+        const pills = mod.pills || [];
+        const pillRows = groupPillsForRows(pills);
+        const pillsHtml = pillRows.map(row => {
+          const items = row.map(p => {
+            let pcls = 'tl-pill';
+            if (p.variant === 'solid') pcls += ' tl-pill-credits';
+            if (p.variant === 'status') pcls += ' tl-pill-status';
+            if ((p.variant || '').startsWith('program-')) pcls += ' tl-pill-program';
+            const pstyle = (p.variant === 'status' && p.color) ? ` style="color:${attr(p.color)}"` :
+                           ((p.variant || '').startsWith('program-') && p.color) ? ` style="color:${attr(p.color)}"` : '';
+            return `<span class="${pcls}"${pstyle}>${esc(p.label)}</span>`;
+          }).join('');
+          return `<div class="tl-pill-row">${items}</div>`;
+        }).join('');
+        return `
+          <div class="${cls}" draggable="true" data-module-id="${attr(mod.moduleId || mod.id)}">
+            ${programBar}
+            <div class="tl-mod-accent" style="background:${accent}"></div>
+            <div class="tl-mod-title">${esc(mod.name)}</div>
+            <div class="tl-mod-subtitle">${esc(mod.area)}</div>
+            <div class="tl-mod-meta">${pillsHtml}</div>
+          </div>
+        `;
+      }
+
+      function renderShelfToParent() {
+        if (!ensureParentShelf() || !parentShelfContainer) return;
+
+        const allCount = (boardData.candidateShelf || []).length;
+        const allCredits = Math.round((boardData.summary || {}).candidateShelfCredits || 0);
+        const displayed = filteredShelfModules();
+
+        const content = displayed.length
+          ? displayed.map(m => renderShelfModule(m)).join('')
+          : `<div class="tl-shelf-empty">No candidates${shelfFilter !== 'all' ? ' matching this filter' : ''}.<br>Drag modules here or right-click → Move to Candidate Shelf.</div>`;
+
+        const filterBtns = ['all', 'ws', 'ss'].map(f => {
+          const labels = { all: 'All', ws: 'WS', ss: 'SS' };
+          const active = shelfFilter === f ? ' is-active' : '';
+          return `<button type="button" class="tl-shelf-filter-btn${active}" data-tl-shelf-filter="${f}">${labels[f]}</button>`;
+        }).join('');
+
+        parentShelfContainer.innerHTML = `
+          <div class="tl-shelf-toggle" id="tl-shelf-toggle" style="${shelfOpen ? 'display:none' : ''}">
+            <span class="tl-shelf-toggle-count">${allCount}</span>
+            <span class="tl-shelf-toggle-text">Candidate Courses</span>
+          </div>
+          <div class="tl-shelf-backdrop${shelfOpen ? ' is-visible' : ''}" id="tl-shelf-backdrop"></div>
+          <div class="tl-shelf-drawer${shelfOpen ? ' is-open' : ''}" id="tl-shelf-drawer">
+            <div class="tl-shelf-header">
+              <div class="tl-shelf-header-top">
+                <div class="tl-shelf-title">Candidate Courses</div>
+                <button type="button" class="tl-shelf-close-btn" id="tl-shelf-close" aria-label="Close shelf">✕</button>
+              </div>
+              <div class="tl-shelf-stats">
+                <span><b>${allCount}</b> modules</span>
+                <span><b>${allCredits}</b> LP</span>
+              </div>
+              <div class="tl-shelf-filter">${filterBtns}</div>
+            </div>
+            <div class="tl-shelf-body">
+              <div class="tl-shelf-dropzone" id="tl-shelf-dropzone" data-dropzone="candidate-shelf">
+                ${content}
+              </div>
+            </div>
+          </div>
+        `;
+
+        bindParentShelfInteractions();
+      }
+
+      function bindParentShelfInteractions() {
+        if (!parentShelfContainer) return;
+        const pdoc = window.parent.document;
+
+        const toggle = pdoc.getElementById('tl-shelf-toggle');
+        if (toggle) {
+          toggle.onclick = () => { openShelf(); };
+          toggle.addEventListener('dragover', e => {
+            e.preventDefault();
+            toggle.style.background = 'rgba(29,78,216,0.10)';
+            e.dataTransfer.dropEffect = 'move';
+          });
+          toggle.addEventListener('dragleave', () => {
+            toggle.style.background = '';
+          });
+          toggle.addEventListener('drop', e => {
+            e.preventDefault();
+            toggle.style.background = '';
+            const segmentId = draggedModuleId || e.dataTransfer.getData('text/plain');
+            const mod = moduleIndex[segmentId];
+            if (mod) dispatchAction('move_to_candidate_pool', { module_id: mod.moduleId || mod.id });
+          });
+        }
+
+        const backdrop = pdoc.getElementById('tl-shelf-backdrop');
+        if (backdrop) {
+          backdrop.onclick = () => { closeShelf(); };
+
+          // ── Proxy: shelf card drag over backdrop → find term-dropzone in iframe ──
+          backdrop.addEventListener('dragover', e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            // Highlight the term-dropzone under the cursor
+            const zone = findTermDropzoneAtParentCoords(e.clientX, e.clientY);
+            clearDropzoneState();
+            if (zone) {
+              const mod = moduleIndex[draggedModuleId];
+              if (canPlace(mod, zone.dataset.term)) {
+                zone.classList.add('is-active-valid');
+              } else {
+                zone.classList.add('is-active-invalid');
+              }
+            }
+          });
+          backdrop.addEventListener('dragleave', () => {
+            clearDropzoneState();
+          });
+          backdrop.addEventListener('drop', e => {
+            e.preventDefault();
+            clearDropzoneState();
+            const zone = findTermDropzoneAtParentCoords(e.clientX, e.clientY);
+            if (zone) {
+              const segmentId = draggedModuleId || e.dataTransfer.getData('text/plain');
+              const mod = moduleIndex[segmentId];
+              const term = zone.dataset.term;
+              if (mod && term && canPlace(mod, term)) {
+                dispatchAction('move_term', { module_id: mod.moduleId || mod.id, term });
+              }
+            }
+          });
+        }
+
+        const closeBtn = pdoc.getElementById('tl-shelf-close');
+        if (closeBtn) closeBtn.onclick = () => { closeShelf(); };
+
+        pdoc.querySelectorAll('[data-tl-shelf-filter]').forEach(btn => {
+          btn.onclick = () => {
+            shelfFilter = btn.getAttribute('data-tl-shelf-filter');
+            renderBoard();
+          };
+        });
+
+        const sz = pdoc.getElementById('tl-shelf-dropzone');
+        if (sz) {
+          sz.addEventListener('dragover', e => {
+            e.preventDefault();
+            sz.classList.add('is-active-valid');
+            e.dataTransfer.dropEffect = 'move';
+          });
+          sz.addEventListener('dragleave', e => {
+            if (!sz.contains(e.relatedTarget)) sz.classList.remove('is-active-valid');
+          });
+          sz.addEventListener('drop', e => {
+            e.preventDefault();
+            sz.classList.remove('is-active-valid');
+            const segmentId = draggedModuleId || e.dataTransfer.getData('text/plain');
+            const mod = moduleIndex[segmentId];
+            if (mod) dispatchAction('move_to_candidate_pool', { module_id: mod.moduleId || mod.id });
+          });
+        }
+
+        // ── Proxy: shelf card drag over drawer body → find term-dropzone in iframe ──
+        const drawerBody = pdoc.querySelector('.tl-shelf-body');
+        if (drawerBody) {
+          drawerBody.addEventListener('dragover', e => {
+            // Allow dropping cards from iframe onto the drawer body area
+            if (!e.target.closest('.tl-shelf-dropzone')) {
+              e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
+            }
+          });
+        }
+
+        pdoc.querySelectorAll('.tl-shelf-drawer .tl-mod-card').forEach(card => {
+          card.addEventListener('dragstart', e => {
+            draggedModuleId = card.dataset.moduleId;
+            card.style.opacity = '0.4';
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedModuleId || '');
+          });
+          card.addEventListener('dragend', () => {
+            draggedModuleId = null;
+            card.style.opacity = '';
+            clearDropzoneState();
+          });
+          card.addEventListener('contextmenu', e => {
+            // Close shelf so the context menu (in iframe) is visible
+            shelfOpen = false;
+            renderShelfToParent();
+            openContextMenu(e, card.dataset.moduleId);
+          });
+          card.addEventListener('dblclick', () => {
+            dispatchAction('open_details', { module_id: card.dataset.moduleId });
+          });
+        });
+      }
+
+      /* ── Render: full board ────────────────────────── */
+      function renderBoard() {
+        moduleIndex = {};
+        (boardData.terms || []).forEach(t => {
+          (t.modules || []).forEach(m => { moduleIndex[m.id] = m; });
+        });
+        (boardData.candidateShelf || []).forEach(m => { moduleIndex[m.id] = m; });
+
+        root.innerHTML = `
+          <div class="board-wrapper">
+            <div class="board-layout">
+              <div class="lanes-area">
+                ${(boardData.terms || []).map(renderTerm).join('')}
+              </div>
+            </div>
+            <div class="shelf-drop-edge" id="shelf-drop-edge">
+              <span class="shelf-drop-edge-label">→ Shelf</span>
+            </div>
+          </div>
+        `;
+
+        renderShelfToParent();
+        bindInteractions();
+        updateHeight();
+      }
+
+      /* ── Context menu ──────────────────────────────── */
+      function hideContextMenu() {
+        contextMenu.hidden = true;
+        contextMenu.innerHTML = "";
+      }
+
+      function dispatchAction(kind, payload) {
+        hideContextMenu();
+        setComponentValue(makeAction(kind, payload));
+      }
+
+      function openContextMenu(event, moduleId) {
+        const mod = moduleIndex[moduleId];
+        if (!mod) return;
+        event.preventDefault();
+        event.stopPropagation();
+
+        const stateButtons = (boardData.states || []).map(state => `
+          <button type="button"
+            class="context-button${state === mod.state ? " is-current" : ""}"
+            data-kind="set_state" data-module-id="${attr(mod.id)}" data-value="${attr(state)}">
+            <span>${esc(state)}</span>
+            <span class="context-secondary">${state === mod.state ? "Current" : ""}</span>
+          </button>
+        `).join("");
+
+        const areaButtons = (mod.areaOptions || []).map(area => `
+          <button type="button"
+            class="context-button${area === mod.area ? " is-current" : ""}"
+            data-kind="set_area" data-module-id="${attr(mod.id)}" data-value="${attr(area)}">
+            <span>${esc(area)}</span>
+            <span class="context-secondary">${area === mod.area ? "Current" : ""}</span>
+          </button>
+        `).join("");
+
+        contextMenu.innerHTML = `
+          <button type="button" class="context-button"
+            data-kind="open_details" data-module-id="${attr(mod.id)}">
+            <span>Open Details</span>
+            <span class="context-secondary">Module page</span>
+          </button>
+          <button type="button" class="context-button"
+            data-kind="move_to_candidate_pool" data-module-id="${attr(mod.id)}">
+            <span>Move to Candidate Shelf</span>
+          </button>
+          <div class="context-divider"></div>
+          <div class="context-title">Status</div>
+          ${stateButtons}
+          <div class="context-divider"></div>
+          <div class="context-title">Area</div>
+          ${areaButtons}
+        `;
+
+        contextMenu.hidden = false;
+
+        // Determine cursor position in iframe viewport coordinates.
+        // If the event originates from the parent document (e.g. shelf cards),
+        // we need to translate parent-viewport coords to iframe coords.
+        let cx = event.clientX;
+        let cy = event.clientY;
+        try {
+          const evtDoc = event.target && event.target.ownerDocument;
+          if (evtDoc && evtDoc !== document && window.frameElement) {
+            const iframeRect = window.frameElement.getBoundingClientRect();
+            cx = event.clientX - iframeRect.left;
+            cy = event.clientY - iframeRect.top;
+          }
+        } catch (e) { /* cross-origin */ }
+
+        const mw = contextMenu.offsetWidth || 230;
+        const mh = contextMenu.offsetHeight || 200;
+        // Clamp to iframe content area
+        const maxX = Math.max(document.documentElement.clientWidth, root.scrollWidth) - mw - 16;
+        const maxY = Math.max(document.documentElement.clientHeight, root.scrollHeight) - mh - 16;
+        contextMenu.style.left = `${Math.max(8, Math.min(cx, maxX))}px`;
+        contextMenu.style.top = `${Math.max(8, Math.min(cy, maxY))}px`;
+
+        contextMenu.querySelectorAll("[data-kind]").forEach(btn => {
+          btn.addEventListener("click", e => {
+            e.stopPropagation();
+            const payload = { module_id: btn.dataset.moduleId };
+            if (btn.dataset.value) {
+              if (btn.dataset.kind === "set_state") payload.state = btn.dataset.value;
+              if (btn.dataset.kind === "set_area") payload.area = btn.dataset.value;
+            }
+            dispatchAction(btn.dataset.kind, payload);
+          });
+        });
+
+        requestAnimationFrame(updateHeight);
+      }
+
+      /* ── Drag & drop ───────────────────────────────── */
+      function clearDropzoneState() {
+        root.querySelectorAll(".term-dropzone").forEach(z => {
+          z.classList.remove("is-active-valid", "is-active-invalid");
+        });
+      }
+
+      /**
+       * Translate parent-viewport coordinates to iframe content coords
+       * and find the .term-dropzone at that point.
+       */
+      function findTermDropzoneAtParentCoords(clientX, clientY) {
+        try {
+          const iframeEl = window.frameElement;
+          if (!iframeEl) return null;
+          const rect = iframeEl.getBoundingClientRect();
+          const x = clientX - rect.left;
+          const y = clientY - rect.top;
+          // Iterate dropzones and check bounding rects (more reliable than elementFromPoint
+          // across scrolling contexts)
+          const zones = root.querySelectorAll('.term-dropzone');
+          for (const zone of zones) {
+            const zr = zone.getBoundingClientRect();
+            if (x >= zr.left && x <= zr.right && y >= zr.top && y <= zr.bottom) {
+              return zone;
+            }
+          }
+        } catch (e) { /* cross-origin fallback */ }
+        return null;
+      }
+
+      function bindDragForCard(card) {
+        if (card.getAttribute("draggable") === "true") {
+          card.addEventListener("dragstart", e => {
+            draggedModuleId = card.dataset.segmentId || card.dataset.moduleId;
+            card.classList.add("is-dragging");
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", draggedModuleId || "");
+            hideContextMenu();
+            clearDropzoneState();
+            // Show the shelf drop edge indicator
+            const edge = document.getElementById('shelf-drop-edge');
+            if (edge) edge.style.pointerEvents = 'auto';
+          });
+
+          card.addEventListener("dragend", () => {
+            draggedModuleId = null;
+            card.classList.remove("is-dragging");
+            clearDropzoneState();
+            // Hide shelf drop edge
+            const edge = document.getElementById('shelf-drop-edge');
+            if (edge) {
+              edge.classList.remove('is-drag-hover');
+              edge.style.pointerEvents = '';
+            }
+          });
+        }
+
+        card.addEventListener("dblclick", () => {
+          dispatchAction("open_details", { module_id: card.dataset.moduleId });
+        });
+
+        card.addEventListener("contextmenu", e => {
+          openContextMenu(e, card.dataset.segmentId || card.dataset.moduleId);
+        });
+      }
+
+      function bindTermDropzone(zone) {
+        zone.addEventListener("dragover", e => {
+          e.preventDefault();
+          const mod = moduleIndex[draggedModuleId];
+          clearDropzoneState();
+          if (canPlace(mod, zone.dataset.term)) {
+            zone.classList.add("is-active-valid");
+            e.dataTransfer.dropEffect = "move";
+          } else {
+            zone.classList.add("is-active-invalid");
+            e.dataTransfer.dropEffect = "none";
+          }
+        });
+
+        zone.addEventListener("dragenter", e => {
+          e.preventDefault();
+          const mod = moduleIndex[draggedModuleId];
+          if (canPlace(mod, zone.dataset.term)) {
+            zone.classList.add("is-active-valid");
+          } else {
+            zone.classList.add("is-active-invalid");
+          }
+        });
+
+        zone.addEventListener("dragleave", e => {
+          if (!zone.contains(e.relatedTarget)) {
+            zone.classList.remove("is-active-valid", "is-active-invalid");
+          }
+        });
+
+        zone.addEventListener("drop", e => {
+          e.preventDefault();
+          const segmentId = draggedModuleId || e.dataTransfer.getData("text/plain");
+          const mod = moduleIndex[segmentId];
+          const term = zone.dataset.term;
+          zone.classList.remove("is-active-valid", "is-active-invalid");
+          if (!mod || !term) return;
+          if (!canPlace(mod, term)) {
+            dispatchAction("invalid_term_drop", { module_id: mod.moduleId || mod.id, term });
+            return;
+          }
+          if (mod.term === term && mod.draggable !== false) return;
+          dispatchAction("move_term", { module_id: mod.moduleId || mod.id, term });
+        });
+      }
+
+      function bindShelfDropEdge(edge) {
+        edge.addEventListener('dragover', e => {
+          e.preventDefault();
+          e.dataTransfer.dropEffect = 'move';
+          edge.classList.add('is-drag-hover');
+        });
+        edge.addEventListener('dragenter', e => {
+          e.preventDefault();
+          edge.classList.add('is-drag-hover');
+        });
+        edge.addEventListener('dragleave', e => {
+          if (!edge.contains(e.relatedTarget)) {
+            edge.classList.remove('is-drag-hover');
+          }
+        });
+        edge.addEventListener('drop', e => {
+          e.preventDefault();
+          edge.classList.remove('is-drag-hover');
+          const segmentId = draggedModuleId || e.dataTransfer.getData('text/plain');
+          const mod = moduleIndex[segmentId];
+          if (mod) {
+            dispatchAction('move_to_candidate_pool', { module_id: mod.moduleId || mod.id });
+          }
+        });
+      }
+
+      /* ── Interaction bindings ──────────────────────── */
+      function closeShelf() {
+        shelfOpen = false;
+        renderBoard();
+      }
+
+      function openShelf() {
+        shelfOpen = true;
+        renderBoard();
+      }
+
+      function bindInteractions() {
+        root.querySelectorAll(".module-card").forEach(bindDragForCard);
+        root.querySelectorAll(".term-dropzone").forEach(bindTermDropzone);
+        root.querySelectorAll("[data-term-action]").forEach(btn => {
+          btn.addEventListener("click", e => {
+            e.stopPropagation();
+            const term = btn.dataset.term;
+            const kind = btn.dataset.termAction;
+            if (!term || !kind) return;
+            if (kind === "rename") {
+              const value = window.prompt("Rename semester", term);
+              if (value && value.trim()) {
+                dispatchAction("rename_term", { term, new_term: value.trim() });
+              }
+              return;
+            }
+            if (kind === "delete") {
+              if (window.confirm(`Delete the empty semester ${term}?`)) {
+                dispatchAction("delete_term", { term });
+              }
+            }
+          });
+        });
+        const edge = document.getElementById('shelf-drop-edge');
+        if (edge) bindShelfDropEdge(edge);
+      }
+
+      window.addEventListener('beforeunload', cleanupParentShelf);
+      window.addEventListener('unload', cleanupParentShelf);
+
+      /* ── Streamlit message listener ────────────────── */
+      window.addEventListener("message", event => {
+        if (event.data.type !== "streamlit:render") return;
+        boardData = event.data.args.board || { terms: [], candidateShelf: [], states: [], summary: {} };
+        hideContextMenu();
+        renderBoard();
+      });
+
+      window.addEventListener("resize", updateHeight);
+      window.addEventListener("load", init);
+      document.addEventListener("click", hideContextMenu);
+      // Also dismiss context menu on parent document clicks
+      try { window.parent.document.addEventListener("click", hideContextMenu); } catch(e) {}
+      document.addEventListener("keydown", e => {
+        if (e.key === "Escape") {
+          hideContextMenu();
+          if (shelfOpen) closeShelf();
+        }
+      });
+    </script>
+  </body>
+</html>

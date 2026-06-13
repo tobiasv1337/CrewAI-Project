@@ -1,0 +1,58 @@
+<?xml version='1.0' encoding='utf-8'?>
+<partial-response>
+  <changes>
+    <update id="j_idt64:BoxVerwendbarkeit"><![CDATA[
+      <span id="j_idt64:BoxVerwendbarkeit">
+        <table role="grid" class="table">
+          <thead>
+            <tr>
+              <th></th>
+              <th>Studiengang / StuPO</th>
+              <th>Erste Verwendung</th>
+              <th>Letzte Verwendung</th>
+              <th>SoSe 2026</th>
+              <th>WiSe 2026/27</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr data-ri="0">
+              <td><a id="j_idt64:j_idt565:0:j_idt574" href="#">-</a></td>
+              <td><a href="https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/anzeigen.html?studiengang=179">Computer Science (Informatik) (M. Sc.)</a></td>
+              <td>SoSe 2025</td>
+              <td>SoSe 2026</td>
+              <td></td>
+              <td></td>
+            </tr>
+            <tr data-ri="1">
+              <td></td>
+              <td>&nbsp;&nbsp;↳ StuPO 2015</td>
+              <td>SoSe 2025</td>
+              <td>SoSe 2026</td>
+              <td>
+                <table>
+                  <tr>
+                    <td><span class="fa fa-folder-open"></span></td>
+                    <td>
+                      <small>Wahlpflicht Studiengebiete Fak. IV</small><br />
+                      ↳ Eingebettete Systeme und Rechnerarchitekturen / Embedded Systems and Computer Architectures
+                    </td>
+                  </tr>
+                </table>
+                <table>
+                  <tr>
+                    <td><span class="fa fa-folder-open"></span></td>
+                    <td>
+                      <small>Studiengebiete</small><br />
+                      ↳ Eingebettete Systeme und Rechnerarchitekturen / Embedded Systems and Computer Architectures
+                    </td>
+                  </tr>
+                </table>
+              </td>
+              <td><span class="fa fa-times fa-fw text-muted" title="Keine Verwendung"></span></td>
+            </tr>
+          </tbody>
+        </table>
+      </span>
+    ]]></update>
+  </changes>
+</partial-response>

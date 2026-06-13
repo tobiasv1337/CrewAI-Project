@@ -1,0 +1,57 @@
+<?xml version='1.0' encoding='utf-8'?>
+<partial-response>
+  <changes>
+    <update id="j_idt85"><![CDATA[
+      <form id="j_idt85">
+        <div class="form-group">
+          <div id="j_idt85:ergebnisliste" class="ui-datatable ui-widget">
+            <div class="ui-datatable-tablewrapper">
+              <table role="grid" class="table">
+                <thead>
+                  <tr>
+                    <th>Nummer</th>
+                    <th style="display:none;">Hidden</th>
+                    <th>Titel</th>
+                    <th style="display:none;">Hidden 2</th>
+                    <th>Sprache</th>
+                    <th>LP</th>
+                    <th>Benotung</th>
+                    <th>Verantwortlich</th>
+                    <th>Fachgebiet</th>
+                    <th>Aktionen</th>
+                  </tr>
+                </thead>
+                <tbody id="j_idt85:ergebnisliste_data" class="ui-datatable-data ui-widget-content">
+                  <tr data-ri="0" class="ui-widget-content ui-datatable-even">
+                    <td><a href="https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule/ansehen.html?nummer=40388">40388</a><small>(8)</small></td>
+                    <td style="display:none;">#40388 v8</td>
+                    <td><a href="https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule/beschreibung/anzeigen.html?nummer=40388&amp;version=8">Computer Security - Seminar</a></td>
+                    <td style="display:none;">Computer Security - Seminar</td>
+                    <td>en</td>
+                    <td>3</td>
+                    <td>Benotet</td>
+                    <td>Seifert, Jean-Pierre</td>
+                    <td>34355100 FG S-Professur Security in Telecommunications (SecT)</td>
+                    <td></td>
+                  </tr>
+                  <tr data-ri="1" class="ui-widget-content ui-datatable-odd">
+                    <td><a href="https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule/ansehen.html?nummer=41101">41101</a><small>(1)</small></td>
+                    <td style="display:none;">#41101 v1</td>
+                    <td><a href="https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule/beschreibung/anzeigen.html?nummer=41101&amp;version=1">Machine Learning for Computer Security</a></td>
+                    <td style="display:none;">Machine Learning for Computer Security</td>
+                    <td>en</td>
+                    <td>6</td>
+                    <td>Benotet</td>
+                    <td>Rieck, Konrad</td>
+                    <td>34353000 FG Maschinelles Lernen und IT-Sicherheit</td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </form>
+    ]]></update>
+  </changes>
+</partial-response>

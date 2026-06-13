@@ -1,0 +1,33 @@
+# Python cache & compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment / Secret files
+.env
+
+# Testing
+.pytest_cache/
+
+# IDEs & Editors
+.vscode/
+.idea/
+.project
+.settings/
+
+# OS-specific
+.DS_Store
+.DS_Store?
+._*
+
+# Project-specific local data
+data/
+
+# Handoff files
+HANDOFF.md

@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.cookiejar import CookieJar
-from typing import Callable, Iterable, Optional
+from typing import Callable, Iterable, Mapping, Optional
 from urllib.parse import parse_qs, parse_qsl, urlencode, urljoin, urlparse, urlunparse
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
@@ -225,14 +225,29 @@ def fetch_degree_area_modules(
     degree = _degree_program_from_detail_page(html, final_url, fallback=degree)
     areas = _degree_program_areas(session, form, html)
     area = _resolve_degree_area(areas, area_query)
-    selected_html = _select_degree_catalog_tree_row(session, form, area.area_key)
-    area_label = _degree_catalog_selected_area_label(selected_html) or area.label
-    modules = _degree_catalog_modules(
-        selected_html,
-        area_key=area.area_key,
-        area_label=area_label,
+    labels_by_key = {item.area_key: item.label for item in areas}
+    modules: list[MosesDegreeProgramModule] = []
+    seen: set[tuple[str, int]] = set()
+    for module_area in _degree_module_areas_for_selection(areas, area):
+        selected_html = _select_degree_catalog_tree_row(session, form, module_area.area_key)
+        area_label = _degree_catalog_selected_area_label(selected_html) or module_area.label
+        area_path = _degree_area_path_label(module_area.area_key, labels_by_key, leaf_label=area_label)
+        for module in _degree_catalog_modules(
+            selected_html,
+            area_key=module_area.area_key,
+            area_label=area_label,
+            area_path=area_path,
+        ):
+            key = (module.number, module.version)
+            if key in seen:
+                continue
+            seen.add(key)
+            modules.append(module)
+    resolved_area = area.model_copy(
+        update={
+            "path_label": _degree_area_path_label(area.area_key, labels_by_key, leaf_label=area.label),
+        }
     )
-    resolved_area = area.model_copy(update={"label": area_label})
     return MosesDegreeAreaModules(
         degree=degree,
         area=resolved_area,
@@ -274,6 +289,7 @@ def search_degree_modules(
     html = _select_degree_catalog_term(session, form, preferred_term=term) or html
     form.html = html
     areas = _degree_program_areas(session, form, html)
+    labels_by_key = {area.area_key: area.label for area in areas}
     results: list[MosesDegreeProgramModule] = []
     seen: set[tuple[str, int]] = set()
     for area in areas:
@@ -281,7 +297,8 @@ def search_degree_modules(
             continue
         selected_html = _select_degree_catalog_tree_row(session, form, area.area_key)
         area_label = _degree_catalog_selected_area_label(selected_html) or area.label
-        for module in _degree_catalog_modules(selected_html, area_key=area.area_key, area_label=area_label):
+        area_path = _degree_area_path_label(area.area_key, labels_by_key, leaf_label=area_label)
+        for module in _degree_catalog_modules(selected_html, area_key=area.area_key, area_label=area_label, area_path=area_path):
             key = (module.number, module.version)
             if key in seen or not _degree_module_matches(query, module):
                 continue
@@ -942,6 +959,7 @@ def _degree_program_areas(
     html: str,
 ) -> list[MosesDegreeProgramArea]:
     rows = sorted(_expanded_degree_catalog_tree_rows(session, form, html), key=lambda row: _degree_area_sort_key(row.row_key))
+    labels_by_key = {row.row_key: row.label for row in rows}
     areas: list[MosesDegreeProgramArea] = []
     for row in rows:
         parent_key = row.row_key.rsplit("_", 1)[0] if "_" in row.row_key else None
@@ -949,6 +967,7 @@ def _degree_program_areas(
             MosesDegreeProgramArea(
                 area_key=row.row_key,
                 label=row.label,
+                path_label=_degree_area_path_label(row.row_key, labels_by_key),
                 parent_key=parent_key,
                 level=row.row_key.count("_"),
                 subarea_count=row.area_count,
@@ -958,6 +977,51 @@ def _degree_program_areas(
             )
         )
     return areas
+
+
+def _degree_area_path_label(
+    area_key: str,
+    labels_by_key: Mapping[str, str],
+    *,
+    leaf_label: Optional[str] = None,
+) -> Optional[str]:
+    if not area_key:
+        return leaf_label
+    parts: list[str] = []
+    current = area_key
+    while current:
+        label = leaf_label if current == area_key and leaf_label else labels_by_key.get(current)
+        if label and "_" in current:
+            parts.append(label)
+        if "_" not in current:
+            break
+        current = current.rsplit("_", 1)[0]
+    if parts:
+        return " / ".join(reversed(parts))
+    return leaf_label or labels_by_key.get(area_key)
+
+
+def _degree_module_areas_for_selection(
+    areas: list[MosesDegreeProgramArea],
+    selected_area: MosesDegreeProgramArea,
+) -> list[MosesDegreeProgramArea]:
+    module_areas: list[MosesDegreeProgramArea] = []
+    if selected_area.module_count > 0:
+        module_areas.append(selected_area)
+    descendant_prefix = f"{selected_area.area_key}_"
+    module_areas.extend(
+        area
+        for area in areas
+        if area.area_key.startswith(descendant_prefix) and area.module_count > 0
+    )
+    seen: set[str] = set()
+    unique = []
+    for area in sorted(module_areas, key=lambda item: _degree_area_sort_key(item.area_key)):
+        if area.area_key in seen:
+            continue
+        seen.add(area.area_key)
+        unique.append(area)
+    return unique
 
 
 def _degree_area_sort_key(row_key: str) -> tuple[int, ...]:
@@ -1227,6 +1291,7 @@ def _degree_catalog_modules(
     *,
     area_key: Optional[str] = None,
     area_label: Optional[str] = None,
+    area_path: Optional[str] = None,
 ) -> list[MosesDegreeProgramModule]:
     soup = BeautifulSoup(html, "html.parser")
     modules: list[MosesDegreeProgramModule] = []
@@ -1251,6 +1316,7 @@ def _degree_catalog_modules(
             version=version,
             area_key=area_key,
             area_label=area_label,
+            area_path=area_path or area_label,
             detail_url=detail_url,
             credits=_parse_float(_cell_text(cells, 3)),
             grading_mode=_cell_text(cells, 4),
@@ -1435,6 +1501,7 @@ def _degree_module_matches(query: str, module: MosesDegreeProgramModule) -> bool
         for value in [
             module.title,
             module.number,
+            module.area_path or "",
             module.area_label or "",
             module.exam_type or "",
             module.cycle or "",

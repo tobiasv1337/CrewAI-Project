@@ -11,6 +11,7 @@ from core.models import (
     ModuleSource,
     ModuleState,
     MosesCatalogAssignment,
+    MosesDegreeProgramArea,
     MosesDegreeProgramSearchResult,
     MosesDegreeUsage,
     MosesModuleData,
@@ -1387,7 +1388,20 @@ class TestMosesIntegration(unittest.TestCase):
         """
 
         rows = moses._degree_catalog_tree_rows(tree_html)
-        modules = moses._degree_catalog_modules(selected_html, area_key="0_0", area_label="Pflichtbereich")
+        path_label = moses._degree_area_path_label(
+            "0_2_1",
+            {
+                "0": "Modulliste SoSe 2026",
+                "0_2": "Wahlpflichtbereich",
+                "0_2_1": "Eingebettete Systeme",
+            },
+        )
+        modules = moses._degree_catalog_modules(
+            selected_html,
+            area_key="0_2_1",
+            area_label="Eingebettete Systeme",
+            area_path=path_label,
+        )
 
         self.assertEqual(rows[0].row_key, "0_0")
         self.assertEqual(rows[0].label, "Pflichtbereich")
@@ -1403,7 +1417,21 @@ class TestMosesIntegration(unittest.TestCase):
         self.assertEqual(modules[0].exam_type, "Schriftliche Prüfung")
         self.assertEqual(modules[0].cycle, "SoSe")
         self.assertEqual(modules[0].weight, "1.0")
-        self.assertEqual(modules[0].area_label, "Pflichtbereich")
+        self.assertEqual(modules[0].area_label, "Eingebettete Systeme")
+        self.assertEqual(modules[0].area_path, "Wahlpflichtbereich / Eingebettete Systeme")
+
+    def test_degree_module_areas_for_selection_includes_descendant_module_areas(self):
+        areas = [
+            MosesDegreeProgramArea(area_key="0", label="Modulliste SoSe 2026", subarea_count=3),
+            MosesDegreeProgramArea(area_key="0_1", label="Wahlpflichtbereich (1 aus 3)", module_count=3),
+            MosesDegreeProgramArea(area_key="0_2", label="Wahlpflichtbereich", subarea_count=2),
+            MosesDegreeProgramArea(area_key="0_2_0", label="Automatisierungstechnik", module_count=25),
+            MosesDegreeProgramArea(area_key="0_2_1", label="Eingebettete Systeme", module_count=14),
+        ]
+
+        module_areas = moses._degree_module_areas_for_selection(areas, areas[2])
+
+        self.assertEqual([area.area_key for area in module_areas], ["0_2_0", "0_2_1"])
 
     def test_pflichtbereich_degree_usage_suggests_bachelor_mandatory_area(self):
         bachelor_key = "TU Berlin - Technische Informatik (B.Sc.)"

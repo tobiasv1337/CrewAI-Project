@@ -96,6 +96,7 @@ class MosesDegreeProgramArea(BaseModel):
 
     area_key: str
     label: str
+    path_label: Optional[str] = None
     parent_key: Optional[str] = None
     level: int = 0
     subarea_count: int = 0
@@ -103,7 +104,7 @@ class MosesDegreeProgramArea(BaseModel):
     credits: Optional[float] = None
     expandable: bool = False
 
-    @field_validator("area_key", "label", "parent_key", mode="before")
+    @field_validator("area_key", "label", "path_label", "parent_key", mode="before")
     def _normalize_degree_area_text(cls, value):
         return _normalize_optional_text(value)
 
@@ -116,6 +117,7 @@ class MosesDegreeProgramModule(BaseModel):
     version: int
     area_key: Optional[str] = None
     area_label: Optional[str] = None
+    area_path: Optional[str] = None
     detail_url: Optional[str] = None
     credits: Optional[float] = None
     grading_mode: Optional[str] = None
@@ -128,6 +130,7 @@ class MosesDegreeProgramModule(BaseModel):
         "number",
         "area_key",
         "area_label",
+        "area_path",
         "detail_url",
         "grading_mode",
         "exam_type",

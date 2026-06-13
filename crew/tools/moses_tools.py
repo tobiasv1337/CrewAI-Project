@@ -428,7 +428,7 @@ def _format_degree_program_search_results(
 
     lines.append(f"Found {len(results)} degree program(s).")
     lines.append("")
-    lines.append("Next: call `get_degree_program_structure(degree_query=\"...\")` with the degree title, short name, id, or URL.")
+    lines.append("Suggested next step: call `get_degree_program_structure(degree_query=\"...\")` with the degree title, short name, id, or URL.")
     lines.append("")
     for index, result in enumerate(results, start=1):
         lines.extend(
@@ -440,7 +440,7 @@ def _format_degree_program_search_results(
                 f"- Degree type: {_format_value(result.degree_type)}",
                 f"- Provider: {_format_value(result.provider)}",
                 f"- Detail URL: {result.detail_url}",
-                f"- Next call: `get_degree_program_structure(degree_query=\"{result.title}\")`",
+                f"- Suggested next call: `get_degree_program_structure(degree_query=\"{result.title}\")`",
                 "",
             ]
         )
@@ -480,7 +480,7 @@ def _format_degree_program_structure(structure: MosesDegreeProgramStructure) -> 
         lines.extend(
             [
                 "",
-                "## Next calls",
+                "## Suggested next calls",
                 f"- `get_degree_area_modules(degree_query=\"{degree.title}\", area_query=\"{first.label}\")`",
                 f"- `search_degree_modules(degree_query=\"{degree.title}\", query=\"Algorithmen\")`",
             ]
@@ -493,14 +493,15 @@ def _format_degree_program_structure(structure: MosesDegreeProgramStructure) -> 
 def _format_degree_area_modules(area_modules: MosesDegreeAreaModules, *, max_modules: int) -> str:
     degree = area_modules.degree
     area = area_modules.area
+    area_display = area.path_label or area.label
     safe_limit = _clamp_max_modules(max_modules)
     shown_modules = area_modules.modules[:safe_limit]
     lines = [
-        f"# Degree modules: {degree.title} / {area.label}",
+        f"# Degree modules: {degree.title} / {area_display}",
         "",
         f"- Degree query: `{degree.title}`",
         f"- Moses degree id: `{degree.degree_id}`",
-        f"- Area query: `{area.label}`",
+        f"- Area query: `{area_display}`",
         f"- Area key: `{area.area_key}`",
         f"- Term/module list: {_format_value(area_modules.term)}",
         f"- Area modules found: {len(area_modules.modules)}",
@@ -517,7 +518,9 @@ def _format_degree_area_modules(area_modules: MosesDegreeAreaModules, *, max_mod
         )
         return "\n".join(lines)
 
-    lines.append("Use `get_module_details(module_number=\"...\", version=...)` for full contents and prerequisites.")
+    if any(module.area_key and module.area_key != area.area_key for module in area_modules.modules):
+        lines.append("Includes modules from subareas of the selected area.")
+    lines.append("Suggested next step: use `get_module_details(module_number=\"...\", version=...)` for full contents and prerequisites.")
     lines.append("")
     for index, module in enumerate(shown_modules, start=1):
         lines.extend(_degree_module_lines(index, module))
@@ -554,16 +557,17 @@ def _format_degree_module_search_results(
 
 
 def _degree_module_lines(index: int, module: MosesDegreeProgramModule) -> list[str]:
+    area_display = module.area_path or module.area_label
     return [
         f"## {index}. {module.title}",
         f"- Moses module: `{module.number}` version `{module.version}`",
-        f"- Area: {_format_value(module.area_label)}" + (f" (`{module.area_key}`)" if module.area_key else ""),
+        f"- Area: {_format_value(area_display)}" + (f" (`{module.area_key}`)" if module.area_key else ""),
         f"- Credits: {_format_credits(module.credits)}",
         f"- Exam/grading: {_format_value(module.grading_mode)} / {_format_value(module.exam_type)}",
         f"- Offered/cycle: {_format_value(module.cycle)}",
         f"- Weight: {_format_value(module.weight)}",
         f"- Detail URL: {_format_value(module.detail_url)}",
-        f"- Next call: `get_module_details(module_number=\"{module.number}\", version={module.version})`",
+        f"- Suggested next call: `get_module_details(module_number=\"{module.number}\", version={module.version})`",
         "",
     ]
 

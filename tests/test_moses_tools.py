@@ -342,7 +342,7 @@ def test_get_degree_area_modules_formats_module_rows(monkeypatch):
     assert calls == [("Technische Informatik", "Pflichtbereich", None, moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS)]
     assert "# Degree modules: Technische Informatik / Pflichtbereich" in output
     assert "Moses module: `40022` version `11`" in output
-    assert "Next call: `get_module_details(module_number=\"40022\", version=11)`" in output
+    assert "Suggested next call: `get_module_details(module_number=\"40022\", version=11)`" in output
     assert "timeout" not in inspect.signature(moses_tools.get_degree_area_modules).parameters
 
 

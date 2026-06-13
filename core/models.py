@@ -76,6 +76,94 @@ class MosesSearchResult(BaseModel):
         return _normalize_text_list(value)
 
 
+class MosesDegreeProgramSearchResult(BaseModel):
+    model_config = {"validate_assignment": True}
+
+    degree_id: str
+    title: str
+    detail_url: str
+    short_name: Optional[str] = None
+    degree_type: Optional[str] = None
+    provider: Optional[str] = None
+
+    @field_validator("degree_id", "title", "detail_url", "short_name", "degree_type", "provider", mode="before")
+    def _normalize_degree_program_text(cls, value):
+        return _normalize_optional_text(value)
+
+
+class MosesDegreeProgramArea(BaseModel):
+    model_config = {"validate_assignment": True}
+
+    area_key: str
+    label: str
+    parent_key: Optional[str] = None
+    level: int = 0
+    subarea_count: int = 0
+    module_count: int = 0
+    credits: Optional[float] = None
+    expandable: bool = False
+
+    @field_validator("area_key", "label", "parent_key", mode="before")
+    def _normalize_degree_area_text(cls, value):
+        return _normalize_optional_text(value)
+
+
+class MosesDegreeProgramModule(BaseModel):
+    model_config = {"validate_assignment": True}
+
+    title: str
+    number: str
+    version: int
+    area_key: Optional[str] = None
+    area_label: Optional[str] = None
+    detail_url: Optional[str] = None
+    credits: Optional[float] = None
+    grading_mode: Optional[str] = None
+    exam_type: Optional[str] = None
+    cycle: Optional[str] = None
+    weight: Optional[str] = None
+
+    @field_validator(
+        "title",
+        "number",
+        "area_key",
+        "area_label",
+        "detail_url",
+        "grading_mode",
+        "exam_type",
+        "cycle",
+        "weight",
+        mode="before",
+    )
+    def _normalize_degree_module_text(cls, value):
+        return _normalize_optional_text(value)
+
+
+class MosesDegreeProgramStructure(BaseModel):
+    model_config = {"validate_assignment": True}
+
+    degree: MosesDegreeProgramSearchResult
+    term: Optional[str] = None
+    areas: List[MosesDegreeProgramArea] = Field(default_factory=list)
+
+    @field_validator("term", mode="before")
+    def _normalize_degree_structure_term(cls, value):
+        return _normalize_optional_text(value)
+
+
+class MosesDegreeAreaModules(BaseModel):
+    model_config = {"validate_assignment": True}
+
+    degree: MosesDegreeProgramSearchResult
+    area: MosesDegreeProgramArea
+    term: Optional[str] = None
+    modules: List[MosesDegreeProgramModule] = Field(default_factory=list)
+
+    @field_validator("term", mode="before")
+    def _normalize_degree_area_term(cls, value):
+        return _normalize_optional_text(value)
+
+
 class MosesCatalogAssignment(BaseModel):
     model_config = {"validate_assignment": True}
 

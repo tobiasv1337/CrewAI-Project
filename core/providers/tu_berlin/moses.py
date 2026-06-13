@@ -20,6 +20,11 @@ from ...models import (
     ModuleSource,
     MosesCatalogAssignment,
     MosesCatalogFallback,
+    MosesDegreeAreaModules,
+    MosesDegreeProgramArea,
+    MosesDegreeProgramModule,
+    MosesDegreeProgramSearchResult,
+    MosesDegreeProgramStructure,
     MosesDegreeUsage,
     MosesExamElement,
     MosesGradingRow,
@@ -36,6 +41,8 @@ from ...terms import parse_term_label
 BASE_URL = "https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule"
 SEARCH_URL = f"{BASE_URL}/suchen.html?sprache=en"
 DETAIL_URL_TEMPLATE = f"{BASE_URL}/beschreibung/anzeigen.html?nummer={{number}}&version={{version}}"
+DEGREE_BASE_URL = "https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge"
+DEGREE_SEARCH_URL = f"{DEGREE_BASE_URL}/suchen.html"
 USER_AGENT = "TU-Notenmanager/2.0 (+https://tu-berlin.de)"
 _KNOWN_USAGE_HEADERS = {
     "",
@@ -89,6 +96,7 @@ class _DegreeCatalogTreeRow:
     area_count: int
     module_count: int
     expandable: bool
+    credits: Optional[float] = None
 
 
 _DEGREE_CATALOG_URLS_BY_PROGRAM = {
@@ -156,6 +164,132 @@ def search_courses(query: str, max_results: int = 20, current_valid_only: bool =
     partial = session.post(search.form.action_url, payload, partial=True)
     search_html = _extract_partial_update(partial, search.render_id) or search.form.html
     return _parse_search_results(search_html)[:max_results]
+
+
+def search_degree_programs(
+    query: str,
+    *,
+    degree_type: Optional[str] = None,
+    provider: Optional[str] = None,
+    max_results: int = 10,
+    timeout: int = 15,
+) -> list[MosesDegreeProgramSearchResult]:
+    query = (query or "").strip()
+    if not query:
+        return []
+
+    session = _MosesSession(timeout=timeout)
+    return _search_degree_programs(
+        session,
+        query,
+        degree_type=degree_type,
+        provider=provider,
+        max_results=max_results,
+    )
+
+
+def fetch_degree_program_structure(
+    degree_query: str,
+    *,
+    term: Optional[str] = None,
+    timeout: int = 15,
+) -> MosesDegreeProgramStructure:
+    session = _MosesSession(timeout=timeout)
+    degree = _resolve_degree_program(session, degree_query)
+    html, final_url = session.get(_force_english_url(degree.detail_url))
+    form = _extract_degree_catalog_form_context(html, final_url)
+    html = _select_degree_catalog_term(session, form, preferred_term=term) or html
+    form.html = html
+    degree = _degree_program_from_detail_page(html, final_url, fallback=degree)
+    areas = _degree_program_areas(session, form, html)
+    return MosesDegreeProgramStructure(
+        degree=degree,
+        term=_selected_degree_program_term(html) or term,
+        areas=areas,
+    )
+
+
+def fetch_degree_area_modules(
+    degree_query: str,
+    area_query: str,
+    *,
+    term: Optional[str] = None,
+    timeout: int = 15,
+) -> MosesDegreeAreaModules:
+    session = _MosesSession(timeout=timeout)
+    degree = _resolve_degree_program(session, degree_query)
+    html, final_url = session.get(_force_english_url(degree.detail_url))
+    form = _extract_degree_catalog_form_context(html, final_url)
+    html = _select_degree_catalog_term(session, form, preferred_term=term) or html
+    form.html = html
+    degree = _degree_program_from_detail_page(html, final_url, fallback=degree)
+    areas = _degree_program_areas(session, form, html)
+    area = _resolve_degree_area(areas, area_query)
+    selected_html = _select_degree_catalog_tree_row(session, form, area.area_key)
+    area_label = _degree_catalog_selected_area_label(selected_html) or area.label
+    modules = _degree_catalog_modules(
+        selected_html,
+        area_key=area.area_key,
+        area_label=area_label,
+    )
+    resolved_area = area.model_copy(update={"label": area_label})
+    return MosesDegreeAreaModules(
+        degree=degree,
+        area=resolved_area,
+        term=_selected_degree_program_term(html) or term,
+        modules=modules,
+    )
+
+
+def search_degree_modules(
+    degree_query: str,
+    query: str,
+    *,
+    area_query: Optional[str] = None,
+    term: Optional[str] = None,
+    max_results: int = 10,
+    timeout: int = 15,
+) -> list[MosesDegreeProgramModule]:
+    query = (query or "").strip()
+    if not query:
+        return []
+    safe_limit = max(1, min(int(max_results or 10), 50))
+    if area_query:
+        area_modules = fetch_degree_area_modules(
+            degree_query,
+            area_query,
+            term=term,
+            timeout=timeout,
+        )
+        return [
+            module
+            for module in area_modules.modules
+            if _degree_module_matches(query, module)
+        ][:safe_limit]
+
+    session = _MosesSession(timeout=timeout)
+    degree = _resolve_degree_program(session, degree_query)
+    html, final_url = session.get(_force_english_url(degree.detail_url))
+    form = _extract_degree_catalog_form_context(html, final_url)
+    html = _select_degree_catalog_term(session, form, preferred_term=term) or html
+    form.html = html
+    areas = _degree_program_areas(session, form, html)
+    results: list[MosesDegreeProgramModule] = []
+    seen: set[tuple[str, int]] = set()
+    for area in areas:
+        if area.module_count <= 0:
+            continue
+        selected_html = _select_degree_catalog_tree_row(session, form, area.area_key)
+        area_label = _degree_catalog_selected_area_label(selected_html) or area.label
+        for module in _degree_catalog_modules(selected_html, area_key=area.area_key, area_label=area_label):
+            key = (module.number, module.version)
+            if key in seen or not _degree_module_matches(query, module):
+                continue
+            seen.add(key)
+            results.append(module)
+            if len(results) >= safe_limit:
+                return results
+    return results
 
 
 def fetch_course_details(
@@ -660,6 +794,207 @@ def _degree_catalog_url_for_program(data: MosesModuleData, program_key: str) -> 
     return _DEGREE_CATALOG_URLS_BY_PROGRAM.get(program_key)
 
 
+def _search_degree_programs(
+    session: _MosesSession,
+    query: str,
+    *,
+    degree_type: Optional[str],
+    provider: Optional[str],
+    max_results: int,
+) -> list[MosesDegreeProgramSearchResult]:
+    html, final_url = session.get(DEGREE_SEARCH_URL)
+    search = _extract_degree_program_search_context(html, final_url)
+    soup = BeautifulSoup(search.form.html, "html.parser")
+    form_tag = soup.find("form", id=search.form.form_id)
+    payload = _build_partial_payload(
+        form=search.form,
+        source_id=search.submit_id,
+        execute_id=search.form.form_id,
+        render_id=search.render_id,
+    )
+    if isinstance(form_tag, Tag):
+        payload.update(_form_control_values(form_tag))
+        if degree_type:
+            payload.update(_select_form_option_by_label(form_tag, "Abschlussart", degree_type))
+        if provider:
+            payload.update(_select_form_option_by_label(form_tag, "Anbieter", provider))
+    payload[search.query_input_name] = query
+    partial = session.post(search.form.action_url, payload, partial=True)
+    search_html = _extract_partial_update(partial, search.render_id) or search.form.html
+    return _parse_degree_program_search_results(search_html, final_url)[: max(1, int(max_results or 10))]
+
+
+def _resolve_degree_program(session: _MosesSession, degree_query: str) -> MosesDegreeProgramSearchResult:
+    query = _clean_ws(degree_query)
+    if not query:
+        raise ValueError("No degree query was provided.")
+
+    if "studiengaenge/" in query:
+        return _degree_program_from_url(query)
+
+    if query in _DEGREE_CATALOG_URLS_BY_PROGRAM:
+        return _degree_program_from_url(_DEGREE_CATALOG_URLS_BY_PROGRAM[query], title=query)
+
+    if query.isdigit():
+        return _degree_program_from_url(_degree_program_url_from_id(query))
+
+    seen: set[str] = set()
+    candidates: list[MosesDegreeProgramSearchResult] = []
+    for variant in _degree_program_query_variants(query):
+        if not variant or variant.lower() in seen:
+            continue
+        seen.add(variant.lower())
+        candidates.extend(
+            result
+            for result in _search_degree_programs(
+                session,
+                variant,
+                degree_type=None,
+                provider=None,
+                max_results=10,
+            )
+            if result.degree_id not in {existing.degree_id for existing in candidates}
+        )
+        match = _best_degree_program_match(query, candidates)
+        if match is not None:
+            return match
+
+    if not candidates:
+        raise ValueError(
+            f"No Moses degree program matched `{degree_query}`. Try a shorter exact degree name, for example `Technische Informatik`."
+        )
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    candidate_text = "; ".join(
+        f"{item.title} ({item.degree_type or 'unknown type'}, id {item.degree_id})"
+        for item in candidates[:5]
+    )
+    raise ValueError(f"Ambiguous degree query `{degree_query}`. Matching degree programs: {candidate_text}.")
+
+
+def _best_degree_program_match(
+    query: str,
+    candidates: list[MosesDegreeProgramSearchResult],
+) -> Optional[MosesDegreeProgramSearchResult]:
+    normalized_query = _normalize_degree_query(query)
+    exact = [
+        item
+        for item in candidates
+        if normalized_query
+        in {
+            _normalize_degree_query(item.title),
+            _normalize_degree_query(item.short_name or ""),
+            _normalize_degree_query(f"{item.title} {item.degree_type or ''}"),
+        }
+    ]
+    if len(exact) == 1:
+        return exact[0]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _degree_program_from_url(url: str, *, title: Optional[str] = None) -> MosesDegreeProgramSearchResult:
+    degree_id = parse_degree_program_id_from_url(url)
+    if not degree_id:
+        raise ValueError(f"Could not determine Moses degree id from `{url}`.")
+    return MosesDegreeProgramSearchResult(
+        degree_id=degree_id,
+        title=title or f"Moses degree program {degree_id}",
+        detail_url=_force_english_url(_degree_program_url_from_id(degree_id) if url.isdigit() else url),
+    )
+
+
+def _degree_program_from_detail_page(
+    html: str,
+    page_url: str,
+    *,
+    fallback: MosesDegreeProgramSearchResult,
+) -> MosesDegreeProgramSearchResult:
+    soup = BeautifulSoup(html, "html.parser")
+    labels = _collect_labeled_values(soup)
+    title = None
+    for heading in soup.find_all(["h1", "h2"]):
+        small = heading.find("small")
+        if isinstance(small, Tag):
+            small.extract()
+        text = _clean_ws(heading.get_text(" ", strip=True))
+        if text and "Studiengang" not in text:
+            title = text
+            break
+    if not title:
+        title = fallback.title
+    return MosesDegreeProgramSearchResult(
+        degree_id=parse_degree_program_id_from_url(page_url) or fallback.degree_id,
+        title=title,
+        detail_url=_force_english_url(page_url or fallback.detail_url),
+        short_name=_first_label_value(labels, "Kurzname") or fallback.short_name,
+        degree_type=_first_label_value(labels, "Abschlussart") or fallback.degree_type,
+        provider=_first_label_value(labels, "Organisationseinheit") or fallback.provider,
+    )
+
+
+def _degree_program_areas(
+    session: _MosesSession,
+    form: _MosesFormContext,
+    html: str,
+) -> list[MosesDegreeProgramArea]:
+    rows = sorted(_expanded_degree_catalog_tree_rows(session, form, html), key=lambda row: _degree_area_sort_key(row.row_key))
+    areas: list[MosesDegreeProgramArea] = []
+    for row in rows:
+        parent_key = row.row_key.rsplit("_", 1)[0] if "_" in row.row_key else None
+        areas.append(
+            MosesDegreeProgramArea(
+                area_key=row.row_key,
+                label=row.label,
+                parent_key=parent_key,
+                level=row.row_key.count("_"),
+                subarea_count=row.area_count,
+                module_count=row.module_count,
+                credits=row.credits,
+                expandable=row.expandable,
+            )
+        )
+    return areas
+
+
+def _degree_area_sort_key(row_key: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in row_key.split("_"))
+    except ValueError:
+        return tuple(ord(char) for char in row_key)
+
+
+def _resolve_degree_area(areas: list[MosesDegreeProgramArea], area_query: str) -> MosesDegreeProgramArea:
+    query = _clean_ws(area_query)
+    if not query:
+        raise ValueError("No degree area query was provided.")
+    exact_key = [area for area in areas if area.area_key == query]
+    if len(exact_key) == 1:
+        return exact_key[0]
+
+    normalized_query = _normalize_key(query)
+    exact_label = [area for area in areas if _normalize_key(area.label) == normalized_query]
+    if len(exact_label) == 1:
+        return exact_label[0]
+    if len(exact_label) > 1:
+        raise ValueError(f"Ambiguous area query `{area_query}`. Matching areas: {_format_degree_area_candidates(exact_label)}.")
+
+    contains = [area for area in areas if normalized_query and normalized_query in _normalize_key(area.label)]
+    if len(contains) == 1:
+        return contains[0]
+    if contains:
+        raise ValueError(f"Ambiguous area query `{area_query}`. Matching areas: {_format_degree_area_candidates(contains)}.")
+
+    raise ValueError(f"No degree area matched `{area_query}`. Available areas: {_format_degree_area_candidates(areas[:10])}.")
+
+
+def _format_degree_area_candidates(areas: Iterable[MosesDegreeProgramArea]) -> str:
+    return "; ".join(f"{area.label} (key {area.area_key}, modules {area.module_count})" for area in areas)
+
+
 def _fetch_degree_program_catalog_assignments(
     session: _MosesSession,
     *,
@@ -796,6 +1131,7 @@ def _expand_degree_catalog_tree_row(session: _MosesSession, form: _MosesFormCont
     )
     if isinstance(form_tag, Tag):
         payload.update(_form_control_values(form_tag))
+    payload[f"{tree_id}_encodeFeature"] = "true"
     payload[f"{tree_id}_expand"] = row_key
     partial = session.post(form.action_url, payload, partial=True)
     _update_form_state_from_partial(form, partial)
@@ -855,6 +1191,7 @@ def _degree_catalog_tree_rows(html: str) -> list[_DegreeCatalogTreeRow]:
                 label=label,
                 area_count=_parse_int(cells[1].get_text(" ", strip=True)) or 0,
                 module_count=_parse_int(cells[2].get_text(" ", strip=True)) or 0,
+                credits=_parse_float(cells[3].get_text(" ", strip=True)),
                 expandable=(
                     isinstance(toggler, Tag)
                     and "ui-icon-triangle-1-e" in toggler_class
@@ -877,24 +1214,257 @@ def _degree_catalog_selected_area_label(html: str) -> Optional[str]:
 
 
 def _degree_catalog_module_keys(html: str) -> list[tuple[str, int]]:
-    soup = BeautifulSoup(html, "html.parser")
     keys: list[tuple[str, int]] = []
+    for module in _degree_catalog_modules(html):
+        key = (module.number, module.version)
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
+def _degree_catalog_modules(
+    html: str,
+    *,
+    area_key: Optional[str] = None,
+    area_label: Optional[str] = None,
+) -> list[MosesDegreeProgramModule]:
+    soup = BeautifulSoup(html, "html.parser")
+    modules: list[MosesDegreeProgramModule] = []
     for row in soup.find_all("tr"):
         cells = row.find_all(["th", "td"], recursive=False)
         if len(cells) < 3:
             continue
+        title = _clean_ws(cells[0].get_text(" ", strip=True))
         number = _clean_ws(cells[1].get_text(" ", strip=True))
         version_text = _clean_ws(cells[2].get_text(" ", strip=True))
-        if not number.isdigit():
+        if not title or not number.isdigit():
             continue
         try:
             version = int(version_text)
         except ValueError:
             continue
-        key = (number, version)
-        if key not in keys:
-            keys.append(key)
-    return keys
+        link = cells[0].find("a", href=True)
+        detail_url = _absolute_url(str(link.get("href"))) if isinstance(link, Tag) else _canonical_detail_url(number, version)
+        module = MosesDegreeProgramModule(
+            title=title,
+            number=number,
+            version=version,
+            area_key=area_key,
+            area_label=area_label,
+            detail_url=detail_url,
+            credits=_parse_float(_cell_text(cells, 3)),
+            grading_mode=_cell_text(cells, 4),
+            exam_type=_cell_text(cells, 5),
+            cycle=_cell_text(cells, 6),
+            weight=_cell_text(cells, 7),
+        )
+        key = (module.number, module.version)
+        if key not in {(existing.number, existing.version) for existing in modules}:
+            modules.append(module)
+    return modules
+
+
+def _extract_degree_program_search_context(html: str, page_url: str) -> _MosesSearchContext:
+    soup = BeautifulSoup(html, "html.parser")
+    form = _find_degree_program_search_form(soup)
+    if form is None:
+        raise ValueError("Could not locate MOSES degree program search form.")
+    form_id = str(form.get("id") or form.get("name") or "")
+    if not form_id:
+        raise ValueError("Could not determine MOSES degree program search form id.")
+    query_input = _find_degree_program_search_input(form)
+    if query_input is None:
+        raise ValueError("Could not locate MOSES degree program search input.")
+    query_input_name = str(query_input.get("name") or query_input.get("id") or "")
+    if not query_input_name:
+        raise ValueError("Could not determine MOSES degree program search input name.")
+    submit_id = _find_degree_program_search_submit_id(form)
+    if not submit_id:
+        raise ValueError("Could not locate MOSES degree program search submit button.")
+    view_state, client_window, faces_namespace = _extract_jsf_state(form, soup)
+    form_context = _MosesFormContext(
+        form_id=form_id,
+        action_url=urljoin(page_url, html_lib.unescape(str(form.get("action") or page_url))),
+        view_state=view_state,
+        client_window=client_window,
+        html=html,
+        faces_namespace=faces_namespace,
+    )
+    return _MosesSearchContext(
+        form=form_context,
+        query_input_name=query_input_name,
+        submit_id=submit_id,
+        render_id=form_id,
+    )
+
+
+def _find_degree_program_search_form(soup: BeautifulSoup) -> Optional[Tag]:
+    for input_tag in soup.find_all("input"):
+        if not _is_text_input(input_tag):
+            continue
+        form = input_tag.find_parent("form")
+        if not isinstance(form, Tag):
+            continue
+        labels = " ".join(label.get_text(" ", strip=True) for label in form.find_all("label"))
+        if _contains_any(labels, ("Suchtext", "Abschlussart", "Anbieter")):
+            return form
+    return None
+
+
+def _find_degree_program_search_input(form: Tag) -> Optional[Tag]:
+    text_inputs = [input_tag for input_tag in form.find_all("input") if _is_text_input(input_tag)]
+    preferred = [
+        input_tag
+        for input_tag in text_inputs
+        if _contains_any(
+            " ".join(str(input_tag.get(attr) or "") for attr in ("id", "name", "placeholder", "aria-label")),
+            ("suchtext", "search"),
+        )
+    ]
+    if preferred:
+        return preferred[0]
+    return text_inputs[0] if len(text_inputs) == 1 else None
+
+
+def _find_degree_program_search_submit_id(form: Tag) -> Optional[str]:
+    for link in form.find_all(["a", "button"], id=True):
+        text = _clean_ws(link.get_text(" ", strip=True))
+        onclick = str(link.get("onclick") or "")
+        if _contains_any(text, ("Suchen", "Search")) or "PrimeFaces.ab" in onclick:
+            return str(link.get("id") or "")
+    return None
+
+
+def _parse_degree_program_search_results(html: str, page_url: str) -> list[MosesDegreeProgramSearchResult]:
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[MosesDegreeProgramSearchResult] = []
+    seen: set[str] = set()
+    for link in soup.find_all("a", href=re.compile(r"studiengaenge/(?:anzeigen|beschreibung/anzeigen)\.html")):
+        href = str(link.get("href") or "")
+        detail_url = _absolute_url(href) or urljoin(page_url, href)
+        degree_id = parse_degree_program_id_from_url(detail_url)
+        if not degree_id or degree_id in seen:
+            continue
+        row = link.find_parent("tr")
+        cells = row.find_all(["td", "th"], recursive=False) if isinstance(row, Tag) else []
+        cell_texts = [_clean_ws(cell.get_text(" ", strip=True)) for cell in cells]
+        title = _clean_ws(link.get_text(" ", strip=True)) or (cell_texts[0] if cell_texts else "")
+        if not title:
+            continue
+        seen.add(degree_id)
+        results.append(
+            MosesDegreeProgramSearchResult(
+                degree_id=degree_id,
+                title=title,
+                detail_url=_force_english_url(detail_url),
+                short_name=cell_texts[1] if len(cell_texts) > 1 else None,
+                degree_type=cell_texts[2] if len(cell_texts) > 2 else None,
+                provider=cell_texts[3] if len(cell_texts) > 3 else None,
+            )
+        )
+    return results
+
+
+def _select_form_option_by_label(form: Tag, label_text: str, desired: str) -> dict[str, str]:
+    desired_norm = _normalize_key(desired)
+    if not desired_norm:
+        return {}
+    for label in form.find_all("label"):
+        if not _contains_any(label.get_text(" ", strip=True), (label_text,)):
+            continue
+        container = label.find_parent(class_=re.compile(r"\bform-group\b")) or label.parent
+        select = container.find("select") if isinstance(container, Tag) else None
+        if not isinstance(select, Tag):
+            continue
+        for option in select.find_all("option"):
+            option_value = str(option.get("value") or "")
+            option_label = _clean_ws(option.get_text(" ", strip=True))
+            if desired_norm in {_normalize_key(option_value), _normalize_key(option_label)}:
+                return {_control_name(select): option_value or option_label}
+    return {}
+
+
+def _selected_degree_program_term(html: str) -> Optional[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    for label in soup.find_all("label"):
+        if not _contains_any(label.get_text(" ", strip=True), ("Modulliste",)):
+            continue
+        container = label.find_parent(class_=re.compile(r"\bform-group\b")) or label.parent
+        select = container.find("select") if isinstance(container, Tag) else None
+        selected = select.find("option", selected=True) if isinstance(select, Tag) else None
+        if isinstance(selected, Tag):
+            return _clean_ws(selected.get_text(" ", strip=True))
+    return None
+
+
+def _degree_program_query_variants(query: str) -> list[str]:
+    variants: list[str] = []
+    _append_query_variant(variants, query)
+    without_prefix = re.sub(r"^\s*TU\s+Berlin\s*[-–]\s*", "", query, flags=re.I)
+    _append_query_variant(variants, without_prefix)
+    without_parenthetical = re.sub(r"\([^)]*\)", "", without_prefix)
+    _append_query_variant(variants, without_parenthetical)
+    replacements = {
+        "B.Sc.": "Bachelor",
+        "B. Sc.": "Bachelor",
+        "M.Sc.": "Master",
+        "M. Sc.": "Master",
+    }
+    replaced = without_prefix
+    for old, new in replacements.items():
+        replaced = replaced.replace(old, new)
+    _append_query_variant(variants, replaced)
+    tokens = re.findall(r"[A-Za-zÄÖÜäöüß0-9+#.-]+", without_parenthetical)
+    if len(tokens) > 2:
+        _append_query_variant(variants, " ".join(tokens[:2]))
+    return variants
+
+
+def _append_query_variant(values: list[str], value: str) -> None:
+    cleaned = _clean_ws(value)
+    if cleaned and cleaned.lower() not in {existing.lower() for existing in values}:
+        values.append(cleaned)
+
+
+def _degree_module_matches(query: str, module: MosesDegreeProgramModule) -> bool:
+    normalized_query = _clean_ws(query).lower()
+    if not normalized_query:
+        return False
+    haystack = " ".join(
+        value
+        for value in [
+            module.title,
+            module.number,
+            module.area_label or "",
+            module.exam_type or "",
+            module.cycle or "",
+        ]
+        if value
+    ).lower()
+    if normalized_query in haystack:
+        return True
+    tokens = [token.lower() for token in re.findall(r"[A-Za-zÄÖÜäöüß0-9+#.-]+", normalized_query) if len(token) >= 3]
+    return bool(tokens) and all(token in haystack for token in tokens)
+
+
+def _degree_program_url_from_id(degree_id: str | int) -> str:
+    return f"{DEGREE_BASE_URL}/anzeigen.html?studiengang={degree_id}"
+
+
+def _normalize_degree_query(value: str) -> str:
+    text = re.sub(r"^\s*TU\s+Berlin\s*[-–]\s*", "", value or "", flags=re.I)
+    text = text.replace("B.Sc.", "Bachelor").replace("B. Sc.", "Bachelor")
+    text = text.replace("M.Sc.", "Master").replace("M. Sc.", "Master")
+    return _normalize_key(text)
+
+
+def parse_degree_program_id_from_url(url: str) -> Optional[str]:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    degree_id = query.get("studiengang")
+    return str(degree_id[0]) if degree_id and str(degree_id[0]).strip() else None
 
 
 def _ordered_catalogs_for_program(raw_catalogs: Iterable[str], program_key: str) -> list[str]:

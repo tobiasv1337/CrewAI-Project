@@ -11,6 +11,7 @@ from core.models import (
     ModuleSource,
     ModuleState,
     MosesCatalogAssignment,
+    MosesDegreeProgramSearchResult,
     MosesDegreeUsage,
     MosesModuleData,
     MosesModuleElement,
@@ -177,6 +178,83 @@ class TestMosesIntegration(unittest.TestCase):
         self.assertEqual(payload["jakarta.faces.partial.render"], "j_idt81")
         self.assertEqual(payload["jakarta.faces.ViewState"], "view-state-1")
         self.assertNotIn("javax.faces.partial.render", payload)
+
+    def test_degree_program_search_parses_results(self):
+        html = """
+        <form id="j_idt56" action="/moses/modultransfersystem/studiengaenge/suchen.html">
+          <input type="hidden" name="jakarta.faces.ViewState" value="view-state-1" />
+          <input type="hidden" name="jakarta.faces.ClientWindow" value="window-1" />
+          <label>Suchtext</label>
+          <input type="text" name="j_idt56:j_idt58" placeholder="Suchtext..." />
+          <label>Abschlussart</label>
+          <select name="j_idt56:j_idt60"><option>Alle Arten</option><option value="1">Bachelor of Science</option></select>
+          <label>Anbieter</label>
+          <select name="j_idt56:j_idt64"><option>Alle Anbieter</option><option value="4">Fakultät IV</option></select>
+          <a id="j_idt56:j_idt68" href="#" onclick='PrimeFaces.ab({s:"j_idt56:j_idt68",f:"j_idt56",u:"j_idt56"});return false;'>Suchen</a>
+          <table>
+            <tbody>
+              <tr>
+                <td><a href="https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/anzeigen.html?studiengang=32">Technische Informatik</a></td>
+                <td>TI</td>
+                <td>Bachelor of Science</td>
+                <td>Fakultät IV</td>
+              </tr>
+            </tbody>
+          </table>
+        </form>
+        """
+
+        search = moses._extract_degree_program_search_context(
+            html,
+            "https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/suchen.html",
+        )
+        payload = moses._build_partial_payload(
+            form=search.form,
+            source_id=search.submit_id,
+            execute_id=search.form.form_id,
+            render_id=search.render_id,
+        )
+        results = moses._parse_degree_program_search_results(
+            html,
+            "https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/suchen.html",
+        )
+
+        self.assertEqual(search.form.faces_namespace, "jakarta.faces")
+        self.assertEqual(search.query_input_name, "j_idt56:j_idt58")
+        self.assertEqual(search.submit_id, "j_idt56:j_idt68")
+        self.assertEqual(payload["jakarta.faces.partial.render"], "j_idt56")
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].degree_id, "32")
+        self.assertEqual(results[0].title, "Technische Informatik")
+        self.assertEqual(results[0].short_name, "TI")
+        self.assertEqual(results[0].degree_type, "Bachelor of Science")
+        self.assertEqual(results[0].provider, "Fakultät IV")
+
+    def test_degree_program_detail_keeps_title_and_degree_type_separate(self):
+        html = """
+        <html><body>
+          <h1>Technische Informatik <small>Bachelor of Science</small></h1>
+          <div class="form-group"><label>Kurzname</label><span>TI</span></div>
+          <div class="form-group"><label>Abschlussart</label><span>Bachelor of Science</span></div>
+          <div class="form-group"><label>Organisationseinheit</label><span>Fakultät IV</span></div>
+        </body></html>
+        """
+        fallback = MosesDegreeProgramSearchResult(
+            degree_id="32",
+            title="Technische Informatik",
+            detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=32",
+        )
+
+        result = moses._degree_program_from_detail_page(
+            html,
+            "https://example.test/studiengaenge/anzeigen.html?studiengang=32",
+            fallback=fallback,
+        )
+
+        self.assertEqual(result.title, "Technische Informatik")
+        self.assertEqual(result.degree_type, "Bachelor of Science")
+        self.assertEqual(result.short_name, "TI")
+        self.assertEqual(result.provider, "Fakultät IV")
 
     def test_section_text_after_heading_falls_back_to_heading_wrapper_siblings(self):
         html = """
@@ -1188,12 +1266,14 @@ class TestMosesIntegration(unittest.TestCase):
                 self.degree_catalog_cache = {}
                 self.expanded: list[str] = []
                 self.selected: list[str] = []
+                self.payloads: list[dict[str, object]] = []
 
             def get(self, url: str) -> tuple[str, str]:
                 return initial_html, url
 
             def post(self, url: str, payload: dict[str, object], partial: bool = False) -> str:
                 del url, partial
+                self.payloads.append(dict(payload))
                 expanded_row = payload.get("f:modulbaum_expand")
                 if expanded_row:
                     self.expanded.append(str(expanded_row))
@@ -1269,6 +1349,7 @@ class TestMosesIntegration(unittest.TestCase):
 
         self.assertIn("0_0", session.expanded)
         self.assertIn("0_0_0", session.expanded)
+        self.assertTrue(any(payload.get("f:modulbaum_encodeFeature") == "true" for payload in session.payloads))
         self.assertEqual(
             assignments[("40725", 6)],
             [
@@ -1276,6 +1357,53 @@ class TestMosesIntegration(unittest.TestCase):
                 "Profilbereich Mensch-Maschine-Interaktion",
             ],
         )
+
+    def test_degree_program_tree_rows_and_module_rows_parse_public_fields(self):
+        tree_html = """
+        <div id="f:modulbaum" class="ui-treetable">
+          <table role="treegrid"><tbody>
+            <tr data-rk="0_0">
+              <td>Pflichtbereich</td><td>0</td><td>19</td><td>123</td>
+            </tr>
+            <tr data-rk="0_1">
+              <td>Wahlpflichtbereich (1 aus 3)</td><td>0</td><td>3</td><td>18</td>
+            </tr>
+          </tbody></table>
+        </div>
+        """
+        selected_html = """
+        <section id="f:studiengangsbereich">
+          <h2>Pflichtbereich <small>SoSe 2026</small></h2>
+          <table><tbody>
+            <tr>
+              <th>Name:</th><th>#M</th><th>#V</th><th>LP</th><th>benotet</th><th>Prüfungsform</th><th>Turnus</th><th>Gewicht*</th>
+            </tr>
+            <tr>
+              <td><a href="/moses/modultransfersystem/bolognamodule/beschreibung/anzeigen.html?number=40022&amp;version=11">Algorithmen und Datenstrukturen</a></td>
+              <td>40022</td><td>11</td><td>6</td><td>Benotet</td><td>Schriftliche Prüfung</td><td>SoSe</td><td>1.0</td>
+            </tr>
+          </tbody></table>
+        </section>
+        """
+
+        rows = moses._degree_catalog_tree_rows(tree_html)
+        modules = moses._degree_catalog_modules(selected_html, area_key="0_0", area_label="Pflichtbereich")
+
+        self.assertEqual(rows[0].row_key, "0_0")
+        self.assertEqual(rows[0].label, "Pflichtbereich")
+        self.assertEqual(rows[0].module_count, 19)
+        self.assertEqual(rows[0].credits, 123.0)
+        self.assertEqual(rows[1].label, "Wahlpflichtbereich (1 aus 3)")
+        self.assertEqual(len(modules), 1)
+        self.assertEqual(modules[0].title, "Algorithmen und Datenstrukturen")
+        self.assertEqual(modules[0].number, "40022")
+        self.assertEqual(modules[0].version, 11)
+        self.assertEqual(modules[0].credits, 6.0)
+        self.assertEqual(modules[0].grading_mode, "Benotet")
+        self.assertEqual(modules[0].exam_type, "Schriftliche Prüfung")
+        self.assertEqual(modules[0].cycle, "SoSe")
+        self.assertEqual(modules[0].weight, "1.0")
+        self.assertEqual(modules[0].area_label, "Pflichtbereich")
 
     def test_pflichtbereich_degree_usage_suggests_bachelor_mandatory_area(self):
         bachelor_key = "TU Berlin - Technische Informatik (B.Sc.)"

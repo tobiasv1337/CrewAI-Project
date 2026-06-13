@@ -3,6 +3,11 @@ from __future__ import annotations
 import inspect
 
 from core.models import (
+    MosesDegreeAreaModules,
+    MosesDegreeProgramArea,
+    MosesDegreeProgramModule,
+    MosesDegreeProgramSearchResult,
+    MosesDegreeProgramStructure,
     MosesCatalogFallback,
     MosesExamElement,
     MosesModuleData,
@@ -240,3 +245,122 @@ def test_lookup_errors_are_returned_as_strings(monkeypatch):
     assert "network unavailable" in details
     assert "MOSES catalog lookup failed" in catalogs
     assert "network unavailable" in catalogs
+
+
+def test_search_degree_programs_formats_next_call(monkeypatch):
+    result = MosesDegreeProgramSearchResult(
+        degree_id="32",
+        title="Technische Informatik",
+        short_name="TI",
+        degree_type="Bachelor of Science",
+        provider="Fakultät IV",
+        detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=32",
+    )
+
+    monkeypatch.setattr(moses_tools.moses_provider, "search_degree_programs", lambda *args, **kwargs: [result])
+
+    output = moses_tools.search_degree_programs("Technische Informatik")
+
+    assert "# Moses degree-program search for: Technische Informatik" in output
+    assert "Moses degree id: `32`" in output
+    assert "get_degree_program_structure(degree_query=\"Technische Informatik\")" in output
+    assert "timeout" not in inspect.signature(moses_tools.search_degree_programs).parameters
+
+
+def test_get_degree_program_structure_accepts_human_readable_degree_query(monkeypatch):
+    degree = MosesDegreeProgramSearchResult(
+        degree_id="32",
+        title="Technische Informatik",
+        short_name="TI",
+        degree_type="Bachelor of Science",
+        provider="Fakultät IV",
+        detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=32",
+    )
+    structure = MosesDegreeProgramStructure(
+        degree=degree,
+        term="SoSe 2026",
+        areas=[
+            MosesDegreeProgramArea(area_key="0", label="Modulliste SoSe 2026", subarea_count=2),
+            MosesDegreeProgramArea(area_key="0_0", label="Pflichtbereich", parent_key="0", level=1, module_count=19, credits=123),
+            MosesDegreeProgramArea(area_key="0_4", label="Wahlbereich", parent_key="0", level=1, module_count=0, credits=0),
+        ],
+    )
+    calls = []
+
+    def fake_fetch(degree_query: str, term: str | None, timeout: int):
+        calls.append((degree_query, term, timeout))
+        return structure
+
+    monkeypatch.setattr(moses_tools.moses_provider, "fetch_degree_program_structure", fake_fetch)
+
+    output = moses_tools.get_degree_program_structure("Technische Informatik", term="SS 26")
+
+    assert calls == [("Technische Informatik", "SS 26", moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS)]
+    assert "# Degree structure: Technische Informatik" in output
+    assert "`0_0` Pflichtbereich: 19 module(s)" in output
+    assert "`0_4` Wahlbereich: empty/free choice not enumerated" in output
+    assert "get_degree_area_modules(degree_query=\"Technische Informatik\", area_query=\"Pflichtbereich\")" in output
+    assert "timeout" not in inspect.signature(moses_tools.get_degree_program_structure).parameters
+
+
+def test_get_degree_area_modules_formats_module_rows(monkeypatch):
+    degree = MosesDegreeProgramSearchResult(
+        degree_id="32",
+        title="Technische Informatik",
+        detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=32",
+    )
+    area_modules = MosesDegreeAreaModules(
+        degree=degree,
+        area=MosesDegreeProgramArea(area_key="0_0", label="Pflichtbereich", module_count=1, credits=6),
+        term="SoSe 2026",
+        modules=[
+            MosesDegreeProgramModule(
+                title="Algorithmen und Datenstrukturen",
+                number="40022",
+                version=11,
+                area_key="0_0",
+                area_label="Pflichtbereich",
+                credits=6,
+                grading_mode="Benotet",
+                exam_type="Schriftliche Prüfung",
+                cycle="SoSe",
+                weight="1.0",
+                detail_url="https://example.test/module",
+            )
+        ],
+    )
+    calls = []
+
+    def fake_fetch(degree_query: str, area_query: str, term: str | None, timeout: int):
+        calls.append((degree_query, area_query, term, timeout))
+        return area_modules
+
+    monkeypatch.setattr(moses_tools.moses_provider, "fetch_degree_area_modules", fake_fetch)
+
+    output = moses_tools.get_degree_area_modules("Technische Informatik", "Pflichtbereich", max_modules=10)
+
+    assert calls == [("Technische Informatik", "Pflichtbereich", None, moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS)]
+    assert "# Degree modules: Technische Informatik / Pflichtbereich" in output
+    assert "Moses module: `40022` version `11`" in output
+    assert "Next call: `get_module_details(module_number=\"40022\", version=11)`" in output
+    assert "timeout" not in inspect.signature(moses_tools.get_degree_area_modules).parameters
+
+
+def test_search_degree_modules_formats_results_and_errors(monkeypatch):
+    module = MosesDegreeProgramModule(
+        title="Algorithmen und Datenstrukturen",
+        number="40022",
+        version=11,
+        area_key="0_0",
+        area_label="Pflichtbereich",
+        credits=6,
+    )
+
+    monkeypatch.setattr(moses_tools.moses_provider, "search_degree_modules", lambda *args, **kwargs: [module])
+
+    output = moses_tools.search_degree_modules("Technische Informatik", "Algorithmen")
+
+    assert "# Degree-specific module search for: Algorithmen" in output
+    assert "Scope: Technische Informatik" in output
+    assert "Moses module: `40022` version `11`" in output
+    assert "timeout" not in inspect.signature(moses_tools.search_degree_modules).parameters

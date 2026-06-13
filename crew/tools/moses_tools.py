@@ -3,7 +3,15 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from core.models import MosesModuleData, MosesSearchResult
+from core.models import (
+    MosesDegreeAreaModules,
+    MosesDegreeProgramArea,
+    MosesDegreeProgramModule,
+    MosesDegreeProgramSearchResult,
+    MosesDegreeProgramStructure,
+    MosesModuleData,
+    MosesSearchResult,
+)
 from core.providers.tu_berlin import moses as moses_provider
 
 
@@ -182,6 +190,114 @@ def get_module_catalogs(module_number: str, version: int, program_key: str | Non
     return _format_module_catalogs(data, program_key=_optional_text(program_key))
 
 
+def search_degree_programs(query: str, max_results: int = 10) -> str:
+    """Search Moses degree programs by human-readable name.
+
+    Use this before degree-specific module lookup when you need the exact degree
+    program. Examples: "Technische Informatik", "Computer Science Master",
+    "Medieninformatik".
+    """
+    normalized_query = _clean_text(query)
+    if not normalized_query:
+        return (
+            "No degree-program search query was provided.\n\n"
+            "Use a degree name such as `Technische Informatik`, `Computer Science`, or `Medieninformatik`."
+        )
+    try:
+        results = moses_provider.search_degree_programs(
+            normalized_query,
+            max_results=_clamp_max_results(max_results),
+            timeout=DEFAULT_MOSES_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        return f"MOSES degree-program search failed for `{normalized_query}`: {exc}"
+    return _format_degree_program_search_results(normalized_query, results)
+
+
+def get_degree_program_structure(degree_query: str, term: str | None = None) -> str:
+    """Get the Moses Studiengangsaufbau for a degree program.
+
+    Args:
+        degree_query: Human-readable degree name, exact Moses degree id, or Moses
+            degree URL. Examples: "Technische Informatik", "32",
+            "TU Berlin - Technische Informatik (B.Sc.)".
+        term: Optional term such as "SS 26" or "WS 25/26".
+    """
+    try:
+        structure = moses_provider.fetch_degree_program_structure(
+            degree_query,
+            term=_optional_text(term),
+            timeout=DEFAULT_MOSES_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        return f"MOSES degree-program structure lookup failed for `{degree_query}`: {exc}"
+    return _format_degree_program_structure(structure)
+
+
+def get_degree_area_modules(
+    degree_query: str,
+    area_query: str,
+    term: str | None = None,
+    max_modules: int = 50,
+) -> str:
+    """List modules inside one Moses degree area/catalog.
+
+    Args:
+        degree_query: Human-readable degree name, exact Moses degree id, or Moses
+            degree URL. Examples: "Technische Informatik" or "Computer Science".
+        area_query: Area label or key from get_degree_program_structure, for
+            example "Pflichtbereich", "Wahlpflichtbereich (1 aus 3)", or "0_0".
+        term: Optional term such as "SS 26" or "WS 25/26".
+        max_modules: Maximum modules to show.
+    """
+    try:
+        area_modules = moses_provider.fetch_degree_area_modules(
+            degree_query,
+            area_query,
+            term=_optional_text(term),
+            timeout=DEFAULT_MOSES_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        return f"MOSES degree-area module lookup failed for `{degree_query}` / `{area_query}`: {exc}"
+    return _format_degree_area_modules(area_modules, max_modules=max_modules)
+
+
+def search_degree_modules(
+    degree_query: str,
+    query: str,
+    area_query: str | None = None,
+    term: str | None = None,
+    max_results: int = 10,
+) -> str:
+    """Search modules that are explicitly attached to a Moses degree program.
+
+    This is better than global Moses search for Pflichtbereich and
+    Wahlpflichtbereich modules because the results are degree-specific. It does
+    not enumerate unrestricted Free Choice modules.
+    """
+    normalized_query = _clean_text(query)
+    if not normalized_query:
+        return "No module search query was provided. Use a title keyword such as `Algorithmen` or `Machine Learning`."
+    try:
+        modules = moses_provider.search_degree_modules(
+            degree_query,
+            normalized_query,
+            area_query=_optional_text(area_query),
+            term=_optional_text(term),
+            max_results=_clamp_max_results(max_results),
+            timeout=DEFAULT_MOSES_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        scope = f"`{degree_query}`" + (f" / `{area_query}`" if area_query else "")
+        return f"MOSES degree-specific module search failed for {scope}: {exc}"
+    return _format_degree_module_search_results(
+        degree_query=degree_query,
+        query=normalized_query,
+        modules=modules,
+        area_query=area_query,
+    )
+
+
 def _format_module_details(data: MosesModuleData) -> str:
     lines = [
         f"# {data.title}",
@@ -295,6 +411,163 @@ def _format_module_catalogs(data: MosesModuleData, program_key: str | None) -> s
     return "\n".join(lines).rstrip()
 
 
+def _format_degree_program_search_results(
+    query: str,
+    results: list[MosesDegreeProgramSearchResult],
+) -> str:
+    lines = [f"# Moses degree-program search for: {query}", ""]
+    if not results:
+        lines.extend(
+            [
+                "No degree programs were found.",
+                "",
+                "Try a shorter exact degree name, for example `Technische Informatik`, `Computer Science`, or `Medieninformatik`.",
+            ]
+        )
+        return "\n".join(lines)
+
+    lines.append(f"Found {len(results)} degree program(s).")
+    lines.append("")
+    lines.append("Next: call `get_degree_program_structure(degree_query=\"...\")` with the degree title, short name, id, or URL.")
+    lines.append("")
+    for index, result in enumerate(results, start=1):
+        lines.extend(
+            [
+                f"## {index}. {result.title}",
+                f"- Degree query: `{result.title}`",
+                f"- Moses degree id: `{result.degree_id}`",
+                f"- Short name: {_format_value(result.short_name)}",
+                f"- Degree type: {_format_value(result.degree_type)}",
+                f"- Provider: {_format_value(result.provider)}",
+                f"- Detail URL: {result.detail_url}",
+                f"- Next call: `get_degree_program_structure(degree_query=\"{result.title}\")`",
+                "",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+def _format_degree_program_structure(structure: MosesDegreeProgramStructure) -> str:
+    degree = structure.degree
+    lines = [
+        f"# Degree structure: {degree.title}",
+        "",
+        f"- Degree query: `{degree.title}`",
+        f"- Moses degree id: `{degree.degree_id}`",
+        f"- Short name: {_format_value(degree.short_name)}",
+        f"- Degree type: {_format_value(degree.degree_type)}",
+        f"- Provider: {_format_value(degree.provider)}",
+        f"- Term/module list: {_format_value(structure.term)}",
+        f"- Detail URL: {degree.detail_url}",
+        "",
+        "## Areas in the Studiengangsaufbau",
+    ]
+    if not structure.areas:
+        lines.append("No degree areas were found.")
+        return "\n".join(lines)
+
+    for area in structure.areas:
+        indent = "  " * max(area.level, 0)
+        credits = f", {area.credits:g} LP" if area.credits is not None else ""
+        status = "empty/free choice not enumerated" if area.module_count == 0 and area.subarea_count == 0 else f"{area.module_count} module(s)"
+        lines.append(
+            f"{indent}- `{area.area_key}` {area.label}: {status}, {area.subarea_count} subarea(s){credits}"
+        )
+
+    module_areas = [area for area in structure.areas if area.module_count > 0]
+    if module_areas:
+        first = module_areas[0]
+        lines.extend(
+            [
+                "",
+                "## Next calls",
+                f"- `get_degree_area_modules(degree_query=\"{degree.title}\", area_query=\"{first.label}\")`",
+                f"- `search_degree_modules(degree_query=\"{degree.title}\", query=\"Algorithmen\")`",
+            ]
+        )
+    else:
+        lines.extend(["", "No directly enumerated module areas were found. Free choice modules are not listed by Moses here."])
+    return "\n".join(lines).rstrip()
+
+
+def _format_degree_area_modules(area_modules: MosesDegreeAreaModules, *, max_modules: int) -> str:
+    degree = area_modules.degree
+    area = area_modules.area
+    safe_limit = _clamp_max_modules(max_modules)
+    shown_modules = area_modules.modules[:safe_limit]
+    lines = [
+        f"# Degree modules: {degree.title} / {area.label}",
+        "",
+        f"- Degree query: `{degree.title}`",
+        f"- Moses degree id: `{degree.degree_id}`",
+        f"- Area query: `{area.label}`",
+        f"- Area key: `{area.area_key}`",
+        f"- Term/module list: {_format_value(area_modules.term)}",
+        f"- Area modules found: {len(area_modules.modules)}",
+        "",
+    ]
+
+    if not area_modules.modules:
+        lines.extend(
+            [
+                "No modules are directly listed for this area.",
+                "",
+                "If this is a free-choice area, Moses does not enumerate unrestricted free-choice modules. Use global `search_modules` instead.",
+            ]
+        )
+        return "\n".join(lines)
+
+    lines.append("Use `get_module_details(module_number=\"...\", version=...)` for full contents and prerequisites.")
+    lines.append("")
+    for index, module in enumerate(shown_modules, start=1):
+        lines.extend(_degree_module_lines(index, module))
+
+    if len(area_modules.modules) > safe_limit:
+        lines.append(f"Showing {safe_limit} of {len(area_modules.modules)} modules. Use a more specific area or search query to narrow results.")
+    return "\n".join(lines).rstrip()
+
+
+def _format_degree_module_search_results(
+    *,
+    degree_query: str,
+    query: str,
+    modules: list[MosesDegreeProgramModule],
+    area_query: str | None,
+) -> str:
+    scope = f"{degree_query}" + (f" / {area_query}" if area_query else "")
+    lines = [f"# Degree-specific module search for: {query}", "", f"Scope: {scope}", ""]
+    if not modules:
+        lines.extend(
+            [
+                "No degree-linked modules matched this query.",
+                "",
+                "Try `get_degree_program_structure` to inspect available areas, or use global `search_modules` for free-choice/broad topic search.",
+            ]
+        )
+        return "\n".join(lines)
+
+    lines.append(f"Found {len(modules)} matching module(s).")
+    lines.append("")
+    for index, module in enumerate(modules, start=1):
+        lines.extend(_degree_module_lines(index, module))
+    return "\n".join(lines).rstrip()
+
+
+def _degree_module_lines(index: int, module: MosesDegreeProgramModule) -> list[str]:
+    return [
+        f"## {index}. {module.title}",
+        f"- Moses module: `{module.number}` version `{module.version}`",
+        f"- Area: {_format_value(module.area_label)}" + (f" (`{module.area_key}`)" if module.area_key else ""),
+        f"- Credits: {_format_credits(module.credits)}",
+        f"- Exam/grading: {_format_value(module.grading_mode)} / {_format_value(module.exam_type)}",
+        f"- Offered/cycle: {_format_value(module.cycle)}",
+        f"- Weight: {_format_value(module.weight)}",
+        f"- Detail URL: {_format_value(module.detail_url)}",
+        f"- Next call: `get_module_details(module_number=\"{module.number}\", version={module.version})`",
+        "",
+    ]
+
+
 def _search_query_variants(query: str) -> list[str]:
     variants: list[str] = []
     tokens = re.findall(r"[A-Za-zÄÖÜäöüß0-9+#.-]+", query)
@@ -351,6 +624,14 @@ def _clamp_max_results(max_results: int) -> int:
     return max(1, min(value, MAX_SEARCH_RESULTS))
 
 
+def _clamp_max_modules(max_modules: int) -> int:
+    try:
+        value = int(max_modules)
+    except (TypeError, ValueError):
+        return 50
+    return max(1, min(value, 100))
+
+
 def _clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
 
@@ -390,4 +671,3 @@ def _labeled_value(label: str, value: object) -> str | None:
 
 def _join_present(values: Iterable[str | None]) -> str:
     return " | ".join(value for value in values if value)
-

@@ -28,6 +28,3 @@ env/
 
 # Project-specific local data
 data/
-
-# Handoff files
-HANDOFF.md

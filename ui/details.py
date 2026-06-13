@@ -576,6 +576,10 @@ def _render_module_hero(
     subtitle_bits = [module.area or "General", module.term or "No term assigned"]
     if short_program_label(module.program_key):
         subtitle_bits.append(short_program_label(module.program_key))
+
+    hero_summary_html = f'<div class="module-hero-summary">{html.escape(hero_summary)}</div>' if hero_summary else ""
+    action_cards_html = f'<div class="module-hero-action-grid">{"".join(action_cards)}</div>' if action_cards else ""
+
     with st.container(border=True, key="nm_card_details_hero"):
         st.markdown(
             f"""
@@ -585,7 +589,7 @@ def _render_module_hero(
                   <div class="module-hero-eyebrow">Course Detail</div>
                   <div class="module-hero-title">{html.escape(module.name)}</div>
                   <div class="module-hero-subtitle">{html.escape(" • ".join(subtitle_bits))}</div>
-                  {"<div class=\"module-hero-summary\">" + html.escape(hero_summary) + "</div>" if hero_summary else ""}
+                  {hero_summary_html}
                   <div class="module-chip-cloud">{hero_pills}</div>
                   <div class="module-hero-stat-grid">{hero_stats}</div>
                 </div>
@@ -594,7 +598,7 @@ def _render_module_hero(
                     <div class="module-hero-rail-head">Portfolio Signals</div>
                     <div class="module-portfolio-metric-grid">{portfolio_metrics}</div>
                     <div class="module-hero-rail-note">Built to show what this course produced: code, reports, and official context in one place.</div>
-                    {"<div class=\"module-hero-action-grid\">" + "".join(action_cards) + "</div>" if action_cards else ""}
+                    {action_cards_html}
                   </div>
                 </div>
               </div>

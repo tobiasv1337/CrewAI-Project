@@ -116,8 +116,8 @@ def search_modules(query: str, max_results: int = 10) -> str:
 
     lines.append(f"Found {len(results)} module(s).")
     lines.append("")
-    lines.append("Use `get_module_details(module_number=\"...\", version=...)` for contents, prerequisites, exams, and workload.")
-    lines.append("Use `get_module_catalogs(module_number=\"...\", version=...)` to check degree/catalog fit.")
+    lines.append("Suggested next step: use `get_module_details(module_number=\"...\", version=...)` for contents, prerequisites, exams, and workload.")
+    lines.append("Suggested next step: use `get_module_catalogs(module_number=\"...\", version=...)` to check degree/catalog fit.")
     lines.append("")
 
     for index, result in enumerate(results, start=1):
@@ -363,7 +363,7 @@ def _format_module_details(data: MosesModuleData) -> str:
             [
                 "",
                 "## Catalog hint",
-                "This module has Moses catalog assignments. Use `get_module_catalogs` for degree-specific catalog fit.",
+                "This module has Moses catalog assignments. Suggested next step: use `get_module_catalogs` for degree-specific catalog fit.",
             ]
         )
     else:

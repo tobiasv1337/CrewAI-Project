@@ -50,7 +50,7 @@ def test_search_modules_tries_cleaned_variants_for_sentence_query(monkeypatch):
     assert "Tried query variants: `Find Machine Learning modules`, `Machine Learning`" in output
     assert "Machine Learning 1" in output
     assert "Moses module: `40966` version `2`" in output
-    assert "Use `get_module_details" in output
+    assert "Suggested next step: use `get_module_details" in output
     assert "timeout" not in inspect.signature(moses_tools.search_modules).parameters
 
 
@@ -144,7 +144,7 @@ def test_get_module_details_formats_llm_readable_summary(monkeypatch):
     assert "## Workload" in output
     assert "## Exam elements" in output
     assert "Understand core ML methods." in output
-    assert "Use `get_module_catalogs`" in output
+    assert "Suggested next step: use `get_module_catalogs`" in output
     assert "timeout" not in inspect.signature(moses_tools.get_module_details).parameters
 
 

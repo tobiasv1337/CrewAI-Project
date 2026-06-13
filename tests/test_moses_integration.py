@@ -148,6 +148,36 @@ class TestMosesIntegration(unittest.TestCase):
         self.assertEqual(payload["javax.faces.partial.render"], "j_idt81")
         self.assertEqual(payload["j_idt81:j_idt84"], "security")
 
+    def test_search_context_accepts_jakarta_faces_state(self):
+        html = """
+        <form id="j_idt81" action="/moses/modultransfersystem/bolognamodule/suchen.html?jfwid=test:0">
+          <input type="hidden" name="jakarta.faces.ViewState" value="view-state-1" />
+          <input type="hidden" name="jakarta.faces.ClientWindow" value="window-1" />
+          <span id="j_idt81:suchfeld">
+            <label>Modultitel / Modulnummer</label>
+            <input type="text" name="j_idt81:j_idt84" placeholder="Modultitel / Modulnummer..." />
+          </span>
+          <a id="j_idt81:j_idt86" href="#"
+             onclick='PrimeFaces.ab({s:"j_idt81:j_idt86",f:"j_idt81",u:"j_idt81"});return false;'>Module suchen</a>
+        </form>
+        """
+
+        search = moses._extract_search_context(
+            html,
+            "https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule/suchen.html",
+        )
+        payload = moses._build_partial_payload(
+            form=search.form,
+            source_id=search.submit_id,
+            execute_id=search.form.form_id,
+            render_id=search.render_id,
+        )
+
+        self.assertEqual(search.form.faces_namespace, "jakarta.faces")
+        self.assertEqual(payload["jakarta.faces.partial.render"], "j_idt81")
+        self.assertEqual(payload["jakarta.faces.ViewState"], "view-state-1")
+        self.assertNotIn("javax.faces.partial.render", payload)
+
     def test_section_text_after_heading_falls_back_to_heading_wrapper_siblings(self):
         html = """
         <div class="col-xs-12"><h3>Lernergebnisse</h3></div>

@@ -52,6 +52,7 @@ _CATALOG_LABEL_PREFIXES = (
     "Fachstudium",
     "Katalog",
 )
+_FACES_NAMESPACES = ("javax.faces", "jakarta.faces")
 
 
 @dataclass
@@ -61,6 +62,7 @@ class _MosesFormContext:
     view_state: str
     client_window: str
     html: str
+    faces_namespace: str = "javax.faces"
 
 
 @dataclass
@@ -769,8 +771,8 @@ def _select_degree_catalog_term(
             execute_id=select_id,
             render_id=form.form_id,
         )
-        payload["javax.faces.behavior.event"] = "valueChange"
-        payload["javax.faces.partial.event"] = "valueChange"
+        payload[_faces_key(form, "behavior.event")] = "valueChange"
+        payload[_faces_key(form, "partial.event")] = "valueChange"
         payload.update(controls)
         partial = session.post(form.action_url, payload, partial=True)
         _update_form_state_from_partial(form, partial)
@@ -814,8 +816,8 @@ def _select_degree_catalog_tree_row(session: _MosesSession, form: _MosesFormCont
     )
     if isinstance(form_tag, Tag):
         payload.update(_form_control_values(form_tag))
-    payload["javax.faces.behavior.event"] = "select"
-    payload["javax.faces.partial.event"] = "select"
+    payload[_faces_key(form, "behavior.event")] = "select"
+    payload[_faces_key(form, "partial.event")] = "select"
     payload[f"{tree_id}_selection"] = row_key
     payload[f"{tree_id}_instantSelection"] = row_key
     partial = session.post(form.action_url, payload, partial=True)
@@ -1733,7 +1735,9 @@ def _form_control_values(form: Tag) -> dict[str, str]:
     values: dict[str, str] = {}
     for control in form.find_all(["input", "select", "textarea"]):
         name = str(control.get("name") or "")
-        if not name or name in {"javax.faces.ViewState", "javax.faces.ClientWindow"}:
+        if not name or name in {f"{namespace}.ViewState" for namespace in _FACES_NAMESPACES} | {
+            f"{namespace}.ClientWindow" for namespace in _FACES_NAMESPACES
+        }:
             continue
         if control.name == "select":
             selected = control.find("option", selected=True) or control.find("option")
@@ -1767,8 +1771,8 @@ def _post_degree_usage_control_update(
         render_id=box_id,
     )
     if event_name:
-        payload["javax.faces.behavior.event"] = event_name
-        payload["javax.faces.partial.event"] = event_name
+        payload[_faces_key(form, "behavior.event")] = event_name
+        payload[_faces_key(form, "partial.event")] = event_name
     payload.update(control_values)
     partial = session.post(form.action_url, payload, partial=True)
     _update_form_state_from_partial(form, partial)
@@ -2006,13 +2010,14 @@ def _extract_form_context(html: str, page_url: str, *, form_id: str) -> _MosesFo
     form = soup.find("form", id=form_id)
     if not isinstance(form, Tag):
         raise ValueError(f"Could not locate MOSES form {form_id}.")
-    view_state, client_window = _extract_jsf_state(form, soup)
+    view_state, client_window, faces_namespace = _extract_jsf_state(form, soup)
     return _MosesFormContext(
         form_id=form_id,
         action_url=urljoin(page_url, html_lib.unescape(str(form.get("action") or page_url))),
         view_state=view_state,
         client_window=client_window,
         html=html,
+        faces_namespace=faces_namespace,
     )
 
 
@@ -2033,13 +2038,14 @@ def _extract_search_context(html: str, page_url: str) -> _MosesSearchContext:
     submit_id = _find_search_submit_id(form, form_id)
     if not submit_id:
         raise ValueError("Could not locate MOSES search submit button.")
-    view_state, client_window = _extract_jsf_state(form, soup)
+    view_state, client_window, faces_namespace = _extract_jsf_state(form, soup)
     form_context = _MosesFormContext(
         form_id=form_id,
         action_url=urljoin(page_url, html_lib.unescape(str(form.get("action") or page_url))),
         view_state=view_state,
         client_window=client_window,
         html=html,
+        faces_namespace=faces_namespace,
     )
     return _MosesSearchContext(
         form=form_context,
@@ -2061,30 +2067,32 @@ def _extract_degree_usage_form_context(
     form_id = str(form.get("id") or form.get("name") or "")
     if not form_id:
         raise ValueError("Could not determine MOSES degree usage form id.")
-    view_state, client_window = _extract_jsf_state(form, soup)
+    view_state, client_window, faces_namespace = _extract_jsf_state(form, soup)
     return _MosesFormContext(
         form_id=form_id,
         action_url=urljoin(page_url, html_lib.unescape(str(form.get("action") or page_url))),
         view_state=view_state,
         client_window=client_window,
         html=html,
+        faces_namespace=faces_namespace,
     )
 
 
-def _extract_jsf_state(form: Tag, soup: BeautifulSoup) -> tuple[str, str]:
-    view_state_input = form.find("input", attrs={"name": "javax.faces.ViewState"}) or soup.find(
-        "input",
-        attrs={"name": "javax.faces.ViewState"},
-    )
-    client_window_input = form.find("input", attrs={"name": "javax.faces.ClientWindow"}) or soup.find(
-        "input",
-        attrs={"name": "javax.faces.ClientWindow"},
-    )
-    view_state = str(view_state_input.get("value") or "") if isinstance(view_state_input, Tag) else ""
-    client_window = str(client_window_input.get("value") or "") if isinstance(client_window_input, Tag) else ""
-    if not view_state or not client_window:
-        raise ValueError("Could not locate JSF form state.")
-    return view_state, client_window
+def _extract_jsf_state(form: Tag, soup: BeautifulSoup) -> tuple[str, str, str]:
+    for namespace in _FACES_NAMESPACES:
+        view_state_input = form.find("input", attrs={"name": f"{namespace}.ViewState"}) or soup.find(
+            "input",
+            attrs={"name": f"{namespace}.ViewState"},
+        )
+        client_window_input = form.find("input", attrs={"name": f"{namespace}.ClientWindow"}) or soup.find(
+            "input",
+            attrs={"name": f"{namespace}.ClientWindow"},
+        )
+        view_state = str(view_state_input.get("value") or "") if isinstance(view_state_input, Tag) else ""
+        client_window = str(client_window_input.get("value") or "") if isinstance(client_window_input, Tag) else ""
+        if view_state and client_window:
+            return view_state, client_window, namespace
+    raise ValueError("Could not locate JSF form state.")
 
 
 def _find_search_form(soup: BeautifulSoup) -> Optional[Tag]:
@@ -2164,6 +2172,10 @@ def _contains_any(text: str, needles: Iterable[str]) -> bool:
     return any(needle.lower() in normalized for needle in needles)
 
 
+def _faces_key(form: _MosesFormContext, suffix: str) -> str:
+    return f"{form.faces_namespace}.{suffix}"
+
+
 def _build_partial_payload(
     *,
     form: _MosesFormContext,
@@ -2172,14 +2184,14 @@ def _build_partial_payload(
     render_id: str,
 ) -> dict[str, str]:
     return {
-        "javax.faces.partial.ajax": "true",
-        "javax.faces.source": source_id,
-        "javax.faces.partial.execute": execute_id,
-        "javax.faces.partial.render": render_id,
+        _faces_key(form, "partial.ajax"): "true",
+        _faces_key(form, "source"): source_id,
+        _faces_key(form, "partial.execute"): execute_id,
+        _faces_key(form, "partial.render"): render_id,
         source_id: source_id,
         form.form_id: form.form_id,
-        "javax.faces.ViewState": form.view_state,
-        "javax.faces.ClientWindow": form.client_window,
+        _faces_key(form, "ViewState"): form.view_state,
+        _faces_key(form, "ClientWindow"): form.client_window,
     }
 
 
@@ -2201,9 +2213,9 @@ def _update_form_state_from_partial(form: _MosesFormContext, partial_xml: str) -
         return
     for update in root.findall(".//update"):
         update_id = update.attrib.get("id", "")
-        if "javax.faces.ViewState" in update_id and update.text:
+        if any(f"{namespace}.ViewState" in update_id for namespace in _FACES_NAMESPACES) and update.text:
             form.view_state = update.text
-        elif "javax.faces.ClientWindow" in update_id and update.text:
+        elif any(f"{namespace}.ClientWindow" in update_id for namespace in _FACES_NAMESPACES) and update.text:
             form.client_window = update.text
 
 

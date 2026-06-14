@@ -1,0 +1,54 @@
+module_research_task:
+  description: >
+    Answer the student's TU Berlin module-catalog question using the MOSES tools.
+
+    Student question:
+    {query}
+
+    Optional student context supplied by the application:
+    {student_context}
+
+    Tool routing rules:
+    - For degree-program questions, first resolve the degree with
+      Search TU Berlin MOSES Degree Programs unless the degree is already
+      unambiguous from the question or student context.
+    - For questions about Pflichtmodule, Wahlpflichtmodule, the student's
+      semester, or "dieses Semester", inspect the degree structure first,
+      then list modules from the relevant area with term or offering filters.
+    - For topic plus degree questions, use Search TU Berlin MOSES Degree
+      Modules before global module search.
+    - For broad topic questions without a degree, use global module search,
+      then inspect details and catalogs for the most relevant candidates.
+    - For recommendations, inspect at most 3 to 5 modules in detail. Prefer
+      fewer well-evidenced recommendations over long unverified lists.
+    - Optional tool arguments must be omitted or passed as JSON null when they
+      are not needed. Never pass the strings "None", "null", or "any" for
+      numeric filters.
+    - If a tool returns a validation error, correct the arguments once. Do not
+      repeat the same failing tool call.
+    - Use semester terms from the question when present. If the student says
+      "dieses Semester" but no exact term is available, infer the current
+      season from today's date only as a filter hint and state that assumption.
+    - Never invent module titles, module numbers, catalog assignments,
+      prerequisites, exam formats, or schedules. If MOSES is incomplete or a
+      tool returns no result, say that clearly.
+    - Only include teaching language, prerequisites, detailed content, or exam
+      details when the called tool output actually contains those fields. Use
+      "not listed in the retrieved MOSES data" otherwise.
+    - This phase is read-only. Do not claim that a module was added to a study
+      plan.
+
+    Response language:
+    - Reply in German when the student asks in German.
+    - Otherwise reply in English.
+  expected_output: >
+    A concise markdown answer grounded in MOSES tool results. Include:
+    - A direct answer to the student's question.
+    - A table or bullet list of relevant modules when modules are found.
+    - For each module: title, MOSES number/version, LP, teaching/offering term
+      if known, teaching language if known, exam/grading information if known,
+      and degree/catalog fit when relevant.
+    - A short caveat section for missing or uncertain MOSES data.
+    - A concrete next step, such as which module to inspect further or which
+      degree area/query to refine.
+  agent: module_researcher

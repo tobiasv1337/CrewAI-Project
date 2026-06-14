@@ -11,9 +11,11 @@ env/
 
 # Environment / Secret files
 .env
+.crewai_home/
 
 # Testing
 .pytest_cache/
+logs/
 
 # IDEs & Editors
 .vscode/

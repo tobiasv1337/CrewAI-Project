@@ -163,6 +163,29 @@ def test_search_modules_passes_normalized_filters(monkeypatch):
     assert "## Active filters" in output
 
 
+def test_degree_area_schema_normalizes_llm_empty_filter_values():
+    parsed = moses_tools.DegreeAreaModulesInput.model_validate(
+        {
+            "degree_query": "Technische Informatik",
+            "area_query": "Pflichtbereich",
+            "term": "SS 26",
+            "offered_in": "None",
+            "credits": "None",
+            "min_credits": "0",
+            "max_credits": 0,
+            "exam_type": "any",
+            "grading": None,
+        }
+    )
+
+    assert parsed.offered_in == "any"
+    assert parsed.credits is None
+    assert parsed.min_credits is None
+    assert parsed.max_credits is None
+    assert parsed.exam_type is None
+    assert parsed.grading == "any"
+
+
 def test_search_modules_rejects_ambiguous_credit_filters():
     output = moses_tools.search_modules("project", credits=6, min_credits=3)
 

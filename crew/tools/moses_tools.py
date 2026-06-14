@@ -5,7 +5,7 @@ from collections.abc import Iterable
 from typing import Literal, Type
 
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.models import (
     MosesDegreeAreaModules,
@@ -37,6 +37,7 @@ OfferingFilter = Literal[
 ]
 LanguageFilter = Literal["any", "de", "en", "German", "English", "german", "english", "Deutsch", "Englisch"]
 GradingFilter = Literal["any", "graded", "ungraded", "benotet", "unbenotet", "Benotet", "Unbenotet"]
+NONE_LIKE_TOKENS = {"", "none", "null", "nil", "na", "n/a", "notlisted", "notavailable", "any"}
 
 DEFAULT_MOSES_TIMEOUT_SECONDS = 15
 MAX_SEARCH_VARIANTS = 6
@@ -956,6 +957,32 @@ def _optional_float(value: object) -> float | None:
     return float(value)
 
 
+def _is_none_like(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return _normalize_token(value) in NONE_LIKE_TOKENS
+    return False
+
+
+def _normalize_optional_filter_value(value: object) -> object | None:
+    return None if _is_none_like(value) else value
+
+
+def _normalize_any_filter_value(value: object) -> object:
+    return "any" if _is_none_like(value) else value
+
+
+def _normalize_optional_credit_filter(value: object) -> object | None:
+    if _is_none_like(value):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    return None if number == 0 else value
+
+
 def _normalize_token(value: object) -> str:
     return re.sub(r"[^a-z0-9äöüß]+", "", str(value or "").casefold())
 
@@ -1047,7 +1074,36 @@ GRADING_DESCRIPTION = "Grading filter: any, graded, ungraded, benotet, or unbeno
 CREDITS_DESCRIPTION = "Exact LP/ECTS credits. Do not combine with min_credits or max_credits."
 
 
-class SearchModulesInput(BaseModel):
+class MosesToolInput(BaseModel):
+    @field_validator(
+        "term",
+        "duration",
+        "exam_type",
+        "course_type",
+        "course_format",
+        "degree_query",
+        "degree_area_query",
+        "program_key",
+        "area_query",
+        mode="before",
+        check_fields=False,
+    )
+    @classmethod
+    def normalize_optional_text_fields(cls, value):
+        return _normalize_optional_filter_value(value)
+
+    @field_validator("credits", "min_credits", "max_credits", mode="before", check_fields=False)
+    @classmethod
+    def normalize_credit_filter_fields(cls, value):
+        return _normalize_optional_credit_filter(value)
+
+    @field_validator("offered_in", "language", "course_language", "grading", mode="before", check_fields=False)
+    @classmethod
+    def normalize_any_filter_fields(cls, value):
+        return _normalize_any_filter_value(value)
+
+
+class SearchModulesInput(MosesToolInput):
     query: str = Field(..., description="Short module keyword, topic, title, or module number, e.g. Machine Learning, project, Security, 40966.")
     max_results: int = Field(default=10, description=f"Maximum results to return. Absolute max: {MAX_SEARCH_RESULTS}.")
     term: str | None = Field(default=None, description=TERM_DESCRIPTION)
@@ -1066,7 +1122,7 @@ class SearchModulesInput(BaseModel):
     degree_area_query: str | None = Field(default=None, description="Optional degree area label/key when degree_query is set, e.g. Pflichtbereich or Wahlpflichtbereich.")
 
 
-class ModuleDetailsInput(BaseModel):
+class ModuleDetailsInput(MosesToolInput):
     module_query: str = Field(..., description="MOSES module number, MOSES URL, or exact module title. Prefer module number after search.")
     version: int | None = Field(default=None, description="Optional internal MOSES version. Leave unset normally; use term for historical lookup.")
     term: str | None = Field(default=None, description=TERM_DESCRIPTION)
@@ -1076,12 +1132,12 @@ class ModuleCatalogsInput(ModuleDetailsInput):
     program_key: str | None = Field(default=None, description="Optional exact Grade Manager program key to filter catalog assignments.")
 
 
-class SearchDegreeProgramsInput(BaseModel):
+class SearchDegreeProgramsInput(MosesToolInput):
     query: str = Field(..., description="Degree name, e.g. Technische Informatik, Computer Science, Medieninformatik.")
     max_results: int = Field(default=10, description=f"Maximum degree programs to return. Absolute max: {MAX_SEARCH_RESULTS}.")
 
 
-class DegreeStructureInput(BaseModel):
+class DegreeStructureInput(MosesToolInput):
     degree_query: str = Field(..., description="Degree name, MOSES id, or MOSES degree URL, e.g. Technische Informatik.")
     term: str | None = Field(default=None, description=TERM_DESCRIPTION)
 
@@ -1181,3 +1237,7 @@ MOSES_TOOLS = [
     GetTUBerlinMosesDegreeAreaModulesTool(),
     SearchTUBerlinMosesDegreeModulesTool(),
 ]
+
+# Phase 2 exposes the full read-only MOSES research surface to the
+# Module Researcher agent. Keep this separate from future write-capable tools.
+MOSES_MODULE_RESEARCH_TOOLS = MOSES_TOOLS

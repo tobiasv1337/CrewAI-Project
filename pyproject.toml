@@ -21,3 +21,6 @@ dependencies = [
 
 [tool.pytest.ini_options]
 pythonpath = "."
+markers = [
+    "live_llm: opt-in live CrewAI runs that require RUN_LIVE_CREW_TESTS=1 and GWDG_API_KEY",
+]

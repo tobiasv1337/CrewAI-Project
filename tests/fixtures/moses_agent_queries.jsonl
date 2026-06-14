@@ -1,0 +1,5 @@
+{"id":"ti-pflicht-2-semester","language":"de","query":"Ich bin im 2. Semester Technische Informatik. Was fuer Pflichtmodule koennte ich dieses Semester machen?","expected_tools":["Search TU Berlin MOSES Degree Programs","Get TU Berlin MOSES Degree Structure","Get TU Berlin MOSES Degree Area Modules"]}
+{"id":"ti-wahlpflicht-recommend","language":"de","query":"Was wuerdest du mir fuer Wahlpflichtmodule in Technische Informatik empfehlen?","expected_tools":["Search TU Berlin MOSES Degree Programs","Get TU Berlin MOSES Degree Structure","Get TU Berlin MOSES Degree Area Modules"]}
+{"id":"cs-ml-english","language":"en","query":"Find English Machine Learning modules for Computer Science M.Sc.","expected_tools":["Search TU Berlin MOSES Degree Modules","Get TU Berlin MOSES Module Details"]}
+{"id":"module-40966","language":"en","query":"Tell me about Moses module 40966.","expected_tools":["Get TU Berlin MOSES Module Details"]}
+{"id":"ml1-cs-fit","language":"en","query":"Does Machine Learning 1 count for Computer Science M.Sc.?","expected_tools":["Search TU Berlin MOSES Modules","Get TU Berlin MOSES Module Catalogs"]}

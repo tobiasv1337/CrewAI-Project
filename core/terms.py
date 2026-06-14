@@ -10,17 +10,17 @@ from .models import ModuleOffering
 def parse_term_label(label: str) -> Optional[int]:
     if not label:
         return None
-    cleaned = label.strip().upper()
-    if cleaned.startswith("WS"):
+    cleaned = re.sub(r"\s+", " ", label.strip())
+    normalized = cleaned.casefold()
+    compact = re.sub(r"[^a-z0-9äöüß]+", "", normalized)
+    if compact.startswith(("ws", "wise", "wintersemester", "winterterm", "winter")):
         season = "WS"
-        rest = cleaned[2:]
-    elif cleaned.startswith("SS"):
+    elif compact.startswith(("ss", "sose", "sommersemester", "summersemester", "summerterm", "sommer", "summer")):
         season = "SS"
-        rest = cleaned[2:]
     else:
         return None
 
-    match = re.search(r"\d{2,4}", rest)
+    match = re.search(r"\d{2,4}", cleaned)
     if not match:
         return None
     year_val = int(match.group(0))
@@ -35,10 +35,10 @@ def parse_term_label(label: str) -> Optional[int]:
 def term_season(label: Optional[str]) -> Optional[str]:
     if not label:
         return None
-    cleaned = label.strip().upper()
-    if cleaned.startswith("WS"):
+    cleaned = re.sub(r"[^a-z0-9äöüß]+", "", label.strip().casefold())
+    if cleaned.startswith(("ws", "wise", "wintersemester", "winterterm", "winter")):
         return "WS"
-    if cleaned.startswith("SS"):
+    if cleaned.startswith(("ss", "sose", "sommersemester", "summersemester", "summerterm", "sommer", "summer")):
         return "SS"
     return None
 
@@ -75,14 +75,14 @@ def canonical_term_label(label: Optional[str]) -> Optional[str]:
 
 
 def build_term_label(season: str, year: int) -> str:
-    normalized = str(season or "").strip().upper()
+    normalized = re.sub(r"[^a-z0-9äöüß]+", "", str(season or "").strip().casefold())
     if year < 100:
         year = 2000 + year if year < 80 else 1900 + year
-    if normalized == "WS":
+    if normalized in {"ws", "wise", "wintersemester", "winterterm", "winter"}:
         return format_term_label(year * 2)
-    if normalized == "SS":
+    if normalized in {"ss", "sose", "sommersemester", "summersemester", "summerterm", "sommer", "summer"}:
         return format_term_label(year * 2 - 1)
-    raise ValueError("Season must be 'WS' or 'SS'.")
+    raise ValueError("Season must be winter/WS/WiSe or summer/SS/SoSe.")
 
 
 def advance_term_label(label: Optional[str], steps: int = 1) -> Optional[str]:

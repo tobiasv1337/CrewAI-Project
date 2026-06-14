@@ -6,8 +6,10 @@ import main as moses_cli
 def test_cli_dispatches_single_moses_tool(monkeypatch, capsys):
     calls = []
 
-    def fake_search_modules(query: str, max_results: int):
+    def fake_search_modules(query: str, max_results: int, **kwargs):
         calls.append((query, max_results))
+        assert kwargs["term"] is None
+        assert kwargs["offered_in"] == "any"
         return "# fake module search"
 
     monkeypatch.setattr(moses_cli, "search_modules", fake_search_modules)
@@ -43,7 +45,7 @@ def test_cli_all_runs_every_moses_tool(monkeypatch, capsys):
             "all",
             "--module-query",
             "ML",
-            "--module-number",
+            "--details-module-query",
             "12345",
             "--module-version",
             "7",
@@ -75,7 +77,9 @@ def test_cli_all_runs_every_moses_tool(monkeypatch, capsys):
         "get_degree_area_modules",
         "search_degree_modules",
     ]
-    assert calls[0] == ("search_modules", ("ML",), {"max_results": 2})
+    assert calls[0][0] == "search_modules"
+    assert calls[0][1] == ("ML",)
+    assert calls[0][2]["max_results"] == 2
     assert calls[1] == ("get_module_details", ("12345", 7), {"term": "SS 26"})
     assert calls[2] == (
         "get_module_catalogs",
@@ -97,6 +101,14 @@ def test_cli_all_runs_every_moses_tool(monkeypatch, capsys):
     assert "# CLI smoke: search-modules" in captured.out
     assert "# CLI smoke: search-degree-modules" in captured.out
     assert "# degree modules" in captured.out
+
+
+def test_cli_all_keeps_legacy_module_number_alias():
+    parser = moses_cli.build_parser()
+
+    args = parser.parse_args(["all", "--module-number", "12345"])
+
+    assert args.module_details_query == "12345"
 
 
 def test_cli_help_lists_all_moses_commands(capsys):

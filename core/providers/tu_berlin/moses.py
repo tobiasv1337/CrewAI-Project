@@ -3,7 +3,7 @@ from __future__ import annotations
 import html as html_lib
 import re
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from http.cookiejar import CookieJar
 from typing import Callable, Iterable, Mapping, Optional
@@ -35,7 +35,7 @@ from ...models import (
     MosesWorkloadItem,
 )
 from ...registry import create_program, list_programs, module_counts_for_program
-from ...terms import parse_term_label
+from ...terms import parse_term_label, term_season
 
 
 BASE_URL = "https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule"
@@ -87,6 +87,50 @@ class _MosesVersionRange:
     detail_url: str
     valid_from: Optional[str]
     valid_to: Optional[str]
+
+
+@dataclass(frozen=True)
+class MosesCourseSearchFilters:
+    term: Optional[str] = None
+    offered_in: str = "any"
+    language: str = "any"
+    credits: Optional[float] = None
+    min_credits: Optional[float] = None
+    max_credits: Optional[float] = None
+    duration: Optional[str] = None
+    grading: str = "any"
+    exam_type: Optional[str] = None
+    course_type: Optional[str] = None
+    course_format: Optional[str] = None
+    course_language: str = "any"
+    post_filter_notes: tuple[str, ...] = field(default_factory=tuple)
+
+    def has_filters(self) -> bool:
+        return any(
+            [
+                self.term,
+                self.offered_in != "any",
+                self.language != "any",
+                self.credits is not None,
+                self.min_credits is not None,
+                self.max_credits is not None,
+                self.duration,
+                self.grading != "any",
+                self.exam_type,
+                self.course_type,
+                self.course_format,
+                self.course_language != "any",
+            ]
+        )
+
+
+@dataclass(frozen=True)
+class MosesResolvedModuleDetails:
+    data: MosesModuleData
+    resolution: str
+    requested_query: str
+    requested_version: Optional[int] = None
+    requested_term: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -144,26 +188,309 @@ class _MosesSession:
         return _extract_form_context(html, final_url, form_id=form_id)
 
 
-def search_courses(query: str, max_results: int = 20, current_valid_only: bool = True, timeout: int = 15) -> list[MosesSearchResult]:
+def search_courses(
+    query: str,
+    max_results: int = 20,
+    current_valid_only: bool = True,
+    timeout: int = 15,
+    filters: Optional[MosesCourseSearchFilters] = None,
+) -> list[MosesSearchResult]:
     del current_valid_only  # MOSES defaults to currently valid module descriptions.
 
     query = (query or "").strip()
     if not query:
         return []
 
+    safe_limit = max(1, int(max_results or 20))
     session = _MosesSession(timeout=timeout)
+    return _search_courses(session, query, max_results=safe_limit, filters=filters)
+
+
+def _search_courses(
+    session: _MosesSession,
+    query: str,
+    *,
+    max_results: int,
+    filters: Optional[MosesCourseSearchFilters],
+) -> list[MosesSearchResult]:
     html, final_url = session.get(SEARCH_URL)
     search = _extract_search_context(html, final_url)
+    control_values: dict[str, str] = {}
+    if filters and filters.has_filters():
+        control_values = _module_search_filter_controls(session, search, filters)
     payload = _build_partial_payload(
         form=search.form,
         source_id=search.submit_id,
         execute_id=search.form.form_id,
         render_id=search.render_id,
     )
+    control_values.update({search.query_input_name: query})
+    payload.update(control_values)
     payload[search.query_input_name] = query
     partial = session.post(search.form.action_url, payload, partial=True)
     search_html = _extract_partial_update(partial, search.render_id) or search.form.html
-    return _parse_search_results(search_html)[:max_results]
+    results = _parse_search_results(search_html)
+    if filters:
+        results = [result for result in results if _search_result_matches_filters(result, filters)]
+    return results[:max_results]
+
+
+def _module_search_filter_controls(
+    session: _MosesSession,
+    search: _MosesSearchContext,
+    filters: MosesCourseSearchFilters,
+) -> dict[str, str]:
+    form = search.form
+    soup = BeautifulSoup(form.html, "html.parser")
+    form_tag = soup.find("form", id=form.form_id)
+    toggle_id = _find_module_search_filter_toggle_id(form_tag if isinstance(form_tag, Tag) else soup)
+    if not toggle_id:
+        return {}
+
+    filter_id = f"{form.form_id}:suchfilter"
+    payload = _build_partial_payload(
+        form=form,
+        source_id=toggle_id,
+        execute_id=form.form_id,
+        render_id=filter_id,
+    )
+    if isinstance(form_tag, Tag):
+        payload.update(_form_control_values(form_tag))
+    partial = session.post(form.action_url, payload, partial=True)
+    _update_form_state_from_partial(form, partial)
+    filter_html = _extract_partial_update(partial, filter_id) or ""
+    if not filter_html:
+        return {}
+
+    controls: dict[str, str] = {}
+
+    def select_filter(category_labels: Iterable[str]) -> str:
+        nonlocal filter_html
+        source_id = _find_module_search_filter_category_id(filter_html, category_labels)
+        if not source_id:
+            return ""
+        render_id = f"{form.form_id}:suchfilterparameter {form.form_id}:suchfilterparameterauswahl"
+        payload = _build_partial_payload(
+            form=form,
+            source_id=source_id,
+            execute_id=source_id,
+            render_id=render_id,
+        )
+        payload[_faces_key(form, "partial.render")] = render_id
+        payload.update(controls)
+        partial = session.post(form.action_url, payload, partial=True)
+        _update_form_state_from_partial(form, partial)
+        updated = _extract_partial_update(partial, f"{form.form_id}:suchfilterparameterauswahl") or ""
+        if updated:
+            filter_html = updated
+        return updated
+
+    if filters.term:
+        pane = select_filter(("Gültigkeit", "Validity"))
+        _set_term_filter_control(pane, controls, filters.term)
+
+    offering = _module_search_offering_filter(filters)
+    if offering:
+        pane = select_filter(("Turnus", "Offered", "Cycle"))
+        _set_select_filter_control(pane, controls, _offering_option_labels(offering))
+
+    if filters.language != "any":
+        pane = select_filter(("Sprache der Lehre", "Teaching language"))
+        _set_select_filter_control(pane, controls, _language_option_labels(filters.language))
+
+    if filters.credits is not None:
+        pane = select_filter(("Leistungspunkte", "Credits"))
+        _set_text_filter_control(pane, controls, _format_filter_number(filters.credits))
+
+    if filters.duration:
+        pane = select_filter(("Dauer", "Duration"))
+        _set_select_filter_control(pane, controls, (filters.duration,))
+
+    if filters.grading != "any":
+        pane = select_filter(("Benotung", "Grading"))
+        _set_select_filter_control(pane, controls, _grading_option_labels(filters.grading))
+
+    if filters.exam_type:
+        pane = select_filter(("Prüfungsform", "Exam type", "Type of exam"))
+        _set_select_filter_control(pane, controls, _exam_type_option_labels(filters.exam_type))
+
+    course_format = filters.course_format or filters.course_type
+    if course_format:
+        pane = select_filter(("Lehrveranstaltungsformat", "Course format"))
+        _set_select_filter_control(pane, controls, _course_format_option_labels(course_format), select_index=0)
+
+    if filters.course_language != "any":
+        pane = select_filter(("Lehrveranstaltungssprache", "Course language"))
+        _set_select_filter_control(pane, controls, _language_option_labels(filters.course_language), select_index=0)
+
+    return controls
+
+
+def _find_module_search_filter_toggle_id(scope: BeautifulSoup | Tag) -> Optional[str]:
+    for link in scope.find_all("a", id=True):
+        text = _clean_ws(link.get_text(" ", strip=True))
+        onclick = str(link.get("onclick") or "")
+        if "PrimeFaces.ab" in onclick and _contains_any(text, ("Filtereinstellungen", "Filter settings", "Search filters")):
+            return str(link.get("id") or "")
+    return None
+
+
+def _find_module_search_filter_category_id(html: str, labels: Iterable[str]) -> Optional[str]:
+    soup = BeautifulSoup(html, "html.parser")
+    for link in soup.find_all("a", id=True):
+        text = _clean_ws(link.get_text(" ", strip=True))
+        onclick = str(link.get("onclick") or "")
+        if "PrimeFaces.ab" in onclick and _contains_any(text, labels):
+            return str(link.get("id") or "")
+    return None
+
+
+def _set_term_filter_control(html: str, controls: dict[str, str], term: str) -> bool:
+    target = _term_index_from_label(term)
+    if target is None:
+        return False
+    soup = BeautifulSoup(html, "html.parser")
+    for select in soup.find_all("select"):
+        name = _control_name(select)
+        if not name:
+            continue
+        for option in select.find_all("option"):
+            if _term_index_from_label(option.get_text(" ", strip=True)) == target:
+                controls[name] = str(option.get("value") or "")
+                return True
+    return False
+
+
+def _set_select_filter_control(
+    html: str,
+    controls: dict[str, str],
+    desired_labels: Iterable[str],
+    *,
+    select_index: int = 0,
+) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    selects = soup.find_all("select")
+    if select_index >= len(selects):
+        return False
+    select = selects[select_index]
+    name = _control_name(select)
+    if not name:
+        return False
+    desired = [_normalize_key(label) for label in desired_labels if _clean_ws(label)]
+    for option in select.find_all("option"):
+        option_value = str(option.get("value") or "")
+        option_text = _clean_ws(option.get_text(" ", strip=True))
+        option_keys = {key for key in {_normalize_key(option_text), _normalize_key(option_value)} if key}
+        if any(key and any(key in option_key or option_key in key for option_key in option_keys) for key in desired):
+            controls[name] = option_value
+            return True
+    return False
+
+
+def _set_text_filter_control(html: str, controls: dict[str, str], value: str) -> bool:
+    soup = BeautifulSoup(html, "html.parser")
+    for input_tag in soup.find_all("input"):
+        if str(input_tag.get("type") or "text").lower() == "hidden":
+            continue
+        name = _control_name(input_tag)
+        if name:
+            controls[name] = value
+            return True
+    return False
+
+
+def _module_search_offering_filter(filters: MosesCourseSearchFilters) -> Optional[str]:
+    if filters.offered_in != "any":
+        return filters.offered_in
+    season = term_season(filters.term) if filters.term else None
+    return season
+
+
+def _offering_option_labels(value: str) -> tuple[str, ...]:
+    normalized = _normalize_key(value)
+    if normalized in {"ws", "wise", "winter", "wintersemester"}:
+        return ("Wintersemester", "WS", "WiSe")
+    if normalized in {"ss", "sose", "summer", "sommer", "sommersemester", "summersemester"}:
+        return ("Sommersemester", "SS", "SoSe")
+    if normalized in {"both", "wsands", "wsss", "wsundss", "wiseundsose", "winterundsommersemester"}:
+        return ("Winter- und Sommersemester", "WS & SS", "WiSe/SoSe")
+    return (value,)
+
+
+def _language_option_labels(value: str) -> tuple[str, ...]:
+    normalized = _normalize_key(value)
+    if normalized in {"en", "english", "englisch"}:
+        return ("Englisch", "English", "en")
+    if normalized in {"de", "german", "deutsch"}:
+        return ("Deutsch", "German", "de")
+    return (value,)
+
+
+def _grading_option_labels(value: str) -> tuple[str, ...]:
+    normalized = _normalize_key(value)
+    if normalized in {"graded", "benotet"}:
+        return ("Benotet", "Graded", "BENOTET")
+    if normalized in {"ungraded", "unbenotet", "passfail"}:
+        return ("Unbenotet", "Ungrading", "UNBENOTET")
+    return (value,)
+
+
+def _exam_type_option_labels(value: str) -> tuple[str, ...]:
+    normalized = _normalize_key(value)
+    aliases = {
+        "written": ("Schriftliche Prüfung", "Written exam", "Klausur"),
+        "schriftlichepruefung": ("Schriftliche Prüfung", "Written exam", "Klausur"),
+        "klausur": ("Schriftliche Prüfung", "Written exam", "Klausur"),
+        "oral": ("Mündliche Prüfung", "Oral exam"),
+        "muendlichepruefung": ("Mündliche Prüfung", "Oral exam"),
+        "portfolio": ("Portfolioprüfung", "Portfolio"),
+        "portfoliopruefung": ("Portfolioprüfung", "Portfolio"),
+        "paper": ("Hausarbeit", "Term paper", "Written paper"),
+        "hausarbeit": ("Hausarbeit", "Term paper", "Written paper"),
+    }
+    return aliases.get(normalized, (value,))
+
+
+def _course_format_option_labels(value: str) -> tuple[str, ...]:
+    normalized = _normalize_key(value)
+    aliases = {
+        "project": ("Projekt", "Project"),
+        "projekt": ("Projekt", "Project"),
+        "seminar": ("Seminar",),
+        "lecture": ("Vorlesung", "Lecture"),
+        "vorlesung": ("Vorlesung", "Lecture"),
+        "exercise": ("Übung", "Uebung", "Exercise"),
+        "uebung": ("Übung", "Uebung", "Exercise"),
+        "practical": ("Praktikum", "Practical"),
+        "praktikum": ("Praktikum", "Practical"),
+        "lab": ("Labor", "Lab"),
+        "labor": ("Labor", "Lab"),
+    }
+    return aliases.get(normalized, (value,))
+
+
+def _search_result_matches_filters(result: MosesSearchResult, filters: MosesCourseSearchFilters) -> bool:
+    if filters.credits is not None and result.credits != filters.credits:
+        return False
+    if filters.min_credits is not None and (result.credits is None or result.credits < filters.min_credits):
+        return False
+    if filters.max_credits is not None and (result.credits is None or result.credits > filters.max_credits):
+        return False
+    if filters.language != "any":
+        normalized_languages = {_normalize_key(language) for language in result.languages}
+        if not any(_normalize_key(label) in normalized_languages for label in _language_option_labels(filters.language)):
+            return False
+    if filters.grading != "any":
+        grading_key = _normalize_key(result.grading_mode or "")
+        if filters.grading == "graded" and "unbenotet" in grading_key:
+            return False
+        if filters.grading == "ungraded" and "unbenotet" not in grading_key:
+            return False
+    return True
+
+
+def _format_filter_number(value: float) -> str:
+    return f"{value:g}"
 
 
 def search_degree_programs(
@@ -179,13 +506,30 @@ def search_degree_programs(
         return []
 
     session = _MosesSession(timeout=timeout)
-    return _search_degree_programs(
-        session,
-        query,
-        degree_type=degree_type,
-        provider=provider,
-        max_results=max_results,
-    )
+    search_query, inferred_degree_type = _degree_query_without_degree_type(query)
+    effective_degree_type = degree_type or inferred_degree_type
+    safe_limit = max(1, int(max_results or 10))
+    candidates: list[MosesDegreeProgramSearchResult] = []
+    seen: set[str] = set()
+    for variant in _degree_program_query_variants(search_query or query):
+        if not variant or variant.lower() in seen:
+            continue
+        seen.add(variant.lower())
+        for result in _search_degree_programs(
+            session,
+            variant,
+            degree_type=effective_degree_type,
+            provider=provider,
+            max_results=safe_limit,
+        ):
+            if effective_degree_type and not _degree_type_matches(effective_degree_type, result.degree_type):
+                continue
+            if result.degree_id in {existing.degree_id for existing in candidates}:
+                continue
+            candidates.append(result)
+            if len(candidates) >= safe_limit:
+                return candidates
+    return candidates
 
 
 def fetch_degree_program_structure(
@@ -214,6 +558,7 @@ def fetch_degree_area_modules(
     area_query: str,
     *,
     term: Optional[str] = None,
+    filters: Optional[MosesCourseSearchFilters] = None,
     timeout: int = 15,
 ) -> MosesDegreeAreaModules:
     session = _MosesSession(timeout=timeout)
@@ -241,6 +586,8 @@ def fetch_degree_area_modules(
             key = (module.number, module.version)
             if key in seen:
                 continue
+            if filters and not _degree_module_matches_filters(module, filters):
+                continue
             seen.add(key)
             modules.append(module)
     resolved_area = area.model_copy(
@@ -262,6 +609,7 @@ def search_degree_modules(
     *,
     area_query: Optional[str] = None,
     term: Optional[str] = None,
+    filters: Optional[MosesCourseSearchFilters] = None,
     max_results: int = 10,
     timeout: int = 15,
 ) -> list[MosesDegreeProgramModule]:
@@ -274,6 +622,7 @@ def search_degree_modules(
             degree_query,
             area_query,
             term=term,
+            filters=filters,
             timeout=timeout,
         )
         return [
@@ -302,6 +651,8 @@ def search_degree_modules(
             key = (module.number, module.version)
             if key in seen or not _degree_module_matches(query, module):
                 continue
+            if filters and not _degree_module_matches_filters(module, filters):
+                continue
             seen.add(key)
             results.append(module)
             if len(results) >= safe_limit:
@@ -311,16 +662,17 @@ def search_degree_modules(
 
 def fetch_course_details(
     number: str | int,
-    version: int,
+    version: Optional[int] = None,
     timeout: int = 15,
     *,
     preferred_term: Optional[str] = None,
 ) -> MosesModuleData:
     session = _MosesSession(timeout=timeout)
+    fallback_version = int(version) if version is not None else _latest_course_version(session, str(number))
     resolved_version = _resolve_version_for_term(
         session,
         str(number),
-        int(version),
+        fallback_version,
         preferred_term=preferred_term,
     )
     detail_url = _canonical_detail_url(str(number), resolved_version)
@@ -334,6 +686,145 @@ def fetch_course_details(
     )
     _apply_catalog_fallbacks_from_same_module_versions(session, data, preferred_term=preferred_term)
     return data
+
+
+def fetch_course_details_for_query(
+    module_query: str,
+    version: Optional[int] = None,
+    timeout: int = 15,
+    *,
+    preferred_term: Optional[str] = None,
+) -> MosesResolvedModuleDetails:
+    query = _clean_ws(module_query)
+    if not query:
+        raise ValueError("No module query was provided.")
+
+    session = _MosesSession(timeout=timeout)
+    requested_version = int(version) if version is not None else None
+    parsed = parse_number_version_from_url(query)
+    if parsed:
+        number, parsed_version = parsed
+        fallback = requested_version if requested_version is not None else parsed_version
+        data = _fetch_course_details_with_session(
+            session,
+            number,
+            fallback,
+            preferred_term=preferred_term,
+        )
+        return MosesResolvedModuleDetails(
+            data=data,
+            resolution=_module_resolution_label(requested_version, preferred_term, data.version, fallback),
+            requested_query=query,
+            requested_version=requested_version,
+            requested_term=preferred_term,
+        )
+
+    parsed_number = parse_module_number_from_url(query)
+    if parsed_number:
+        fallback = requested_version if requested_version is not None else _latest_course_version(session, parsed_number)
+        data = _fetch_course_details_with_session(
+            session,
+            parsed_number,
+            fallback,
+            preferred_term=preferred_term,
+        )
+        return MosesResolvedModuleDetails(
+            data=data,
+            resolution=_module_resolution_label(requested_version, preferred_term, data.version, fallback),
+            requested_query=query,
+            requested_version=requested_version,
+            requested_term=preferred_term,
+        )
+
+    if query.isdigit():
+        fallback = requested_version if requested_version is not None else _latest_course_version(session, query)
+        data = _fetch_course_details_with_session(
+            session,
+            query,
+            fallback,
+            preferred_term=preferred_term,
+        )
+        return MosesResolvedModuleDetails(
+            data=data,
+            resolution=_module_resolution_label(requested_version, preferred_term, data.version, fallback),
+            requested_query=query,
+            requested_version=requested_version,
+            requested_term=preferred_term,
+        )
+
+    matches = _search_courses(session, query, max_results=10, filters=None)
+    match = _pick_conservative_search_match(query, matches)
+    if match is None:
+        if not matches:
+            raise ValueError(f"No Moses module matched `{module_query}`.")
+        candidates = "; ".join(f"{item.title} ({item.number} v{item.version})" for item in matches[:5])
+        raise ValueError(f"Ambiguous module query `{module_query}`. Matching modules: {candidates}. Use `search_modules` first or pass the module number.")
+
+    fallback = requested_version if requested_version is not None else match.version
+    data = _fetch_course_details_with_session(
+        session,
+        match.number,
+        fallback,
+        preferred_term=preferred_term,
+    )
+    return MosesResolvedModuleDetails(
+        data=data,
+        resolution=f"title match `{match.title}`; " + _module_resolution_label(requested_version, preferred_term, data.version, fallback),
+        requested_query=query,
+        requested_version=requested_version,
+        requested_term=preferred_term,
+    )
+
+
+def _fetch_course_details_with_session(
+    session: _MosesSession,
+    number: str | int,
+    fallback_version: int,
+    *,
+    preferred_term: Optional[str],
+) -> MosesModuleData:
+    resolved_version = _resolve_version_for_term(
+        session,
+        str(number),
+        int(fallback_version),
+        preferred_term=preferred_term,
+    )
+    detail_url = _canonical_detail_url(str(number), resolved_version)
+    html, final_url = session.get(detail_url)
+    data = _parse_course_details_html(
+        session=session,
+        html=html,
+        detail_url=detail_url,
+        fetched_url=final_url,
+        preferred_term=preferred_term,
+    )
+    _apply_catalog_fallbacks_from_same_module_versions(session, data, preferred_term=preferred_term)
+    return data
+
+
+def _latest_course_version(session: _MosesSession, number: str | int) -> int:
+    html, _ = session.get(_canonical_overview_url(str(number)))
+    versions = _parse_course_version_ranges(html, str(number))
+    if not versions:
+        raise ValueError(f"Could not determine latest MOSES version for module `{number}`.")
+    return max(versions, key=lambda item: item.version).version
+
+
+def _module_resolution_label(
+    requested_version: Optional[int],
+    preferred_term: Optional[str],
+    resolved_version: int,
+    fallback_version: int,
+) -> str:
+    if preferred_term:
+        if resolved_version != fallback_version:
+            return f"term-resolved version {resolved_version} for {preferred_term}"
+        if requested_version is not None:
+            return f"explicit version {requested_version}; no better term-specific version found for {preferred_term}"
+        return f"newest version {resolved_version}; no older term-specific version found for {preferred_term}"
+    if requested_version is not None:
+        return f"explicit version {requested_version}"
+    return f"newest version {resolved_version}"
 
 
 def fetch_course_details_from_url(
@@ -650,6 +1141,15 @@ def parse_number_version_from_url(url: str) -> Optional[tuple[str, int]]:
         return None
 
 
+def parse_module_number_from_url(url: str) -> Optional[str]:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    number = query.get("nummer") or query.get("number")
+    return str(number[0]) if number and str(number[0]).strip() else None
+
+
 def _fetch_module_moses_data(module: Module, timeout: int = 15) -> MosesModuleData:
     if module.moses_number and module.moses_version is not None:
         return fetch_course_details(module.moses_number, module.moses_version, timeout=timeout, preferred_term=module.term)
@@ -855,9 +1355,10 @@ def _resolve_degree_program(session: _MosesSession, degree_query: str) -> MosesD
     if query.isdigit():
         return _degree_program_from_url(_degree_program_url_from_id(query))
 
+    search_query, inferred_degree_type = _degree_query_without_degree_type(query)
     seen: set[str] = set()
     candidates: list[MosesDegreeProgramSearchResult] = []
-    for variant in _degree_program_query_variants(query):
+    for variant in _degree_program_query_variants(search_query or query):
         if not variant or variant.lower() in seen:
             continue
         seen.add(variant.lower())
@@ -866,10 +1367,11 @@ def _resolve_degree_program(session: _MosesSession, degree_query: str) -> MosesD
             for result in _search_degree_programs(
                 session,
                 variant,
-                degree_type=None,
+                degree_type=inferred_degree_type,
                 provider=None,
                 max_results=10,
             )
+            if (not inferred_degree_type or _degree_type_matches(inferred_degree_type, result.degree_type))
             if result.degree_id not in {existing.degree_id for existing in candidates}
         )
         match = _best_degree_program_match(query, candidates)
@@ -911,6 +1413,33 @@ def _best_degree_program_match(
     if len(candidates) == 1:
         return candidates[0]
     return None
+
+
+def _degree_query_without_degree_type(query: str) -> tuple[str, Optional[str]]:
+    cleaned = _clean_ws(query)
+    inferred_type: Optional[str] = None
+    patterns = [
+        (r"(?<![A-Za-z])(?:m\s*\.?\s*sc\.?|msc|master(?:\s+of\s+science)?)(?![A-Za-z])", "Master of Science"),
+        (r"(?<![A-Za-z])(?:b\s*\.?\s*sc\.?|bsc|bachelor(?:\s+of\s+science)?)(?![A-Za-z])", "Bachelor of Science"),
+    ]
+    for pattern, degree_type in patterns:
+        if re.search(pattern, cleaned, flags=re.I):
+            inferred_type = degree_type
+            cleaned = re.sub(pattern, " ", cleaned, flags=re.I)
+            break
+    cleaned = re.sub(r"\(\s*[\W_]*\s*\)", " ", cleaned)
+    cleaned = _clean_ws(cleaned).strip(" -–,().")
+    return cleaned, inferred_type
+
+
+def _degree_type_matches(desired: str, actual: Optional[str]) -> bool:
+    desired_key = _normalize_key(desired)
+    actual_key = _normalize_key(actual or "")
+    if not desired_key:
+        return True
+    if not actual_key:
+        return False
+    return desired_key == actual_key or desired_key in actual_key or actual_key in desired_key
 
 
 def _degree_program_from_url(url: str, *, title: Optional[str] = None) -> MosesDegreeProgramSearchResult:
@@ -1052,7 +1581,37 @@ def _resolve_degree_area(areas: list[MosesDegreeProgramArea], area_query: str) -
     if contains:
         raise ValueError(f"Ambiguous area query `{area_query}`. Matching areas: {_format_degree_area_candidates(contains)}.")
 
+    alias_matches = _degree_area_alias_matches(normalized_query, areas)
+    if len(alias_matches) == 1:
+        return alias_matches[0]
+    if alias_matches:
+        raise ValueError(f"Ambiguous area query `{area_query}`. Matching areas: {_format_degree_area_candidates(alias_matches)}.")
+
     raise ValueError(f"No degree area matched `{area_query}`. Available areas: {_format_degree_area_candidates(areas[:10])}.")
+
+
+def _degree_area_alias_matches(
+    normalized_query: str,
+    areas: list[MosesDegreeProgramArea],
+) -> list[MosesDegreeProgramArea]:
+    if normalized_query in {"wahlpflicht", "wahlpflichtbereich", "elective", "electives", "electivearea"}:
+        return [
+            area
+            for area in areas
+            if "wahlpflicht" in _normalize_key(area.label) or "elective" in _normalize_key(area.label)
+        ]
+    if normalized_query in {"pflicht", "pflichtbereich", "mandatory", "compulsory", "required"}:
+        return [
+            area
+            for area in areas
+            if (
+                _normalize_key(area.label).startswith("pflicht")
+                or "mandatory" in _normalize_key(area.label)
+                or "compulsory" in _normalize_key(area.label)
+                or "required" in _normalize_key(area.label)
+            )
+        ]
+    return []
 
 
 def _format_degree_area_candidates(areas: Iterable[MosesDegreeProgramArea]) -> str:
@@ -1512,6 +2071,45 @@ def _degree_module_matches(query: str, module: MosesDegreeProgramModule) -> bool
         return True
     tokens = [token.lower() for token in re.findall(r"[A-Za-zÄÖÜäöüß0-9+#.-]+", normalized_query) if len(token) >= 3]
     return bool(tokens) and all(token in haystack for token in tokens)
+
+
+def _degree_module_matches_filters(module: MosesDegreeProgramModule, filters: MosesCourseSearchFilters) -> bool:
+    if filters.credits is not None and module.credits != filters.credits:
+        return False
+    if filters.min_credits is not None and (module.credits is None or module.credits < filters.min_credits):
+        return False
+    if filters.max_credits is not None and (module.credits is None or module.credits > filters.max_credits):
+        return False
+    if filters.grading != "any":
+        grading_key = _normalize_key(module.grading_mode or "")
+        if filters.grading == "graded" and "unbenotet" in grading_key:
+            return False
+        if filters.grading == "ungraded" and "unbenotet" not in grading_key:
+            return False
+    if filters.exam_type and _normalize_key(filters.exam_type) not in _normalize_key(module.exam_type or ""):
+        aliases = _exam_type_option_labels(filters.exam_type)
+        if not any(_normalize_key(alias) in _normalize_key(module.exam_type or "") for alias in aliases):
+            return False
+    offering = _module_search_offering_filter(filters)
+    if offering and not _cycle_matches_offering(module.cycle, offering):
+        return False
+    return True
+
+
+def _cycle_matches_offering(cycle: Optional[str], offering: str) -> bool:
+    if not cycle:
+        return True
+    normalized_cycle = _normalize_key(cycle)
+    normalized_offering = _normalize_key(offering)
+    winter = any(token in normalized_cycle for token in ("wise", "winter", "ws"))
+    summer = any(token in normalized_cycle for token in ("sose", "sommer", "summer", "ss"))
+    if normalized_offering in {"ws", "wise", "winter", "wintersemester"}:
+        return winter
+    if normalized_offering in {"ss", "sose", "sommer", "summer", "sommersemester", "summersemester"}:
+        return summer
+    if normalized_offering in {"both", "wsss", "wsundss", "winterundsommersemester"}:
+        return winter and summer
+    return True
 
 
 def _degree_program_url_from_id(degree_id: str | int) -> str:

@@ -21,6 +21,11 @@ def test_build_term_label_formats_canonical_ws_and_ss_labels() -> None:
 def test_canonical_term_label_normalizes_parseable_inputs() -> None:
     assert canonical_term_label("ws2026") == "WS 26/27"
     assert canonical_term_label("SS2027") == "SS 27"
+    assert canonical_term_label("WiSe 2019/2020") == "WS 19/20"
+    assert canonical_term_label("Wintersemester 2019") == "WS 19/20"
+    assert canonical_term_label("winter semester 2019") == "WS 19/20"
+    assert canonical_term_label("SoSe 2026") == "SS 26"
+    assert canonical_term_label("summer semester 2026") == "SS 26"
     assert canonical_term_label("Later") is None
 
 

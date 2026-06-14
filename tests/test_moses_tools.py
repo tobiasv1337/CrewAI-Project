@@ -21,10 +21,11 @@ from crew.tools import moses_tools
 def test_search_modules_tries_cleaned_variants_for_sentence_query(monkeypatch):
     calls: list[str] = []
 
-    def fake_search(query: str, max_results: int, timeout: int):
+    def fake_search(query: str, max_results: int, timeout: int, filters=None):
         calls.append(query)
         assert max_results == 10
         assert timeout == moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS
+        assert filters is not None
         if query == "Machine Learning":
             return [
                 MosesSearchResult(
@@ -75,8 +76,9 @@ def test_search_modules_deduplicates_results_and_clamps_limit(monkeypatch):
         detail_url="https://example.test/moses?nummer=40966&version=2",
     )
 
-    def fake_search(query: str, max_results: int, timeout: int):
+    def fake_search(query: str, max_results: int, timeout: int, filters=None):
         del timeout
+        assert filters is not None
         calls.append((query, max_results))
         return [duplicate, duplicate]
 
@@ -87,6 +89,57 @@ def test_search_modules_deduplicates_results_and_clamps_limit(monkeypatch):
     assert calls[0] == ("Machine Learning", moses_tools.MAX_SEARCH_RESULTS)
     assert all(limit == moses_tools.MAX_SEARCH_RESULTS for _, limit in calls)
     assert output.count("## 1. Machine Learning 1") == 1
+
+
+def test_search_modules_passes_normalized_filters(monkeypatch):
+    captured_filters = []
+
+    def fake_search(query: str, max_results: int, timeout: int, filters=None):
+        del query, max_results, timeout
+        captured_filters.append(filters)
+        return [
+            MosesSearchResult(
+                number="41117",
+                version=1,
+                title="Adversarial Machine Learning",
+                detail_url="https://example.test/module",
+                languages=["English"],
+                credits=6,
+                grading_mode="Benotet",
+            )
+        ]
+
+    monkeypatch.setattr(moses_tools.moses_provider, "search_courses", fake_search)
+
+    output = moses_tools.search_modules(
+        "Machine Learning",
+        term="winter semester 2025",
+        offered_in="winter",
+        language="English",
+        credits=6,
+        grading="graded",
+        exam_type="portfolio",
+        course_type="project",
+        course_language="Englisch",
+    )
+
+    filters = captured_filters[0]
+    assert filters.term == "winter semester 2025"
+    assert filters.offered_in == "WS"
+    assert filters.language == "en"
+    assert filters.credits == 6
+    assert filters.grading == "graded"
+    assert filters.exam_type == "portfolio"
+    assert filters.course_type == "project"
+    assert filters.course_language == "en"
+    assert "## Active filters" in output
+
+
+def test_search_modules_rejects_ambiguous_credit_filters():
+    output = moses_tools.search_modules("project", credits=6, min_credits=3)
+
+    assert "Invalid MOSES module search filters" in output
+    assert "Use either `credits`" in output
 
 
 def test_get_module_details_formats_llm_readable_summary(monkeypatch):
@@ -122,11 +175,17 @@ def test_get_module_details_formats_llm_readable_summary(monkeypatch):
     )
     calls = []
 
-    def fake_fetch(module_number: str, version: int, timeout: int, preferred_term: str | None = None):
-        calls.append((module_number, version, timeout, preferred_term))
-        return data
+    def fake_fetch(module_query: str, version: int | None, timeout: int, preferred_term: str | None = None):
+        calls.append((module_query, version, timeout, preferred_term))
+        return moses_tools.moses_provider.MosesResolvedModuleDetails(
+            data=data,
+            resolution="term-resolved version 2 for WS 25/26",
+            requested_query=module_query,
+            requested_version=version,
+            requested_term=preferred_term,
+        )
 
-    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details", fake_fetch)
+    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details_for_query", fake_fetch)
     monkeypatch.setattr(
         moses_tools.moses_provider,
         "build_moses_description",
@@ -138,6 +197,7 @@ def test_get_module_details_formats_llm_readable_summary(monkeypatch):
     assert calls == [("40966", 2, moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS, "WS 25/26")]
     assert "# Machine Learning 1" in output
     assert "- Moses module: `40966` version `2`" in output
+    assert "- Version selection: term-resolved version 2 for WS 25/26" in output
     assert "- Credits: 6 LP" in output
     assert "## Module elements" in output
     assert "type: VL" in output
@@ -169,7 +229,17 @@ def test_get_module_catalogs_lists_all_programs_and_fallbacks(monkeypatch):
         },
     )
 
-    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details", lambda *args, **kwargs: data)
+    monkeypatch.setattr(
+        moses_tools.moses_provider,
+        "fetch_course_details_for_query",
+        lambda module_query, version=None, timeout=15, preferred_term=None: moses_tools.moses_provider.MosesResolvedModuleDetails(
+            data=data,
+            resolution="explicit version 5",
+            requested_query=module_query,
+            requested_version=version,
+            requested_term=preferred_term,
+        ),
+    )
 
     output = moses_tools.get_module_catalogs("50367", 5)
 
@@ -194,11 +264,17 @@ def test_get_module_catalogs_can_filter_to_one_program(monkeypatch):
     )
     calls = []
 
-    def fake_fetch(module_number: str, version: int, timeout: int, preferred_term: str | None = None):
-        calls.append((module_number, version, timeout, preferred_term))
-        return data
+    def fake_fetch(module_query: str, version: int | None, timeout: int, preferred_term: str | None = None):
+        calls.append((module_query, version, timeout, preferred_term))
+        return moses_tools.moses_provider.MosesResolvedModuleDetails(
+            data=data,
+            resolution="term-resolved version 5 for SS 26",
+            requested_query=module_query,
+            requested_version=version,
+            requested_term=preferred_term,
+        )
 
-    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details", fake_fetch)
+    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details_for_query", fake_fetch)
 
     output = moses_tools.get_module_catalogs(
         "50367",
@@ -224,7 +300,17 @@ def test_get_module_catalogs_reports_missing_program_with_known_options(monkeypa
         },
     )
 
-    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details", lambda *args, **kwargs: data)
+    monkeypatch.setattr(
+        moses_tools.moses_provider,
+        "fetch_course_details_for_query",
+        lambda module_query, version=None, timeout=15, preferred_term=None: moses_tools.moses_provider.MosesResolvedModuleDetails(
+            data=data,
+            resolution="newest version 5",
+            requested_query=module_query,
+            requested_version=version,
+            requested_term=preferred_term,
+        ),
+    )
 
     output = moses_tools.get_module_catalogs("50367", 5, program_key="Unknown Program")
 
@@ -236,7 +322,7 @@ def test_lookup_errors_are_returned_as_strings(monkeypatch):
     def fail_fetch(*args, **kwargs):
         raise RuntimeError("network unavailable")
 
-    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details", fail_fetch)
+    monkeypatch.setattr(moses_tools.moses_provider, "fetch_course_details_for_query", fail_fetch)
 
     details = moses_tools.get_module_details("40966", 2)
     catalogs = moses_tools.get_module_catalogs("40966", 2)
@@ -245,6 +331,16 @@ def test_lookup_errors_are_returned_as_strings(monkeypatch):
     assert "network unavailable" in details
     assert "MOSES catalog lookup failed" in catalogs
     assert "network unavailable" in catalogs
+
+
+def test_moses_tools_expose_crewai_schema_descriptions():
+    names = [tool.name for tool in moses_tools.MOSES_TOOLS]
+    schema = moses_tools.SearchModulesInput.model_json_schema()
+
+    assert "Search TU Berlin MOSES Modules" in names
+    assert {"any", "WS", "SS", "WS&SS", "winter semester", "Sommersemester"} <= set(schema["properties"]["offered_in"]["enum"])
+    assert "winter semester 2019" in schema["properties"]["term"]["description"]
+    assert "Minimum LP" in schema["properties"]["min_credits"]["description"]
 
 
 def test_search_degree_programs_formats_next_call(monkeypatch):
@@ -331,18 +427,20 @@ def test_get_degree_area_modules_formats_module_rows(monkeypatch):
     )
     calls = []
 
-    def fake_fetch(degree_query: str, area_query: str, term: str | None, timeout: int):
-        calls.append((degree_query, area_query, term, timeout))
+    def fake_fetch(degree_query: str, area_query: str, term: str | None, filters, timeout: int):
+        calls.append((degree_query, area_query, term, filters, timeout))
         return area_modules
 
     monkeypatch.setattr(moses_tools.moses_provider, "fetch_degree_area_modules", fake_fetch)
 
     output = moses_tools.get_degree_area_modules("Technische Informatik", "Pflichtbereich", max_modules=10)
 
-    assert calls == [("Technische Informatik", "Pflichtbereich", None, moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS)]
+    assert len(calls) == 1
+    assert calls[0][0:3] == ("Technische Informatik", "Pflichtbereich", None)
+    assert calls[0][4] == moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS
     assert "# Degree modules: Technische Informatik / Pflichtbereich" in output
     assert "Moses module: `40022` version `11`" in output
-    assert "Suggested next call: `get_module_details(module_number=\"40022\", version=11)`" in output
+    assert "Suggested next call: `get_module_details(module_query=\"40022\")`" in output
     assert "timeout" not in inspect.signature(moses_tools.get_degree_area_modules).parameters
 
 

@@ -257,6 +257,67 @@ class TestMosesIntegration(unittest.TestCase):
         self.assertEqual(result.short_name, "TI")
         self.assertEqual(result.provider, "Fakultät IV")
 
+    def test_degree_program_query_infers_degree_type(self):
+        self.assertEqual(
+            moses._degree_query_without_degree_type("Computer Science Master"),
+            ("Computer Science", "Master of Science"),
+        )
+        self.assertEqual(
+            moses._degree_query_without_degree_type("Computer Science (M. Sc.)"),
+            ("Computer Science", "Master of Science"),
+        )
+        self.assertEqual(
+            moses._degree_query_without_degree_type("Informatik Bachelor"),
+            ("Informatik", "Bachelor of Science"),
+        )
+
+    def test_search_degree_programs_uses_inferred_master_degree_type(self):
+        master = MosesDegreeProgramSearchResult(
+            degree_id="179",
+            title="Computer Science (Informatik)",
+            detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=179",
+            degree_type="Master of Science",
+        )
+        bachelor = MosesDegreeProgramSearchResult(
+            degree_id="31",
+            title="Informatik",
+            detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=31",
+            degree_type="Bachelor of Science",
+        )
+        calls = []
+
+        def fake_search(_session, query, *, degree_type, provider, max_results):
+            calls.append((query, degree_type, provider, max_results))
+            return [master, bachelor] if query == "Computer Science" else []
+
+        with patch("core.providers.tu_berlin.moses._search_degree_programs", side_effect=fake_search):
+            results = moses.search_degree_programs("Computer Science Master", max_results=5)
+
+        self.assertEqual([result.degree_id for result in results], ["179"])
+        self.assertEqual(calls[0], ("Computer Science", "Master of Science", None, 5))
+
+    def test_resolve_degree_program_uses_inferred_master_degree_type(self):
+        master = MosesDegreeProgramSearchResult(
+            degree_id="179",
+            title="Computer Science (Informatik)",
+            detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=179",
+            degree_type="Master of Science",
+        )
+        bachelor = MosesDegreeProgramSearchResult(
+            degree_id="31",
+            title="Informatik",
+            detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=31",
+            degree_type="Bachelor of Science",
+        )
+
+        def fake_search(_session, query, *, degree_type, provider, max_results):
+            return [master, bachelor] if query == "Computer Science" else []
+
+        with patch("core.providers.tu_berlin.moses._search_degree_programs", side_effect=fake_search):
+            result = moses._resolve_degree_program(moses._MosesSession(timeout=1), "Computer Science Master")
+
+        self.assertEqual(result.degree_id, "179")
+
     def test_section_text_after_heading_falls_back_to_heading_wrapper_siblings(self):
         html = """
         <div class="col-xs-12"><h3>Lernergebnisse</h3></div>
@@ -1155,6 +1216,42 @@ class TestMosesIntegration(unittest.TestCase):
         )
         self.assertTrue(session.urls[0].endswith("number=70348&sprache=en"))
 
+    def test_latest_course_version_uses_overview_versions(self):
+        overview_html = """
+        <table>
+          <thead><tr><th>Gültig ab</th><th>Gültig bis einschl.</th><th></th></tr></thead>
+          <tbody>
+            <tr><td>WiSe 2025/26</td><td>offen</td><td><a href="/moses/modultransfersystem/bolognamodule/beschreibung/anzeigen.html?nummer=70348&amp;version=6">Details</a></td></tr>
+            <tr><td>SoSe 2024</td><td>SoSe 2025</td><td><a href="/moses/modultransfersystem/bolognamodule/beschreibung/anzeigen.html?nummer=70348&amp;version=5">Details</a></td></tr>
+          </tbody>
+        </table>
+        """
+
+        self.assertEqual(moses._latest_course_version(_OverviewSession(overview_html), "70348"), 6)
+
+    def test_module_search_filter_control_helpers_parse_term_and_selects(self):
+        html = """
+        <span>
+          <label>Gültigkeit der Modulbeschreibung</label>
+          <select name="f:validity">
+            <option value="75">WiSe 2025/26</option>
+            <option value="63">WS 2019/20</option>
+          </select>
+          <label>Turnus</label>
+          <select name="f:turnus">
+            <option>Beliebig</option>
+            <option value="1">Sommersemester</option>
+            <option value="2">Wintersemester</option>
+          </select>
+        </span>
+        """
+        controls = {}
+
+        self.assertTrue(moses._set_term_filter_control(html, controls, "winter semester 2019"))
+        self.assertEqual(controls["f:validity"], "63")
+        self.assertTrue(moses._set_select_filter_control(html, controls, ("Wintersemester",), select_index=1))
+        self.assertEqual(controls["f:turnus"], "2")
+
     def test_missing_historical_catalogs_fall_back_to_same_module_newer_version(self):
         master_key = "TU Berlin - Computer Science (M.Sc.)"
         data = MosesModuleData(
@@ -1432,6 +1529,26 @@ class TestMosesIntegration(unittest.TestCase):
         module_areas = moses._degree_module_areas_for_selection(areas, areas[2])
 
         self.assertEqual([area.area_key for area in module_areas], ["0_2_0", "0_2_1"])
+
+    def test_degree_area_resolver_maps_generic_wahlpflichtbereich_alias(self):
+        areas = [
+            MosesDegreeProgramArea(area_key="0", label="Modulliste SoSe 2026", subarea_count=2),
+            MosesDegreeProgramArea(area_key="0_0", label="Studiengebiete", subarea_count=6),
+            MosesDegreeProgramArea(area_key="0_1", label="Wahlpflicht Studiengebiete Fak. IV", subarea_count=6),
+        ]
+
+        area = moses._resolve_degree_area(areas, "Wahlpflichtbereich")
+
+        self.assertEqual(area.area_key, "0_1")
+
+    def test_degree_area_resolver_keeps_ambiguous_wahlpflicht_alias_explicit(self):
+        areas = [
+            MosesDegreeProgramArea(area_key="0_1", label="Wahlpflicht Studiengebiete Fak. IV", subarea_count=6),
+            MosesDegreeProgramArea(area_key="0_2", label="Wahlpflicht Vertiefung", subarea_count=2),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "Ambiguous area query"):
+            moses._resolve_degree_area(areas, "Wahlpflichtbereich")
 
     def test_pflichtbereich_degree_usage_suggests_bachelor_mandatory_area(self):
         bachelor_key = "TU Berlin - Technische Informatik (B.Sc.)"

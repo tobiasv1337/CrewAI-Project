@@ -23,7 +23,7 @@ def test_search_modules_tries_cleaned_variants_for_sentence_query(monkeypatch):
 
     def fake_search(query: str, max_results: int, timeout: int, filters=None):
         calls.append(query)
-        assert max_results == 10
+        assert max_results == 11
         assert timeout == moses_tools.DEFAULT_MOSES_TIMEOUT_SECONDS
         assert filters is not None
         if query == "Machine Learning":
@@ -86,9 +86,37 @@ def test_search_modules_deduplicates_results_and_clamps_limit(monkeypatch):
 
     output = moses_tools.search_modules("Machine Learning", max_results=99)
 
-    assert calls[0] == ("Machine Learning", moses_tools.MAX_SEARCH_RESULTS)
-    assert all(limit == moses_tools.MAX_SEARCH_RESULTS for _, limit in calls)
+    assert calls[0] == ("Machine Learning", moses_tools.MAX_SEARCH_RESULTS + 1)
+    assert all(limit == moses_tools.MAX_SEARCH_RESULTS + 1 for _, limit in calls)
     assert output.count("## 1. Machine Learning 1") == 1
+
+
+def test_search_modules_reports_when_results_are_capped(monkeypatch):
+    results = [
+        MosesSearchResult(
+            number=str(40000 + index),
+            version=1,
+            title=f"Einführung {index}",
+            detail_url=f"https://example.test/moses?nummer={40000 + index}&version=1",
+        )
+        for index in range(moses_tools.MAX_SEARCH_RESULTS + 1)
+    ]
+
+    def fake_search(query: str, max_results: int, timeout: int, filters=None):
+        del query, timeout, filters
+        return results[:max_results]
+
+    monkeypatch.setattr(moses_tools.moses_provider, "search_courses", fake_search)
+
+    output = moses_tools.search_modules("Einführung", max_results=99)
+
+    assert f"Found {moses_tools.MAX_SEARCH_RESULTS} module(s)." in output
+    assert (
+        f"Results capped to {moses_tools.MAX_SEARCH_RESULTS} out of at least {moses_tools.MAX_SEARCH_RESULTS + 1} matching results. "
+        "Use more specific search terms or filters to narrow the result set."
+    ) in output
+    assert f"## {moses_tools.MAX_SEARCH_RESULTS}. Einführung {moses_tools.MAX_SEARCH_RESULTS - 1}" in output
+    assert f"## {moses_tools.MAX_SEARCH_RESULTS + 1}. Einführung {moses_tools.MAX_SEARCH_RESULTS}" not in output
 
 
 def test_search_modules_passes_normalized_filters(monkeypatch):
@@ -340,6 +368,7 @@ def test_moses_tools_expose_crewai_schema_descriptions():
     assert "Search TU Berlin MOSES Modules" in names
     assert {"any", "WS", "SS", "WS&SS", "winter semester", "Sommersemester"} <= set(schema["properties"]["offered_in"]["enum"])
     assert "winter semester 2019" in schema["properties"]["term"]["description"]
+    assert "Absolute max: 50" in schema["properties"]["max_results"]["description"]
     assert "Minimum LP" in schema["properties"]["min_credits"]["description"]
 
 

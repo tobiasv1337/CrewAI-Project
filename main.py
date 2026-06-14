@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     search_parser = subparsers.add_parser("search-modules", help="Search global MOSES modules.")
     search_parser.add_argument("query", help='Topic, title, or module number, e.g. "Machine Learning".')
-    search_parser.add_argument("--max-results", type=int, default=10, help="Maximum results to print.")
+    search_parser.add_argument("--max-results", type=int, default=10, help="Maximum results to print; absolute max 50.")
     _add_term_argument(search_parser)
     _add_search_filter_arguments(search_parser, include_global=True)
     _set_runner(search_parser, _run_search_modules)
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     degree_search_parser = subparsers.add_parser("search-degree-programs", help="Search MOSES degree programs.")
     degree_search_parser.add_argument("query", help='Degree name, e.g. "Technische Informatik".')
-    degree_search_parser.add_argument("--max-results", type=int, default=10, help="Maximum results to print.")
+    degree_search_parser.add_argument("--max-results", type=int, default=10, help="Maximum results to print; absolute max 50.")
     _set_runner(degree_search_parser, _run_search_degree_programs)
 
     structure_parser = subparsers.add_parser("degree-structure", help="Show the Studiengangsaufbau for a degree.")
@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     degree_module_search_parser.add_argument("degree_query", help='Degree name, MOSES id, or URL, e.g. "Technische Informatik".')
     degree_module_search_parser.add_argument("query", help='Module keyword, e.g. "Dependable".')
     degree_module_search_parser.add_argument("--area-query", help="Optional area label/key to restrict the search.")
-    degree_module_search_parser.add_argument("--max-results", type=int, default=10, help="Maximum results to print.")
+    degree_module_search_parser.add_argument("--max-results", type=int, default=10, help="Maximum results to print; absolute max 50.")
     _add_term_argument(degree_module_search_parser)
     _add_search_filter_arguments(degree_module_search_parser, include_global=False)
     _set_runner(degree_module_search_parser, _run_search_degree_modules)
@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     all_parser.add_argument("--degree-query", default="Technische Informatik", help="Degree query for degree tools.")
     all_parser.add_argument("--area-query", default="Wahlpflichtbereich", help="Degree area query for area-module listing.")
     all_parser.add_argument("--degree-module-query", default="Dependable", help="Query for degree-specific module search.")
-    all_parser.add_argument("--max-results", type=int, default=3, help="Maximum search results in smoke output.")
+    all_parser.add_argument("--max-results", type=int, default=3, help="Maximum search results in smoke output; absolute max 50.")
     all_parser.add_argument("--max-modules", type=int, default=3, help="Maximum area modules in smoke output.")
     _add_term_argument(all_parser)
     _set_runner(all_parser, _run_all)

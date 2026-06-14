@@ -40,7 +40,7 @@ GradingFilter = Literal["any", "graded", "ungraded", "benotet", "unbenotet", "Be
 
 DEFAULT_MOSES_TIMEOUT_SECONDS = 15
 MAX_SEARCH_VARIANTS = 6
-MAX_SEARCH_RESULTS = 20
+MAX_SEARCH_RESULTS = 50
 
 _SEARCH_STOPWORDS = {
     "a",
@@ -169,6 +169,9 @@ def search_modules(
         return f"Invalid MOSES module search filters: {exc}"
 
     safe_limit = _clamp_max_results(max_results)
+    fetch_limit = safe_limit + 1
+    if filters.has_filters():
+        fetch_limit = max(fetch_limit, MAX_SEARCH_RESULTS + 1)
     variants = _search_query_variants(normalized_query)
     results: list[MosesSearchResult] = []
     seen: set[tuple[str, int]] = set()
@@ -178,7 +181,7 @@ def search_modules(
         try:
             variant_results = moses_provider.search_courses(
                 variant,
-                max_results=MAX_SEARCH_RESULTS if filters.has_filters() else safe_limit,
+                max_results=fetch_limit,
                 timeout=DEFAULT_MOSES_TIMEOUT_SECONDS,
                 filters=filters,
             )
@@ -191,9 +194,9 @@ def search_modules(
                 continue
             seen.add(key)
             results.append(result)
-            if len(results) >= safe_limit:
+            if len(results) >= fetch_limit:
                 break
-        if len(results) >= safe_limit:
+        if len(results) >= fetch_limit:
             break
 
     lines = [
@@ -219,13 +222,21 @@ def search_modules(
             lines.extend(["", "Search errors:", *_bullet_lines(errors)])
         return "\n".join(lines)
 
-    lines.append(f"Found {len(results)} module(s).")
+    displayed_results = results[:safe_limit]
+    was_capped = len(results) > safe_limit
+
+    lines.append(f"Found {len(displayed_results)} module(s).")
+    if was_capped:
+        lines.append(
+            f"Results capped to {len(displayed_results)} out of at least {len(results)} matching results. "
+            "Use more specific search terms or filters to narrow the result set."
+        )
     lines.append("")
     lines.append("Suggested next step: use `get_module_details(module_query=\"...\")` for contents, prerequisites, exams, and workload.")
     lines.append("Suggested next step: use `get_module_catalogs(module_query=\"...\")` to check degree/catalog fit.")
     lines.append("")
 
-    for index, result in enumerate(results, start=1):
+    for index, result in enumerate(displayed_results, start=1):
         credits = _format_credits(result.credits)
         languages = _format_list(result.languages)
         lines.extend(
@@ -1038,7 +1049,7 @@ CREDITS_DESCRIPTION = "Exact LP/ECTS credits. Do not combine with min_credits or
 
 class SearchModulesInput(BaseModel):
     query: str = Field(..., description="Short module keyword, topic, title, or module number, e.g. Machine Learning, project, Security, 40966.")
-    max_results: int = Field(default=10, description="Maximum results to return, capped internally.")
+    max_results: int = Field(default=10, description=f"Maximum results to return. Absolute max: {MAX_SEARCH_RESULTS}.")
     term: str | None = Field(default=None, description=TERM_DESCRIPTION)
     offered_in: OfferingFilter = Field(default="any", description=OFFERING_DESCRIPTION)
     language: LanguageFilter = Field(default="any", description=LANGUAGE_DESCRIPTION)
@@ -1067,7 +1078,7 @@ class ModuleCatalogsInput(ModuleDetailsInput):
 
 class SearchDegreeProgramsInput(BaseModel):
     query: str = Field(..., description="Degree name, e.g. Technische Informatik, Computer Science, Medieninformatik.")
-    max_results: int = Field(default=10, description="Maximum degree programs to return.")
+    max_results: int = Field(default=10, description=f"Maximum degree programs to return. Absolute max: {MAX_SEARCH_RESULTS}.")
 
 
 class DegreeStructureInput(BaseModel):
@@ -1095,7 +1106,7 @@ class SearchDegreeModulesInput(DegreeStructureInput):
     max_credits: float | None = Field(default=None, description="Maximum LP/ECTS credits.")
     grading: GradingFilter = Field(default="any", description=GRADING_DESCRIPTION)
     exam_type: str | None = Field(default=None, description="Exam type keyword, e.g. written, oral, portfolio, Klausur, Portfolioprüfung.")
-    max_results: int = Field(default=10, description="Maximum modules to return.")
+    max_results: int = Field(default=10, description=f"Maximum modules to return. Absolute max: {MAX_SEARCH_RESULTS}.")
 
 
 class SearchTUBerlinMosesModulesTool(BaseTool):

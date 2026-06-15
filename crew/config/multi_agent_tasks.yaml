@@ -1,7 +1,10 @@
 study_assistant_task:
   description: >
     Answer the student's request by coordinating the available specialist
-    agents.
+    agents. You operate as an iterative, self-correcting orchestrator: you
+    plan your delegation sequence, gather data, then review what you received
+    before producing a final answer. If your review reveals gaps, wrong scope,
+    or stale assumptions, you correct course and re-delegate.
 
     Student request:
     {query}
@@ -12,43 +15,109 @@ study_assistant_task:
     Structured MOSES-to-ISIS handoff context, if available:
     {isis_context}
 
+
+    === PHASE 1 — PLAN (before ANY delegation) ===
+
+    Before delegating to anyone, explicitly think through:
+    1. Which specialists are needed for this request? (Study Advisor / MOSES
+       Researcher / ISIS Specialist — only the ones actually required)
+    2. What order must they run in? Identify data dependencies:
+       - If ISIS or MOSES need to know which courses the student is currently
+         taking, the Study Advisor MUST go first.
+       - If MOSES needs to look up specific modules, the Study Advisor MUST
+         go first to supply MOSES IDs.
+       - Independent lookups (e.g., pure catalog search, pure degree-check)
+         can run in parallel.
+    3. What exact context will you pass to each specialist?
+
+
+    === PHASE 2 — GATHER (execute in dependency order) ===
+
     Delegation rules:
     - Delegate Grade Manager progress, completed/planned modules, open
-      requirements, module-fit checks, and any study-plan write request to the
-      Study Advisor.
+      requirements, module-fit checks, and any study-plan write request to
+      the Study Advisor.
     - Delegate broad module discovery, module details, MOSES degree structure,
       catalog assignments, teaching terms, prerequisites, and exam information
       to the MOSES Module Researcher.
     - Delegate ISIS/Moodle questions about enrolled courses, assignments,
       deadlines, announcements, forums, grades, materials, assessments, or
       calendar dates to the ISIS Course Information Specialist.
-    - For "what should I take next semester?" or similar planning questions,
-      ask the Study Advisor for the student's current progress and open
-      requirements first. If concrete module recommendations are needed, pass
-      the Study Advisor's constraints and avoid-list to the MOSES Module
-      Researcher. Use ISIS only when the student asks for Moodle/current-course
-      details or practical course information beyond MOSES.
-    - For pure MOSES questions, use only the MOSES Module Researcher.
-    - For pure ISIS questions, use only the ISIS Course Information Specialist.
-    - For pure progress or degree-requirement questions, use only the Study
-      Advisor.
-    - The Study Advisor is the only specialist with Grade Manager write tools.
-      Do not ask for a write unless the latest student request explicitly
-      confirms the exact module, term, and needed classification. Do not claim
-      anything was added unless the Study Advisor reports a successful write.
-    - Keep source boundaries explicit. Do not let MOSES facts stand in for ISIS
-      facts, or ISIS course titles stand in for MOSES module/catalog facts.
-    - If specialists report ambiguity, missing credentials, missing profile
-      data, or access limitations, surface that clearly and ask for the
-      smallest missing discriminator.
+
+    Hard sequencing rules:
+    - RULE A — ISIS needs Grade Manager course list first.
+      Any request touching current-semester courses, workload, deadlines, or
+      assignments REQUIRES the Study Advisor to run first. Extract from its
+      output the list of modules that are In Progress or Planned for the
+      current term (with their MOSES IDs). Then pass that list explicitly
+      to the ISIS Specialist as its scope. The ISIS Specialist MUST only
+      investigate those named courses — not derive the list from ISIS
+      enrollment. ISIS enrollment includes past courses, exam-access
+      enrollments, and auxiliary courses; it is NOT the student's current
+      active course selection.
+    - RULE B — MOSES needs module IDs from Grade Manager.
+      When asking MOSES about difficulty, workload, exam details, or catalog
+      fit for courses the student is taking, include the MOSES module numbers
+      from the Study Advisor's output so MOSES can look up real catalog data
+      instead of estimating from LP alone.
+    - RULE C — Study Advisor FIRST for any write.
+      Never confirm or execute a Grade Manager write without Study Advisor
+      explicitly reporting success.
+
+    Specialist boundaries:
+    - For pure MOSES catalog questions: only MOSES Researcher.
+    - For pure ISIS operational questions with known course IDs: only ISIS
+      Specialist.
+    - For pure progress/degree questions: only Study Advisor.
+    - Keep source boundaries explicit. MOSES facts ≠ ISIS facts ≠ Grade
+      Manager facts. Do not let one source substitute for another.
+
+
+    === PHASE 3 — REFLECT (mandatory review before answering) ===
+
+    After receiving specialist results, audit them:
+    - Did the ISIS Specialist work on the correct set of courses (the ones
+      from the Grade Manager, not raw ISIS enrollment)? If it investigated
+      courses not mentioned by the Study Advisor, those results are
+      unreliable — discard them and re-delegate ISIS with the correct scope.
+    - Did the MOSES Researcher use actual module IDs to look up real data,
+      or did it estimate? If it estimated, re-delegate with the MOSES IDs
+      from the Study Advisor output.
+    - Are there gaps? (e.g., a course the student is taking but ISIS did
+      not cover, or a degree requirement the student asked about but Study
+      Advisor did not address?) If yes, re-delegate the missing subtask.
+    - Did any specialist report ambiguity, missing credentials, or access
+      limits? Surface those clearly to the student.
+
+
+    === PHASE 4 — CORRECT (re-delegate if review found issues) ===
+
+    If Phase 3 found problems, issue corrective delegations:
+    - Re-delegate to ISIS with the correct Grade Manager course list in
+      the task context, explicitly stating which courses to investigate.
+    - Re-delegate to MOSES with the real module IDs.
+    - Ask Study Advisor follow-up questions if the initial output was
+      incomplete.
+    Then loop back to Phase 3 for another review pass.
+
+
+    === PHASE 5 — ANSWER (only when review passes) ===
+
+    Only produce the final answer once Phase 3 finds no remaining gaps or
+    scope errors. The answer must:
+    - Directly address the student request.
+    - Cite which specialist provided each piece of information.
+    - Distinguish completed, in-progress, and planned coverage.
+    - Include concrete next steps and, for time-sensitive items, explicit
+      dates and deadlines.
+    - List any required student confirmation or missing discriminator.
 
     Response language:
     - Reply in German when the student asks in German.
     - Otherwise reply in English.
   expected_output: >
     A concise markdown answer that directly addresses the student request.
-    Include the relevant specialist findings, clear source attribution when
-    multiple sources were used, concrete recommendations or next steps, and
-    any required user confirmation or missing discriminator. For planning
-    answers, distinguish completed requirements from currently planned or
-    in-progress coverage.
+    Each section is clearly attributed to its source (Grade Manager /
+    MOSES / ISIS). Concrete next steps with dates where available.
+    Any remaining open questions or required confirmations are listed
+    explicitly at the end.

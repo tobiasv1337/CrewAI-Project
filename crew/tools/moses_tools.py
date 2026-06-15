@@ -18,6 +18,7 @@ from core.models import (
     MosesSearchResult,
 )
 from core.providers.tu_berlin import moses as moses_provider
+from core.registry import list_programs
 
 
 TermSeason = Literal["WS", "SS", "WiSe", "SoSe", "winter", "summer"]
@@ -299,9 +300,10 @@ def get_module_catalogs(
         module_query: Moses module number, Moses URL, or exact module title.
             Examples: "40966", a Moses detail URL, or "Machine Learning 1".
         version: Optional advanced Moses version. Leave unset for newest.
-        program_key: Optional exact Grade Manager program key, for example
-            "TU Berlin - Computer Science (M.Sc.)". Leave empty to list all known
-            programs found in Moses.
+        program_key: Optional program filter. Accepts an exact Grade Manager
+            program key, a Moses degree id such as "234", a Moses degree URL,
+            or a degree title such as "Medientechnik (B.Sc.)". Leave empty to
+            list all known programs found in Moses.
         term: Optional study term such as "WS 19/20", "WiSe 2019/20",
             "winter semester 2019", "SS 26", or "SoSe 2026".
     """
@@ -587,11 +589,15 @@ def _format_module_catalogs(data: MosesModuleData, program_key: str | None, *, r
     fallback_by_program = data.catalog_fallbacks_by_program
 
     if program_key:
-        catalogs = catalogs_by_program.get(program_key, [])
-        lines.extend(["", f"## {program_key}"])
+        resolved_program_key = _resolve_catalog_program_key(data, program_key)
+        display_program_key = resolved_program_key or program_key
+        catalogs = catalogs_by_program.get(display_program_key, [])
+        lines.extend(["", f"## {display_program_key}"])
+        if resolved_program_key and resolved_program_key != program_key:
+            lines.append(f"- Program filter `{program_key}` resolved to `{resolved_program_key}`.")
         if catalogs:
             lines.extend(_catalog_lines(catalogs))
-            fallback = fallback_by_program.get(program_key)
+            fallback = fallback_by_program.get(display_program_key)
             if fallback:
                 lines.append(_format_fallback(fallback))
         else:
@@ -612,6 +618,82 @@ def _format_module_catalogs(data: MosesModuleData, program_key: str | None, *, r
             lines.append(_format_fallback(fallback))
 
     return "\n".join(lines).rstrip()
+
+
+def _resolve_catalog_program_key(data: MosesModuleData, program_query: str | None) -> str | None:
+    query = _optional_text(program_query)
+    if not query:
+        return None
+
+    aliases = _catalog_program_aliases(data)
+    query_token = _normalize_token(query)
+    if query_token in aliases:
+        return aliases[query_token]
+
+    degree_id = _degree_id_from_program_query(query)
+    if degree_id:
+        degree_alias = aliases.get(_normalize_token(degree_id))
+        if degree_alias:
+            return degree_alias
+
+    candidate_keys = _catalog_program_candidates(data)
+    contained = [
+        key
+        for key in candidate_keys
+        if query_token and query_token in _normalize_token(key)
+    ]
+    if len(contained) == 1:
+        return contained[0]
+    return None
+
+
+def _catalog_program_aliases(data: MosesModuleData) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+
+    for key in _catalog_program_candidates(data):
+        aliases[_normalize_token(key)] = key
+
+    for program_key, degree_url in getattr(moses_provider, "_DEGREE_CATALOG_URLS_BY_PROGRAM", {}).items():
+        aliases.setdefault(_normalize_token(program_key), program_key)
+        degree_id = moses_provider.parse_degree_program_id_from_url(degree_url)
+        if degree_id:
+            aliases.setdefault(_normalize_token(degree_id), program_key)
+            aliases.setdefault(_normalize_token(degree_url), program_key)
+
+    for usage in data.degree_usages:
+        matched_key = usage.matched_program_key
+        if not matched_key:
+            matched_key = aliases.get(_normalize_token(usage.degree_name))
+        if not matched_key:
+            continue
+        aliases.setdefault(_normalize_token(usage.degree_name), matched_key)
+        if usage.degree_url:
+            aliases.setdefault(_normalize_token(usage.degree_url), matched_key)
+            degree_id = moses_provider.parse_degree_program_id_from_url(usage.degree_url)
+            if degree_id:
+                aliases.setdefault(_normalize_token(degree_id), matched_key)
+
+    return aliases
+
+
+def _catalog_program_candidates(data: MosesModuleData) -> list[str]:
+    candidates: list[str] = []
+    for key in [
+        *data.normalized_catalogs_by_program.keys(),
+        *data.catalog_fallbacks_by_program.keys(),
+        *(usage.matched_program_key for usage in data.degree_usages if usage.matched_program_key),
+        *list_programs(),
+    ]:
+        if key and key not in candidates:
+            candidates.append(key)
+    return candidates
+
+
+def _degree_id_from_program_query(query: str) -> str | None:
+    parsed = moses_provider.parse_degree_program_id_from_url(query)
+    if parsed:
+        return parsed
+    return query if query.isdigit() else None
 
 
 def _format_degree_program_search_results(
@@ -1154,7 +1236,13 @@ class ModuleDetailsInput(MosesToolInput):
 
 
 class ModuleCatalogsInput(ModuleDetailsInput):
-    program_key: str | None = Field(default=None, description="Optional exact Grade Manager program key to filter catalog assignments.")
+    program_key: str | None = Field(
+        default=None,
+        description=(
+            "Optional program filter. Accepts an exact Grade Manager program key, "
+            "a Moses degree id such as 234, a Moses degree URL, or a degree title."
+        ),
+    )
 
 
 class SearchDegreeProgramsInput(MosesToolInput):

@@ -8,6 +8,7 @@ from core.models import (
     MosesDegreeProgramModule,
     MosesDegreeProgramSearchResult,
     MosesDegreeProgramStructure,
+    MosesDegreeUsage,
     MosesCatalogFallback,
     MosesExamElement,
     MosesIsisCandidate,
@@ -357,6 +358,77 @@ def test_get_module_catalogs_can_filter_to_one_program(monkeypatch):
     assert "Mensch-Maschine-Interaktion" in output
     assert "Computer Science" not in output
     assert "timeout" not in inspect.signature(moses_tools.get_module_catalogs).parameters
+
+
+def test_get_module_catalogs_accepts_moses_degree_id(monkeypatch):
+    data = MosesModuleData(
+        number="40282",
+        version=7,
+        title="Applied Computer Vision",
+        normalized_catalogs_by_program={
+            "TU Berlin - Medientechnik (B.Sc.)": ["Katalog Medientechnik"],
+            "TU Berlin - Technische Informatik (B.Sc.)": ["Medientechnik"],
+        },
+    )
+
+    monkeypatch.setattr(
+        moses_tools.moses_provider,
+        "fetch_course_details_for_query",
+        lambda module_query, version=None, timeout=15, preferred_term=None: moses_tools.moses_provider.MosesResolvedModuleDetails(
+            data=data,
+            resolution="explicit version 7",
+            requested_query=module_query,
+            requested_version=version,
+            requested_term=preferred_term,
+        ),
+    )
+
+    output = moses_tools.get_module_catalogs("40282", 7, program_key="234", term="SS 26")
+
+    assert "## TU Berlin - Medientechnik (B.Sc.)" in output
+    assert "Program filter `234` resolved to `TU Berlin - Medientechnik (B.Sc.)`" in output
+    assert "- Catalog: Katalog Medientechnik" in output
+    assert "Technische Informatik" not in output
+    assert "No normalized catalog assignments found" not in output
+
+
+def test_get_module_catalogs_accepts_moses_degree_url_from_usage(monkeypatch):
+    data = MosesModuleData(
+        number="40282",
+        version=7,
+        title="Applied Computer Vision",
+        normalized_catalogs_by_program={
+            "TU Berlin - Medientechnik (B.Sc.)": ["Katalog Medientechnik"],
+        },
+        degree_usages=[
+            MosesDegreeUsage(
+                degree_name="Medientechnik (B. Sc.)",
+                degree_url="https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/anzeigen.html?studiengang=234",
+                matched_program_key="TU Berlin - Medientechnik (B.Sc.)",
+            )
+        ],
+    )
+
+    monkeypatch.setattr(
+        moses_tools.moses_provider,
+        "fetch_course_details_for_query",
+        lambda module_query, version=None, timeout=15, preferred_term=None: moses_tools.moses_provider.MosesResolvedModuleDetails(
+            data=data,
+            resolution="explicit version 7",
+            requested_query=module_query,
+            requested_version=version,
+            requested_term=preferred_term,
+        ),
+    )
+
+    output = moses_tools.get_module_catalogs(
+        "40282",
+        7,
+        program_key="https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/anzeigen.html?studiengang=234",
+    )
+
+    assert "## TU Berlin - Medientechnik (B.Sc.)" in output
+    assert "- Catalog: Katalog Medientechnik" in output
 
 
 def test_get_module_catalogs_reports_missing_program_with_known_options(monkeypatch):

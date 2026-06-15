@@ -19,8 +19,6 @@ from ...rules import (
     ModuleTypeMatcher,
     NoDuplicateModuleRule,
     RequiredAreaRule,
-    TagMatcher,
-    TagMinCpRule,
     ThesisDeadlineRule,
     ThesisEligibilityRule,
 )
@@ -188,20 +186,6 @@ class TUBerlinTechnischeInformatikBachelor(DegreeStrategy):
 
         self._project_type = ModuleTypeMatcher(name="Project", keywords=["project", "pj"])
         self._seminar_type = ModuleTypeMatcher(name="Seminar", keywords=["seminar", "se"])
-        self._sustainability_tags = TagMatcher(
-            name="Sustainability / Society / Ethics",
-            keywords=[
-                "Sustainability",
-                "Ethics",
-                "Social",
-                "History",
-                "SDG",
-                "Nachhaltigkeit",
-                "Ethik",
-                "Gesellschaft",
-            ],
-        )
-
         self._rules = [
             MinTotalCpRule(
                 name="Total credits",
@@ -283,12 +267,6 @@ class TUBerlinTechnischeInformatikBachelor(DegreeStrategy):
                 min_count=1,
                 scope_matcher=self._elective_matcher,
                 severity="error",
-            ),
-            TagMinCpRule(
-                name="Sustainability / Society / Ethics (recommended 12 credits)",
-                matcher=self._sustainability_tags,
-                min_cp=12.0,
-                severity="info",
             ),
             ThesisEligibilityRule(
                 name="Thesis eligibility (>= 120 credits before thesis)",

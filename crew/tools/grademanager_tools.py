@@ -594,6 +594,8 @@ def _search_directives(program_key: str, requirements: list[RequirementBrief]) -
     for requirement in requirements:
         if requirement.satisfied:
             continue
+        if requirement.rule_name.startswith("Completion status"):
+            continue
         text = _normalize(" ".join([requirement.rule_name, requirement.message]))
         if "automaticrebalancing" in text:
             directives.append(

@@ -504,5 +504,40 @@ class TestTUBerlinLogic(unittest.TestCase):
         validations = self._validation_map(modules)
         self.assertFalse(validations["Project (>=9 credits)"].satisfied)
 
+    def test_planned_requirement_adds_completion_status_info_validation(self):
+        modules = [
+            Module(
+                id="planned-project",
+                name="Planned Project",
+                cp=9,
+                area="Electives",
+                term="WS 26/27",
+                state=ModuleState.PLANNED,
+                catalogs=["Data and Software Engineering"],
+                module_types=["Project"],
+            )
+        ]
+
+        validations = self._validation_map(modules)
+
+        completed_only = validations["Completion status (completed only): Project (>=9 credits)"]
+        self.assertFalse(completed_only.satisfied)
+        self.assertEqual(completed_only.severity, "info")
+        self.assertIn("9 LP still open in the completed only view", completed_only.message)
+        self.assertIn("Planned Project (Planned, 9 LP, WS 26/27)", completed_only.message)
+
+        completed_running = validations["Completion status (completed + in progress): Project (>=9 credits)"]
+        self.assertFalse(completed_running.satisfied)
+        self.assertEqual(completed_running.severity, "info")
+        self.assertIn("9 LP still open in the completed + in progress view", completed_running.message)
+
+    def test_technische_informatik_has_no_sustainability_requirement(self):
+        manager = DegreeManager(TUBerlinTechnischeInformatikBachelor())
+        validations = {v.rule_name for v in manager.validate([])}
+
+        self.assertFalse(
+            any("Sustainability / Society / Ethics" in rule for rule in validations)
+        )
+
 if __name__ == "__main__":
     unittest.main()

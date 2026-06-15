@@ -20,6 +20,7 @@ def _module(
     grade: float | None = None,
     moses_number: str | None = None,
     moses_version: int | None = None,
+    module_types: list[str] | None = None,
 ) -> Module:
     return Module(
         id=module_id,
@@ -32,7 +33,7 @@ def _module(
         is_graded=True,
         term=term,
         catalogs=["Cognitive Systems"] if area == "Elective" else [],
-        module_types=["VL"],
+        module_types=module_types or ["VL"],
         moses_number=moses_number,
         moses_version=moses_version,
     )
@@ -106,6 +107,47 @@ def test_study_plan_snapshot_uses_active_profile_and_validation(monkeypatch, tmp
     assert "Reinforcement Learning" in output
     assert "Missing or open requirements" in output
     assert "MOSES Module Researcher" in output
+
+
+def test_planned_modules_create_completed_only_advisories(monkeypatch, tmp_path):
+    _setup_profile(
+        monkeypatch,
+        tmp_path,
+        [
+            _module(
+                module_id="project",
+                name="Project Lab",
+                state=ModuleState.PLANNED,
+                cp=9,
+                term="WS 26/27",
+                module_types=["Project"],
+            ),
+            _module(
+                module_id="seminar",
+                name="Security Seminar",
+                state=ModuleState.PLANNED,
+                cp=3,
+                term="SS 27",
+                module_types=["Seminar"],
+            ),
+        ],
+    )
+
+    output = grademanager_tools.get_degree_requirement_details(
+        program_key=CS_PROGRAM,
+        include_satisfied=False,
+    )
+
+    assert "Completion status (completed only): Project (>=9 credits)" in output
+    assert "Completion status (completed + in progress): Project (>=9 credits)" in output
+    assert "9 LP still open in the completed only view" in output
+    assert "Project Lab (Planned, 9 LP, WS 26/27)" in output
+    assert "Completion status (completed only): Seminar (>=1 module)" in output
+    assert "Completion status (completed + in progress): Seminar (>=1 module)" in output
+    assert "1 module still open in the completed only view" in output
+    assert "Security Seminar (Planned, 3 LP, SS 27)" in output
+    assert "Ask the MOSES Module Researcher for project modules" not in output
+    assert "Ask the MOSES Module Researcher for seminar modules" not in output
 
 
 def test_list_study_plan_modules_filters_by_state_and_query(monkeypatch, tmp_path):

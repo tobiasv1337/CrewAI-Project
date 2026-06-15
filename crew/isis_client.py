@@ -322,7 +322,55 @@ class MoodleRestClient:
         return self.call("enrol_self_enrol_user", **params)
 
     def self_unenrol_course(self, course_id: int) -> Any:
-        return self.call("enrol_self_unenrol_user", courseid=course_id)
+        try:
+            return self.call("enrol_self_unenrol_user", courseid=course_id)
+        except MoodleApiError as exc:
+            # If the web service function is not registered/enabled on the server, Moodle returns 
+            # 'Can't find data record in database.'. In this case, fall back to browser-style session unenrollment.
+            if "Can't find data record in database" not in str(exc):
+                raise
+
+            methods = self.course_enrolment_methods(course_id)
+            # Find any active self or manual enrollment method
+            target_method = None
+            for method in methods:
+                if method.get("type") in {"self", "manual"}:
+                    target_method = method
+                    break
+
+            if not target_method:
+                raise ValueError(
+                    f"No self or manual enrollment method was found for course ID {course_id} to perform fallback unenrollment."
+                ) from exc
+
+            # Fetch the ISIS homepage to extract the user's session key (sesskey)
+            r_home = self.session.get(self.base_url)
+            r_home.raise_for_status()
+            sesskey_match = re.search(r'sesskey\":\"([a-zA-Z0-9]+)\"', r_home.text)
+            if not sesskey_match:
+                sesskey_match = re.search(r'sesskey=([a-zA-Z0-9]+)', r_home.text)
+
+            if not sesskey_match:
+                raise ValueError("Could not find Moodle session key (sesskey) in the web page source.") from exc
+
+            sesskey = sesskey_match.group(1)
+            enrol_id = target_method["id"]
+            method_type = target_method["type"]
+
+            # Perform the unenrollment request
+            post_url = f"{self.base_url}/enrol/{method_type}/unenrolself.php"
+            payload = {"enrolid": enrol_id, "confirm": 1, "sesskey": sesskey}
+            r_unenroll = self.session.post(post_url, data=payload, timeout=self.timeout)
+            r_unenroll.raise_for_status()
+
+            # Verify unenrollment succeeded by checking if the course is still returned in enrolled courses
+            enrolled = {c.id for c in self.enrolled_course_refs()}
+            if course_id in enrolled:
+                raise RuntimeError(
+                    f"Fallback unenrollment submitted successfully but user is still enrolled in course {course_id}."
+                ) from exc
+
+            return {"status": True, "note": "Successfully unenrolled via fallback browser session endpoint."}
 
     def assignments(self, course_id: int) -> dict[str, Any]:
         return dict(self.call("mod_assign_get_assignments", **{"courseids[0]": course_id}) or {})

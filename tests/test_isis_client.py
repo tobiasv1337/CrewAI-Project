@@ -33,3 +33,54 @@ def test_isis_client_context_var_isolation():
 
     assert get_default_isis_client().wstoken == "token1"
     reset_default_isis_client()
+
+
+def test_self_unenrol_course_fallback_success(monkeypatch):
+    from typing import Any
+    from crew.isis_client import MoodleRestClient, MoodleApiError
+
+    client = MoodleRestClient(wstoken="test_token")
+
+    # Mock call for enrol_self_unenrol_user to raise MoodleApiError
+    def mock_call(wsfunction: str, **params: Any):
+        if wsfunction == "enrol_self_unenrol_user":
+            raise MoodleApiError("Can't find data record in database.")
+        raise RuntimeError(f"Unexpected wsfunction call: {wsfunction}")
+    monkeypatch.setattr(client, "call", mock_call)
+
+    # Mock course_enrolment_methods
+    monkeypatch.setattr(client, "course_enrolment_methods", lambda cid: [
+        {'id': 141002, 'courseid': cid, 'type': 'self', 'name': 'Self enrolment'}
+    ])
+
+    # Mock session.get and session.post
+    class MockResponse:
+        def __init__(self, text="", status_code=200):
+            self.text = text
+            self.status_code = status_code
+        def raise_for_status(self):
+            pass
+
+    def mock_get(url, **kwargs):
+        if url == client.base_url:
+            return MockResponse(text='sesskey":"2kgVySnoKC"')
+        return MockResponse()
+
+    post_calls = []
+    def mock_post(url, data=None, **kwargs):
+        post_calls.append((url, data))
+        return MockResponse(status_code=200)
+
+    monkeypatch.setattr(client.session, "get", mock_get)
+    monkeypatch.setattr(client.session, "post", mock_post)
+
+    # Mock enrolled_course_refs to return empty list (unenrollment success verification)
+    monkeypatch.setattr(client, "enrolled_course_refs", lambda: [])
+
+    # Run the unenrollment
+    result = client.self_unenrol_course(46420)
+
+    assert result == {"status": True, "note": "Successfully unenrolled via fallback browser session endpoint."}
+    assert len(post_calls) == 1
+    assert post_calls[0][0] == "https://isis.tu-berlin.de/enrol/self/unenrolself.php"
+    assert post_calls[0][1] == {"enrolid": 141002, "confirm": 1, "sesskey": "2kgVySnoKC"}

@@ -169,6 +169,15 @@ class FakeToolClient:
         self.unenrol_calls.append(course_id)
         self.enrolled_ids.discard(course_id)
 
+    def overview_course_grades(self):
+        return {
+            "grades": [
+                {"courseid": 47025, "grade": "1.3", "rawgrade": 90.0},
+                {"courseid": 47026, "grade": "2.0", "rawgrade": 80.0},
+            ],
+            "warnings": []
+        }
+
     def _check_access(self, course_id: int):
         if course_id in self.deny_until_enrolled and course_id not in self.enrolled_ids:
             raise MoodleApiError("not enrolled", errorcode="nopermissions")
@@ -365,6 +374,19 @@ def test_new_date_and_time_extraction():
     assert "02:15 p.m. to 03:45 p.m." in time_texts
 
 
+def test_get_my_isis_grades_overview_tool(monkeypatch):
+    client = FakeToolClient()
+    monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)
+
+    output = isis_tools.GetMyIsisGradesOverviewTool()._run()
+
+    assert "# My Enrolled ISIS Grades Overview" in output
+    assert "`47025`" in output
+    assert "`47026`" in output
+    assert "1.3" in output
+    assert "2.0" in output
+
+
 def test_search_isis_courses_smart_fallback(monkeypatch):
     client = FakeToolClient()
     monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)
@@ -387,6 +409,7 @@ def test_search_isis_courses_smart_fallback(monkeypatch):
     output_bypass = isis_tools.SearchIsisCoursesTool()._run(query="Schaltungstechnik", term_hint="all")
     assert "filtered by current semester" not in output_bypass
     assert "Schaltungstechnik" in output_bypass
+
 
 
 

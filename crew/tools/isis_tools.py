@@ -44,6 +44,10 @@ class ListCoursesInput(IsisToolInput):
     max_courses: int = Field(default=50, description="Maximum enrolled courses to show.")
 
 
+class GradesOverviewInput(IsisToolInput):
+    max_courses: int = Field(default=50, description="Maximum courses to show in grades overview.")
+
+
 class SearchCoursesInput(IsisToolInput):
     query: str = Field(..., description="ISIS course search query, e.g. Machine Learning 1.")
     term_hint: str | None = Field(default=None, description="Optional term filter/hint, e.g. SoSe 2026 or WiSe 2025/26.")
@@ -169,6 +173,47 @@ class ListMyIsisCoursesTool(_BaseIsisTool):
         if not include_hidden:
             courses = [course for course in courses if course.visible is not False]
         return _format_course_refs("My enrolled ISIS courses", courses[: _clamp(max_courses, 1, MAX_OUTPUT_ITEMS)])
+
+
+class GetMyIsisGradesOverviewTool(_BaseIsisTool):
+    name: str = "Get My ISIS Grades Overview"
+    description: str = "Read the student's grades across all enrolled ISIS courses in one overview. Useful to check current grades quickly."
+    args_schema: Type[BaseModel] = GradesOverviewInput
+
+    def _run(self, max_courses: int = 50) -> str:
+        client = self._client()
+        try:
+            overview = client.overview_course_grades()
+            enrolled = {c.id: c for c in client.enrolled_course_refs()}
+        except Exception as exc:
+            return f"Failed to retrieve ISIS grades overview: {exc}"
+
+        grades_list = overview.get("grades") or []
+        lines = ["# My Enrolled ISIS Grades Overview", ""]
+        if not grades_list:
+            lines.append("No grades found or returned in ISIS overview.")
+            return "\n".join(lines)
+
+        lines.append("| ISIS course ID | Title | Shortname | Term | Grade |")
+        lines.append("|---:|---|---|---|---|")
+
+        count = 0
+        for item in grades_list:
+            course_id = item.get("courseid")
+            if course_id is None:
+                continue
+            ref = enrolled.get(course_id)
+            title = ref.title if ref else f"ISIS course {course_id}"
+            shortname = ref.shortname if ref else "-"
+            term = ref.term_hint if ref else "-"
+            grade = item.get("grade") or "-"
+            lines.append(
+                f"| `{course_id}` | {_cell(title)} | {_cell(shortname)} | {_cell(term)} | **{grade}** |"
+            )
+            count += 1
+            if count >= max_courses:
+                break
+        return "\n".join(lines)
 
 
 class SearchIsisCoursesTool(_BaseIsisTool):
@@ -440,6 +485,7 @@ class PermanentlyEnrollInIsisCourseTool(_BaseIsisTool):
 def make_isis_read_only_tools(*, allow_temp_enrollment: bool = False) -> list[BaseTool]:
     return [
         ListMyIsisCoursesTool(allow_temp_enrollment=allow_temp_enrollment),
+        GetMyIsisGradesOverviewTool(allow_temp_enrollment=allow_temp_enrollment),
         SearchIsisCoursesTool(allow_temp_enrollment=allow_temp_enrollment),
         GetIsisCourseOverviewTool(allow_temp_enrollment=allow_temp_enrollment),
         GetIsisCourseAnnouncementsTool(allow_temp_enrollment=allow_temp_enrollment),

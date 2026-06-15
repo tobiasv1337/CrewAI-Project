@@ -1,0 +1,54 @@
+study_assistant_task:
+  description: >
+    Answer the student's request by coordinating the available specialist
+    agents.
+
+    Student request:
+    {query}
+
+    Optional student context supplied by the application:
+    {student_context}
+
+    Structured MOSES-to-ISIS handoff context, if available:
+    {isis_context}
+
+    Delegation rules:
+    - Delegate Grade Manager progress, completed/planned modules, open
+      requirements, module-fit checks, and any study-plan write request to the
+      Study Advisor.
+    - Delegate broad module discovery, module details, MOSES degree structure,
+      catalog assignments, teaching terms, prerequisites, and exam information
+      to the MOSES Module Researcher.
+    - Delegate ISIS/Moodle questions about enrolled courses, assignments,
+      deadlines, announcements, forums, grades, materials, assessments, or
+      calendar dates to the ISIS Course Information Specialist.
+    - For "what should I take next semester?" or similar planning questions,
+      ask the Study Advisor for the student's current progress and open
+      requirements first. If concrete module recommendations are needed, pass
+      the Study Advisor's constraints and avoid-list to the MOSES Module
+      Researcher. Use ISIS only when the student asks for Moodle/current-course
+      details or practical course information beyond MOSES.
+    - For pure MOSES questions, use only the MOSES Module Researcher.
+    - For pure ISIS questions, use only the ISIS Course Information Specialist.
+    - For pure progress or degree-requirement questions, use only the Study
+      Advisor.
+    - The Study Advisor is the only specialist with Grade Manager write tools.
+      Do not ask for a write unless the latest student request explicitly
+      confirms the exact module, term, and needed classification. Do not claim
+      anything was added unless the Study Advisor reports a successful write.
+    - Keep source boundaries explicit. Do not let MOSES facts stand in for ISIS
+      facts, or ISIS course titles stand in for MOSES module/catalog facts.
+    - If specialists report ambiguity, missing credentials, missing profile
+      data, or access limitations, surface that clearly and ask for the
+      smallest missing discriminator.
+
+    Response language:
+    - Reply in German when the student asks in German.
+    - Otherwise reply in English.
+  expected_output: >
+    A concise markdown answer that directly addresses the student request.
+    Include the relevant specialist findings, clear source attribution when
+    multiple sources were used, concrete recommendations or next steps, and
+    any required user confirmation or missing discriminator. For planning
+    answers, distinguish completed requirements from currently planned or
+    in-progress coverage.

@@ -176,7 +176,13 @@ class ReadOnlyCourseAccess:
             self.client.self_unenrol_course(course_id)
         except Exception as exc:  # pragma: no cover - live safety report
             report.cleanup_succeeded = False
-            report.cleanup_error = str(exc)
+            error_msg = str(exc)
+            if "Can't find data record in database" in error_msg:
+                error_msg = (
+                    "Moodle API function 'enrol_self_unenrol_user' is not enabled or supported on the ISIS server. "
+                    "You must manually unenroll via the website."
+                )
+            report.cleanup_error = error_msg
             return
         report.cleanup_succeeded = True
 

@@ -304,4 +304,52 @@ def test_course_read_input_none_like_normalization():
     assert inp2.term_hint is None
 
 
+def test_new_date_and_time_extraction():
+    # Test _find_date_text
+    assert isis_tools._find_date_text("Ended on 14 April") == "14 April"
+    assert isis_tools._find_date_text("Assignment on 18 April") == "18 April"
+    assert isis_tools._find_date_text("Lecture on 29 April 2026") == "29 April 2026"
+    assert isis_tools._find_date_text("Midterm on 21 May 2026") == "21 May 2026"
+    assert isis_tools._find_date_text("Final presentation on 14 July 2026") == "14 July 2026"
+    assert isis_tools._find_date_text("Prüfung am 15. Juni") == "15. Juni"
+    assert isis_tools._find_date_text("Starts on 20.04.2026") == "20.04.2026"
+
+    # Test _find_time_text
+    assert isis_tools._find_time_text("from 02:15 p.m. to 03:45 p.m.") == "02:15 p.m. to 03:45 p.m."
+    assert isis_tools._find_time_text("at 10:00am - 11:00am") == "10:00am - 11:00am"
+    assert isis_tools._find_time_text("lecture 14:15 -15:45") == "14:15 -15:45"
+    assert isis_tools._find_time_text("Deadline 14.04.2026") is None
+
+    # Test _split_into_logical_chunks
+    text = (
+        "Introductory lecture on 29 April, 14:15 -15:45. "
+        "6) Midterm presentation on 21 May 2026 from 02:15 p.m. to 03:45 p.m. "
+        "7) Final presentation on 14 July 2026 from 02:15 p.m. to 03:45 p.m. "
+        "Some details. - First detail. - Second detail."
+    )
+    chunks = isis_tools._split_into_logical_chunks(text)
+    assert "Introductory lecture on 29 April, 14:15 -15:45." in chunks
+    assert "Midterm presentation on 21 May 2026 from 02:15 p.m. to 03:45 p.m." in chunks
+    assert "Final presentation on 14 July 2026 from 02:15 p.m. to 03:45 p.m." in chunks
+    assert "First detail." in chunks
+    assert "Second detail." in chunks
+
+    # Test _extract_date_hits produces multiple hits
+    hits = isis_tools._extract_date_hits(
+        "overview",
+        {"summary": text}
+    )
+    # We expect separate hits for the introductory lecture, midterm, and final presentation.
+    date_texts = [h.date_text for h in hits]
+    time_texts = [h.time_text for h in hits]
+    
+    assert "29 April" in date_texts
+    assert "21 May 2026" in date_texts
+    assert "14 July 2026" in date_texts
+    
+    assert "14:15 -15:45" in time_texts
+    assert "02:15 p.m. to 03:45 p.m." in time_texts
+
+
+
 

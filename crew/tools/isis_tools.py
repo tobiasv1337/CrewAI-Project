@@ -963,24 +963,92 @@ def _labels_from_contents(contents: list[dict[str, Any]], *, limit: int) -> list
     return labels
 
 
+def _split_into_logical_chunks(text: str) -> list[str]:
+    delim = " ||| "
+    # Split on list items like "1) "
+    processed = re.sub(r"\b\d+\)\s+", delim, text)
+    # Split on bullet points
+    processed = re.sub(r"\s*[\-\*•]\s+", delim, processed)
+    
+    months = (
+        r"Januar|January|Februar|February|M[aä]rz|March|April|Mai|May|Juni|June|"
+        r"Juli|July|August|September|Oktober|October|November|Dezember|December"
+    )
+    month_pattern = re.compile(rf"^(?:{months})\b", re.I)
+    
+    parts = []
+    current_idx = 0
+    # Search for sentence ending patterns: a dot, exclamation, or question mark, followed by one or more spaces
+    for match in re.finditer(r"[\.\!\?]\s+", processed):
+        split_pos = match.start()
+        post_text = processed[match.end():].strip()
+        
+        # Check if we should skip splitting:
+        # A. Preceded by digit and followed by month name (e.g., "21. May")
+        pre_match = re.search(r"\b\d+$", processed[current_idx:split_pos])
+        if pre_match and month_pattern.match(post_text):
+            continue
+            
+        # B. Preceded by a.m./p.m. and followed by a lowercase letter
+        is_ampm = re.search(r"\b[ap]\.?m\.?$", processed[current_idx:split_pos], re.I)
+        if is_ampm and post_text and post_text[0].islower():
+            continue
+            
+        # C. Single letter abbreviation (e.g. "z. B.")
+        is_single_letter = re.search(r"(?:^|\s)[a-zA-Z]$", processed[current_idx:split_pos])
+        if is_single_letter:
+            continue
+            
+        # Otherwise, split here!
+        parts.append(processed[current_idx:split_pos + 1].strip())
+        current_idx = match.end()
+        
+    parts.append(processed[current_idx:].strip())
+    
+    final_chunks = []
+    for part in parts:
+        if not part:
+            continue
+        sub_parts = []
+        sub_current_idx = 0
+        # Split on numbered lists like "1. ", but ignore day of month followed by month name
+        for sub_match in re.finditer(r"\s+\d+\.\s+", part):
+            sub_split_pos = sub_match.start()
+            sub_post_text = part[sub_match.end():].strip()
+            if month_pattern.match(sub_post_text):
+                continue
+            sub_parts.append(part[sub_current_idx:sub_split_pos].strip())
+            sub_current_idx = sub_match.end()
+        sub_parts.append(part[sub_current_idx:].strip())
+        
+        for sp in sub_parts:
+            for c in sp.split("|||"):
+                c_clean = c.strip()
+                if c_clean:
+                    final_chunks.append(c_clean)
+                    
+    return final_chunks
+
+
 def _extract_date_hits(source: str, payload: Any) -> list[IsisDateHit]:
     hits: list[IsisDateHit] = []
     for title, text, url in _iter_text_fragments(payload):
-        date_text = _find_date_text(text)
-        time_text = _find_time_text(text)
-        weekday_text = _find_weekday_text(text)
-        if not (date_text or time_text or weekday_text):
-            continue
-        hits.append(
-            IsisDateHit(
-                source=source,
-                title=title,
-                text=_preview(text, 2000),
-                date_text=date_text or weekday_text,
-                time_text=time_text,
-                url=url,
+        for chunk in _split_into_logical_chunks(text):
+            date_text = _find_date_text(chunk)
+            time_text = _find_time_text(chunk)
+            weekday_text = _find_weekday_text(chunk)
+            if not (date_text or time_text or weekday_text):
+                continue
+            hits.append(
+                IsisDateHit(
+                    source=source,
+                    title=title,
+                    text=_preview(chunk, 2000),
+                    date_text=date_text or weekday_text,
+                    time_text=time_text,
+                    url=url,
+                )
             )
-        )
     return hits
 
 
@@ -1000,10 +1068,15 @@ def _iter_text_fragments(payload: Any) -> Iterable[tuple[str | None, str, str | 
 
 
 def _find_date_text(text: str) -> str | None:
+    months = (
+        r"Januar|January|Februar|February|M[aä]rz|March|April|Mai|May|Juni|June|"
+        r"Juli|July|August|September|Oktober|October|November|Dezember|December"
+    )
     patterns = (
         r"\b\d{1,2}\.\d{1,2}\.(?:20)?\d{2}\b",
         r"\b(?:20\d{2})-\d{1,2}-\d{1,2}\b",
-        r"\b\d{1,2}\.\s*(?:Januar|Februar|M[aä]rz|April|Mai|Juni|Juli|August|September|Oktober|November|Dezember)\s*(?:20)?\d{2}\b",
+        # English/German month support, optional dot, optional year
+        rf"\b\d{{1,2}}\.?(?:\s+)?(?:{months})\b(?:\s*(?:20)?\d{{2}}\b)?"
     )
     for pattern in patterns:
         match = re.search(pattern, text, flags=re.I)
@@ -1013,12 +1086,16 @@ def _find_date_text(text: str) -> str | None:
 
 
 def _find_time_text(text: str) -> str | None:
-    match = re.search(
-        r"\b\d{1,2}:\d{2}\s*(?:-|bis|to|–)?\s*(?:\d{1,2}:\d{2})?\s*(?:Uhr|h)?\b"
-        r"|\b\d{1,2}\.\d{2}\s*(?:Uhr|h)\b",
-        text,
-        flags=re.I,
-    )
+    # 1. Colon-based times (with optional a.m./p.m.)
+    time_colon = r"\b\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?"
+    pattern_colon = rf"{time_colon}(?:\s*(?:-|bis|to|–)\s*{time_colon})?(?:\s*(?:Uhr|h))?"
+    
+    # 2. Dot-based times (requires Uhr/h suffix)
+    time_dot = r"\b\d{1,2}\.\d{2}"
+    pattern_dot = rf"{time_dot}(?:\s*(?:-|bis|to|–)\s*{time_dot})?\s*(?:Uhr|h)\b"
+    
+    pattern = rf"{pattern_colon}|{pattern_dot}"
+    match = re.search(pattern, text, flags=re.I)
     return match.group(0) if match else None
 
 

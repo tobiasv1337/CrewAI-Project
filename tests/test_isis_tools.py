@@ -318,6 +318,7 @@ def test_new_date_and_time_extraction():
     assert isis_tools._find_time_text("from 02:15 p.m. to 03:45 p.m.") == "02:15 p.m. to 03:45 p.m."
     assert isis_tools._find_time_text("at 10:00am - 11:00am") == "10:00am - 11:00am"
     assert isis_tools._find_time_text("lecture 14:15 -15:45") == "14:15 -15:45"
+    assert isis_tools._find_time_text("lecture 14:15 — 15:45") == "14:15 — 15:45"
     assert isis_tools._find_time_text("Deadline 14.04.2026") is None
 
     # Test _split_into_logical_chunks

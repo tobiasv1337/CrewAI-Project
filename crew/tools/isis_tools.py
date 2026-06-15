@@ -1088,11 +1088,11 @@ def _find_date_text(text: str) -> str | None:
 def _find_time_text(text: str) -> str | None:
     # 1. Colon-based times (with optional a.m./p.m.)
     time_colon = r"\b\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?"
-    pattern_colon = rf"{time_colon}(?:\s*(?:-|bis|to|–)\s*{time_colon})?(?:\s*(?:Uhr|h))?"
+    pattern_colon = rf"{time_colon}(?:\s*(?:-|bis|to|–|—)\s*{time_colon})?(?:\s*(?:Uhr|h))?"
     
     # 2. Dot-based times (requires Uhr/h suffix)
     time_dot = r"\b\d{1,2}\.\d{2}"
-    pattern_dot = rf"{time_dot}(?:\s*(?:-|bis|to|–)\s*{time_dot})?\s*(?:Uhr|h)\b"
+    pattern_dot = rf"{time_dot}(?:\s*(?:-|bis|to|–|—)\s*{time_dot})?\s*(?:Uhr|h)\b"
     
     pattern = rf"{pattern_colon}|{pattern_dot}"
     match = re.search(pattern, text, flags=re.I)

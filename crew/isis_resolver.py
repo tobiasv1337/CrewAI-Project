@@ -118,6 +118,35 @@ class ReadOnlyCourseAccess:
             initially_enrolled=initially_enrolled,
             temporary_enrollment_allowed=self.allow_temp_enrollment,
         )
+
+        # Proactively attempt temporary enrollment if allowed and not already enrolled
+        if not initially_enrolled and self.allow_temp_enrollment:
+            enrol_error = None
+            try:
+                self._self_enrol_for_read(course.id, report)
+            except MoodleApiError as exc:
+                enrol_error = exc
+
+            if enrol_error is None:
+                try:
+                    data = reader(course.id)
+                    return IsisReadResult(course=course.model_copy(update={"enrolled": True}), access=report, data=data)
+                finally:
+                    self._cleanup_temporary_enrollment(course.id, enrolled_before, report)
+            else:
+                # Self-enrollment failed, fall back to direct read in case guest access is active
+                try:
+                    data = reader(course.id)
+                    return IsisReadResult(course=course.model_copy(update={"enrolled": initially_enrolled}), access=report, data=data)
+                except MoodleApiError as exc:
+                    if not exc.is_access_error:
+                        raise
+                    report.access_note = (
+                        f"ISIS denied access. Self-enrollment was attempted but failed with error: {enrol_error}. "
+                        "Guest/direct read access also failed."
+                    )
+                    return IsisReadResult(course=course, access=report, data={"error": str(exc), "access_required": True})
+
         try:
             data = reader(course.id)
             return IsisReadResult(course=course.model_copy(update={"enrolled": initially_enrolled}), access=report, data=data)
@@ -130,13 +159,6 @@ class ReadOnlyCourseAccess:
                     "Temporary enrollment is disabled for this run, so no enrollment was attempted."
                 )
                 return IsisReadResult(course=course, access=report, data={"error": str(exc), "access_required": True})
-
-        self._self_enrol_for_read(course.id, report)
-        try:
-            data = reader(course.id)
-            return IsisReadResult(course=course.model_copy(update={"enrolled": True}), access=report, data=data)
-        finally:
-            self._cleanup_temporary_enrollment(course.id, enrolled_before, report)
 
     def _enrolled_course_ids(self) -> set[int]:
         return {course.id for course in self.client.enrolled_course_refs()}

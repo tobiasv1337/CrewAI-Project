@@ -113,11 +113,9 @@ def test_read_access_temporarily_enrolls_and_cleans_up_only_new_course():
     client = FakeClient()
     access = ReadOnlyCourseAccess(client, allow_temp_enrollment=True)
     course = client.course_ref_by_id(2020)
-    calls = []
 
     def reader(course_id: int):
-        calls.append(course_id)
-        if len(calls) == 1:
+        if course_id not in client.enrolled_ids:
             raise MoodleApiError("not enrolled", errorcode="nopermissions")
         return {"ok": True}
 
@@ -195,3 +193,60 @@ def test_selector_rejects_conflicting_locators():
     # Conflicting ID and URL ID should raise ValueError
     with pytest.raises(ValueError, match="Conflicting course locators"):
         IsisCourseSelector(course_id=47025, course_url="https://isis.tu-berlin.de/course/view.php?id=99999")
+
+
+def test_read_access_proactive_enrollment_success():
+    client = FakeClient()
+    access = ReadOnlyCourseAccess(client, allow_temp_enrollment=True)
+    course = client.course_ref_by_id(2020)  # initially not enrolled
+
+    called_with_enrolled = []
+    def reader(course_id: int):
+        called_with_enrolled.append(course_id in client.enrolled_ids)
+        return {"data": "ok"}
+
+    result = access.read(course=course, operation="overview", reader=reader)
+
+    assert result.data == {"data": "ok"}
+    assert result.access.temporary_enrolled is True
+    assert result.access.cleanup_attempted is True
+    assert result.access.cleanup_succeeded is True
+    assert client.enrol_calls == [2020]
+    assert client.unenrol_calls == [2020]
+    assert called_with_enrolled == [True]
+
+
+def test_read_access_proactive_enrollment_failure_fallback_success():
+    client = FakeClient()
+    def failing_self_enrol(course_id: int):
+        raise MoodleApiError("Enrollment failed", errorcode="nopermissions")
+    client.self_enrol_course = failing_self_enrol
+
+    access = ReadOnlyCourseAccess(client, allow_temp_enrollment=True)
+    course = client.course_ref_by_id(2020)
+
+    def reader(course_id: int):
+        return {"data": "fallback_ok"}
+
+    result = access.read(course=course, operation="overview", reader=reader)
+
+    assert result.data == {"data": "fallback_ok"}
+    assert result.access.temporary_enrolled is False
+    assert client.unenrol_calls == []
+
+
+def test_read_access_proactive_enrollment_failure_fallback_failure():
+    client = FakeClient()
+    def failing_self_enrol(course_id: int):
+        raise MoodleApiError("Enrollment failed", errorcode="nopermissions")
+    client.self_enrol_course = failing_self_enrol
+
+    access = ReadOnlyCourseAccess(client, allow_temp_enrollment=True)
+    course = client.course_ref_by_id(2020)
+
+    def reader(course_id: int):
+        raise MoodleApiError("Not accessible for guests", errorcode="requirelogin")
+
+    result = access.read(course=course, operation="overview", reader=reader)
+
+    assert result.data["access_required"] is True

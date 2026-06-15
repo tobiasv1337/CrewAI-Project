@@ -15,6 +15,7 @@ from crew.isis_models import (
     IsisResolvedCourse,
     clean_text,
 )
+from core.terms import parse_term_label
 
 
 MIN_CONFIDENT_SCORE = 0.72
@@ -54,9 +55,21 @@ class IsisCourseResolver:
         return IsisResolvedCourse(status="resolved", course=course, candidates=[course], reason="Resolved by ISIS course_id.")
 
     def _resolve_by_query(self, query: str, selector: IsisCourseSelector) -> IsisResolvedCourse:
-        terms = _query_variants(query, selector.expected_title, selector.term_hint)
+        # Determine if we should bypass active semester default
+        term_hint = selector.term_hint
+        bypass_filter = False
+        if term_hint and clean_text(term_hint).lower() in {"all", "any", "any_term", "everything"}:
+            term_hint = None
+            bypass_filter = True
+
+        if not term_hint and not bypass_filter:
+            from core.terms import default_term_index, format_term_label
+            term_hint = format_term_label(default_term_index())
+
+        resolved_selector = selector.model_copy(update={"term_hint": term_hint})
+        terms = _query_variants(query, resolved_selector.expected_title, resolved_selector.term_hint)
         enrolled = self.client.enrolled_course_refs()
-        enrolled_matches = _rank_courses(enrolled, selector, terms)
+        enrolled_matches = _rank_courses(enrolled, resolved_selector, terms)
         confident_enrolled = _pick_confident(enrolled_matches)
         if confident_enrolled.status == "resolved":
             confident_enrolled.reason = "Resolved from already enrolled ISIS courses."
@@ -76,7 +89,7 @@ class IsisCourseResolver:
                         continue
                     seen.add(course.id)
                     found.append(course)
-        ranked = _rank_courses(found, selector, terms)
+        ranked = _rank_courses(found, resolved_selector, terms)
         result = _pick_confident(ranked)
         result.search_terms = terms
         if result.status == "resolved":
@@ -182,8 +195,19 @@ def _rank_courses(
 ) -> list[tuple[float, IsisCourseRef]]:
     ranked = []
     for course in courses:
-        score = max((_course_score(course, term) for term in terms), default=0.0)
-        score = max(score, _verification_score(course, selector.expected_title, selector.term_hint))
+        base_score = max((_course_score(course, term) for term in terms), default=0.0)
+        v_score = _verification_score(course, selector.expected_title, selector.term_hint)
+
+        # Penalize courses that do not match the specified term_hint
+        if selector.term_hint:
+            term = _normalize(selector.term_hint)
+            course_term = _normalize(course.term_hint)
+            matches_term = term and course_term and (term in course_term or course_term in term)
+            if not matches_term:
+                # Penalty ensures non-matching semester courses drop below the ambiguity delta
+                base_score -= 0.15
+
+        score = max(base_score, v_score)
         ranked.append((score, course))
     ranked.sort(key=lambda item: (-item[0], item[1].id))
     return ranked
@@ -219,7 +243,10 @@ def _verification_score(course: IsisCourseRef, expected_title: str | None, term_
     if term_hint:
         term = _normalize(term_hint)
         course_term = _normalize(course.term_hint)
-        if term and course_term and (term in course_term or course_term in term):
+        idx1 = parse_term_label(term_hint)
+        idx2 = parse_term_label(course.term_hint) if course.term_hint else None
+        matches = idx1 is not None and idx1 == idx2
+        if matches or (term and course_term and (term in course_term or course_term in term)):
             score = max(score, 0.95)
         elif term and _normalize(course.title).find(term) >= 0:
             score = max(score, 0.85)

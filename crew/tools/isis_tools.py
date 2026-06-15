@@ -20,6 +20,7 @@ from crew.isis_client import (
 )
 from crew.isis_models import IsisCourseRef, IsisCourseSelector, IsisDateHit, IsisReadResult, IsisResolvedCourse, clean_text
 from crew.isis_resolver import resolve_and_read
+from core.terms import default_term_index, format_term_label, parse_term_label
 
 
 MAX_SEARCH_RESULTS = 50
@@ -177,13 +178,52 @@ class SearchIsisCoursesTool(_BaseIsisTool):
 
     def _run(self, query: str, term_hint: str | None = None, max_results: int = 10) -> str:
         clean_query = clean_text(query)
-        if term_hint:
-            clean_query = f"{clean_query} {clean_text(term_hint)}"
+
+        # Determine if we should bypass the active semester filter
+        bypass_filter = False
+        if term_hint and clean_text(term_hint).lower() in {"all", "any", "any_term", "everything"}:
+            term_hint = None
+            bypass_filter = True
+
+        # Fetch candidate courses using only the search query keywords.
+        # We query a slightly larger page to allow Python-side filtering.
+        search_limit = max_results * 2 if not term_hint and not bypass_filter else max_results
         try:
-            courses = self._client().search_course_refs(clean_query, perpage=_clamp(max_results, 1, MAX_SEARCH_RESULTS))
+            courses = self._client().search_course_refs(clean_query, perpage=_clamp(search_limit, 1, MAX_SEARCH_RESULTS))
         except Exception as exc:
             return f"ISIS course search failed for `{clean_query}`: {exc}"
-        return _format_course_refs(f"ISIS course search for `{clean_query}`", courses)
+
+        # If no term hint was specified and we are not bypassing, default to active semester filtering
+        if not term_hint and not bypass_filter:
+            active_term = format_term_label(default_term_index())
+            active_idx = parse_term_label(active_term)
+
+            matched_courses = []
+            for course in courses:
+                course_idx = parse_term_label(course.term_hint) if course.term_hint else None
+                if active_idx is not None and active_idx == course_idx:
+                    matched_courses.append(course)
+
+            # If we found matching courses in the active semester, return them
+            if matched_courses:
+                return _format_course_refs(
+                    f"ISIS course search for `{clean_query}` (filtered by current semester `{active_term}`)",
+                    matched_courses[:max_results]
+                )
+
+        # Apply specific term_hint filter if one was explicitly requested
+        if term_hint:
+            target_idx = parse_term_label(term_hint)
+            matched_courses = []
+            for course in courses:
+                course_idx = parse_term_label(course.term_hint) if course.term_hint else None
+                if target_idx is not None and target_idx == course_idx:
+                    matched_courses.append(course)
+            if matched_courses:
+                courses = matched_courses
+
+        title_suffix = f" with term `{term_hint}`" if term_hint else ""
+        return _format_course_refs(f"ISIS course search for `{clean_query}`{title_suffix}", courses[:max_results])
 
 
 class GetIsisCourseOverviewTool(_BaseIsisTool):

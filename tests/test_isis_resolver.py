@@ -11,9 +11,10 @@ class FakeClient:
     def __init__(self):
         self.enrolled_ids = {1010}
         self.courses = {
-            1010: IsisCourseRef(id=1010, fullname="[WiSe 2025/26] Machine Learning 1", shortname="ML1", enrolled=True),
-            2020: IsisCourseRef(id=2020, fullname="[SoSe 2026] Reinforcement Learning", shortname="RL", enrolled=False),
-            3030: IsisCourseRef(id=3030, fullname="[SoSe 2026] Reinforcement Learning Project", shortname="RL Project", enrolled=False),
+            1010: IsisCourseRef(id=1010, fullname="[WiSe 2025/26] Machine Learning 1", shortname="ML1", enrolled=True, term_hint="WS 25/26"),
+            2020: IsisCourseRef(id=2020, fullname="[SoSe 2026] Reinforcement Learning", shortname="RL", enrolled=False, term_hint="SS 26"),
+            3030: IsisCourseRef(id=3030, fullname="[SoSe 2026] Reinforcement Learning Project", shortname="RL Project", enrolled=False, term_hint="SS 26"),
+            4040: IsisCourseRef(id=4040, fullname="[SoSe 2025] Reinforcement Learning", shortname="RL 2025", enrolled=False, term_hint="SS 25"),
         }
         self.enrol_calls: list[int] = []
         self.unenrol_calls: list[int] = []
@@ -132,4 +133,30 @@ def test_read_access_never_unenrolls_preexisting_course():
     assert client.enrol_calls == []
     assert client.unenrol_calls == []
     assert client.enrolled_ids == {1010}
+
+
+def test_resolver_tie_breaks_active_semester():
+    client = FakeClient()
+    # Remove 3030 Project course to make it a tie-breaker test between 2020 (active) and 4040 (past)
+    del client.courses[3030]
+
+    # Resolving with term_hint=None (defaults to SS 26 / SoSe 2026 active semester)
+    result = IsisCourseResolver(client).resolve(IsisCourseSelector(course_query="Reinforcement Learning"))
+
+    assert result.status == "resolved"
+    assert result.course is not None
+    assert result.course.id == 2020
+    assert result.course.fullname == "[SoSe 2026] Reinforcement Learning"
+
+
+def test_resolver_bypass_active_semester_hint():
+    client = FakeClient()
+    del client.courses[3030]
+
+    # Resolving with term_hint="all" (bypasses active semester default)
+    # Both 2020 and 4040 should match and it should be reported as ambiguous.
+    result = IsisCourseResolver(client).resolve(IsisCourseSelector(course_query="Reinforcement Learning", term_hint="all"))
+
+    assert result.status == "ambiguous"
+    assert {course.id for course in result.candidates} == {2020, 4040}
 

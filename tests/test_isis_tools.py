@@ -12,9 +12,9 @@ class FakeToolClient:
     def __init__(self):
         self.enrolled_ids = {47025}
         self.courses = {
-            47025: IsisCourseRef(id=47025, fullname="[SoSe 2026] Schaltungstechnik", shortname="ST", enrolled=True),
-            47026: IsisCourseRef(id=47026, fullname="[SoSe 2026] Schaltungstechnik Tutorial", shortname="ST Tut", enrolled=False),
-            48000: IsisCourseRef(id=48000, fullname="[WiSe 2026/27] Machine Learning 2", shortname="ML2", enrolled=False),
+            47025: IsisCourseRef(id=47025, fullname="[SoSe 2026] Schaltungstechnik", shortname="ST", enrolled=True, term_hint="SS 26"),
+            47026: IsisCourseRef(id=47026, fullname="[SoSe 2026] Schaltungstechnik Tutorial", shortname="ST Tut", enrolled=False, term_hint="SS 26"),
+            48000: IsisCourseRef(id=48000, fullname="[WiSe 2026/27] Machine Learning 2", shortname="ML2", enrolled=False, term_hint="WS 26/27"),
         }
         self.enrol_calls: list[int] = []
         self.unenrol_calls: list[int] = []
@@ -25,12 +25,25 @@ class FakeToolClient:
 
     def search_course_refs(self, query: str, *, perpage: int = 10, page: int = 0):
         del perpage, page
+        import re
         query = query.lower()
-        return [
-            course.model_copy(update={"enrolled": course.id in self.enrolled_ids})
-            for course in self.courses.values()
-            if any(token in course.title.lower() for token in query.split())
-        ]
+        words = [w for w in query.split() if w not in {"ss", "sose", "wise", "ws", "25", "26", "27"}]
+        matched = []
+        for course in self.courses.values():
+            title = course.title.lower()
+            ok = False
+            for word in words:
+                if word.isdigit():
+                    if re.search(r"\b" + re.escape(word) + r"\b", title):
+                        ok = True
+                        break
+                else:
+                    if word in title:
+                        ok = True
+                        break
+            if not words or ok:
+                matched.append(course.model_copy(update={"enrolled": course.id in self.enrolled_ids}))
+        return matched
 
     def course_ref_by_id(self, course_id: int):
         return self.courses.get(course_id).model_copy(update={"enrolled": course_id in self.enrolled_ids})
@@ -347,9 +360,33 @@ def test_new_date_and_time_extraction():
     assert "29 April" in date_texts
     assert "21 May 2026" in date_texts
     assert "14 July 2026" in date_texts
-    
+
     assert "14:15 -15:45" in time_texts
     assert "02:15 p.m. to 03:45 p.m." in time_texts
+
+
+def test_search_isis_courses_smart_fallback(monkeypatch):
+    client = FakeToolClient()
+    monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)
+
+    # 1. Search for a summer course name (e.g., "Schaltungstechnik" which is SoSe 2026 / SS 26)
+    # It should match on the active semester and return it.
+    output_summer = isis_tools.SearchIsisCoursesTool()._run(query="Schaltungstechnik")
+    assert "filtered by current semester" in output_summer
+    assert "Schaltungstechnik" in output_summer
+    assert "Machine Learning 2" not in output_summer
+
+    # 2. Search for a winter course name (e.g., "Machine Learning 2" which is WiSe 2026/27 / WS 26/27)
+    # Active semester is SS 26, so the initial search for "Machine Learning 2 SS 26" returns nothing.
+    # It should fall back to search without term filter and return it.
+    output_winter = isis_tools.SearchIsisCoursesTool()._run(query="Machine Learning 2")
+    assert "filtered by current semester" not in output_winter
+    assert "Machine Learning 2" in output_winter
+
+    # 3. Search with bypass filter "all"
+    output_bypass = isis_tools.SearchIsisCoursesTool()._run(query="Schaltungstechnik", term_hint="all")
+    assert "filtered by current semester" not in output_bypass
+    assert "Schaltungstechnik" in output_bypass
 
 
 

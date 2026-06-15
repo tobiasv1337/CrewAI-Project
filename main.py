@@ -40,6 +40,15 @@ class MosesAgentRunResult:
     raw_result: Any = None
 
 
+@dataclass
+class IsisAgentRunResult:
+    answer: str
+    tool_summary_lines: list[str]
+    trace_dir: Path | None
+    state_path: Path | None = None
+    raw_result: Any = None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run TU Berlin MOSES tool wrappers from the command line.",
@@ -149,6 +158,61 @@ def build_parser() -> argparse.ArgumentParser:
     eval_agent_parser.add_argument("--limit", type=int, help="Optional maximum number of queries to run.")
     _add_agent_runtime_arguments(eval_agent_parser, include_model=False)
     _set_runner(eval_agent_parser, _run_eval_moses_agent)
+
+    isis_courses_parser = subparsers.add_parser("isis-courses", help="List enrolled ISIS courses.")
+    isis_courses_parser.add_argument("--include-hidden", action="store_true", help="Include hidden enrolled courses.")
+    isis_courses_parser.add_argument("--max-courses", type=int, default=50, help="Maximum courses to show.")
+    _set_runner(isis_courses_parser, _run_isis_courses)
+
+    isis_search_parser = subparsers.add_parser("isis-search", help="Search ISIS courses.")
+    isis_search_parser.add_argument("query", help='Course search query, e.g. "Machine Learning".')
+    isis_search_parser.add_argument("--term-hint", help='Optional term hint, e.g. "SoSe 2026".')
+    isis_search_parser.add_argument("--max-results", type=int, default=10, help="Maximum course candidates.")
+    _set_runner(isis_search_parser, _run_isis_search)
+
+    isis_overview_parser = subparsers.add_parser("isis-course-overview", help="Read an ISIS course overview.")
+    _add_isis_selector_arguments(isis_overview_parser)
+    _add_isis_access_arguments(isis_overview_parser)
+    _set_runner(isis_overview_parser, _run_isis_course_overview)
+
+    isis_announcements_parser = subparsers.add_parser("isis-announcements", help="Read ISIS course announcements.")
+    _add_isis_selector_arguments(isis_announcements_parser)
+    _add_isis_access_arguments(isis_announcements_parser)
+    isis_announcements_parser.add_argument("--since-days", type=int, default=90)
+    isis_announcements_parser.add_argument("--limit", type=int, default=10)
+    _set_runner(isis_announcements_parser, _run_isis_announcements)
+
+    isis_assignments_parser = subparsers.add_parser("isis-assignments", help="Read ISIS course assignments.")
+    _add_isis_selector_arguments(isis_assignments_parser)
+    _add_isis_access_arguments(isis_assignments_parser)
+    isis_assignments_parser.add_argument("--limit", type=int, default=30)
+    isis_assignments_parser.add_argument("--no-submission-status", action="store_true")
+    _set_runner(isis_assignments_parser, _run_isis_assignments)
+
+    isis_dates_parser = subparsers.add_parser("isis-dates", help="Extract dates and times from ISIS course data.")
+    _add_isis_selector_arguments(isis_dates_parser)
+    _add_isis_access_arguments(isis_dates_parser)
+    isis_dates_parser.add_argument("--since-days", type=int, default=180)
+    isis_dates_parser.add_argument("--days-ahead", type=int, default=240)
+    isis_dates_parser.add_argument("--limit", type=int, default=80)
+    _set_runner(isis_dates_parser, _run_isis_dates)
+
+    isis_inspect_parser = subparsers.add_parser("inspect-isis-candidate", help="Build a planning brief for an ISIS course candidate.")
+    _add_isis_selector_arguments(isis_inspect_parser)
+    _add_isis_access_arguments(isis_inspect_parser)
+    isis_inspect_parser.add_argument("--since-days", type=int, default=120)
+    isis_inspect_parser.add_argument("--days-ahead", type=int, default=240)
+    isis_inspect_parser.add_argument("--no-forums", action="store_true")
+    isis_inspect_parser.add_argument("--no-materials", action="store_true")
+    isis_inspect_parser.add_argument("--no-assessments", action="store_true")
+    _set_runner(isis_inspect_parser, _run_isis_candidate_inspection)
+
+    ask_isis_parser = subparsers.add_parser("ask-isis-agent", help="Ask the Phase 3 CrewAI ISIS course information specialist.")
+    ask_isis_parser.add_argument("query", help="Student question for the ISIS agent.")
+    ask_isis_parser.add_argument("--isis-context-json", default="{}", help="Structured IsisLookupContext JSON from MOSES/Flow handoff.")
+    ask_isis_parser.add_argument("--allow-temp-enrollment", action="store_true", help="Allow temporary self-enrollment for read-only course inspection during this run.")
+    _add_agent_runtime_arguments(ask_isis_parser)
+    _set_runner(ask_isis_parser, _run_ask_isis_agent)
 
     return parser
 
@@ -368,6 +432,87 @@ def _run_eval_moses_agent(args: argparse.Namespace) -> str:
     )
 
 
+def _run_isis_courses(args: argparse.Namespace) -> str:
+    from crew.tools.isis_tools import ListMyIsisCoursesTool
+
+    return ListMyIsisCoursesTool()._run(include_hidden=args.include_hidden, max_courses=args.max_courses)
+
+
+def _run_isis_search(args: argparse.Namespace) -> str:
+    from crew.tools.isis_tools import SearchIsisCoursesTool
+
+    return SearchIsisCoursesTool()._run(query=args.query, term_hint=args.term_hint, max_results=args.max_results)
+
+
+def _run_isis_course_overview(args: argparse.Namespace) -> str:
+    from crew.tools.isis_tools import GetIsisCourseOverviewTool
+
+    return GetIsisCourseOverviewTool(allow_temp_enrollment=args.allow_temp_enrollment)._run(**_isis_selector_kwargs(args))
+
+
+def _run_isis_announcements(args: argparse.Namespace) -> str:
+    from crew.tools.isis_tools import GetIsisCourseAnnouncementsTool
+
+    return GetIsisCourseAnnouncementsTool(allow_temp_enrollment=args.allow_temp_enrollment)._run(
+        **_isis_selector_kwargs(args),
+        since_days=args.since_days,
+        limit=args.limit,
+    )
+
+
+def _run_isis_assignments(args: argparse.Namespace) -> str:
+    from crew.tools.isis_tools import GetIsisCourseAssignmentsTool
+
+    return GetIsisCourseAssignmentsTool(allow_temp_enrollment=args.allow_temp_enrollment)._run(
+        **_isis_selector_kwargs(args),
+        include_submission_status=not args.no_submission_status,
+        limit=args.limit,
+    )
+
+
+def _run_isis_dates(args: argparse.Namespace) -> str:
+    from crew.tools.isis_tools import ExtractIsisCourseDatesFromTextTool
+
+    return ExtractIsisCourseDatesFromTextTool(allow_temp_enrollment=args.allow_temp_enrollment)._run(
+        **_isis_selector_kwargs(args),
+        since_days=args.since_days,
+        days_ahead=args.days_ahead,
+        limit=args.limit,
+    )
+
+
+def _run_isis_candidate_inspection(args: argparse.Namespace) -> str:
+    from crew.tools.isis_tools import InspectIsisCandidateCourseTool
+
+    return InspectIsisCandidateCourseTool(allow_temp_enrollment=args.allow_temp_enrollment)._run(
+        **_isis_selector_kwargs(args),
+        since_days=args.since_days,
+        days_ahead=args.days_ahead,
+        include_forums=not args.no_forums,
+        include_materials=not args.no_materials,
+        include_assessments=not args.no_assessments,
+    )
+
+
+def _run_ask_isis_agent(args: argparse.Namespace) -> str:
+    result = run_isis_agent_query(
+        query=args.query,
+        student_context=args.student_context,
+        isis_context_json=args.isis_context_json,
+        allow_temp_enrollment=args.allow_temp_enrollment,
+        model=args.model,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        trace=args.trace,
+        trace_full=args.trace_full,
+        verbose=args.verbose,
+        cache=not args.no_cache,
+        logs_root=args.logs_root,
+        run_id=args.run_id,
+    )
+    return format_isis_agent_run(result)
+
+
 def run_moses_agent_query(
     *,
     query: str,
@@ -429,9 +574,96 @@ def run_moses_agent_query(
         )
 
 
+def run_isis_agent_query(
+    *,
+    query: str,
+    student_context: str = "",
+    isis_context_json: str = "{}",
+    allow_temp_enrollment: bool = False,
+    model: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    trace: bool = True,
+    trace_full: bool = False,
+    verbose: bool = False,
+    cache: bool = True,
+    logs_root: Path | str = Path("logs/crew_runs"),
+    run_id: str | None = None,
+) -> IsisAgentRunResult:
+    from crew.isis_crew import IsisCourseInfoCrew
+    from crew.tracing import capture_tool_traces
+
+    load_dotenv()
+    trace_model = model or os.getenv("STUDY_ASSISTANT_MODEL", DEFAULT_AGENT_MODEL)
+    validated_context = _validate_json_text(isis_context_json)
+    crew_instance = IsisCourseInfoCrew(
+        model=model,
+        temperature=temperature,
+        top_p=top_p,
+        allow_temp_enrollment=allow_temp_enrollment,
+        verbose=verbose,
+        cache=cache,
+    ).crew()
+    inputs = {
+        "query": query,
+        "student_context": student_context or "No student context supplied.",
+        "isis_context": validated_context,
+    }
+    with capture_tool_traces(
+        enabled=trace,
+        query=query,
+        student_context=student_context or "No student context supplied.",
+        model=trace_model,
+        temperature=temperature,
+        top_p=top_p,
+        logs_root=logs_root,
+        trace_full=trace_full,
+        run_id=run_id,
+    ) as recorder:
+        raw_result = crew_instance.kickoff(inputs=inputs)
+        answer = str(getattr(raw_result, "raw", raw_result))
+        usage_metrics = getattr(raw_result, "usage_metrics", None) or getattr(raw_result, "token_usage", None)
+        state = {
+            "query": query,
+            "student_context": student_context or "",
+            "isis_context": json.loads(validated_context),
+            "allow_temp_enrollment": allow_temp_enrollment,
+            "answer_markdown": answer,
+        }
+        recorder.write_answer(answer, usage_metrics=usage_metrics, state=state)
+        return IsisAgentRunResult(
+            answer=answer,
+            tool_summary_lines=recorder.compact_summary_lines(),
+            trace_dir=recorder.run_dir,
+            state_path=getattr(recorder, "state_path", None),
+            raw_result=raw_result,
+        )
+
+
 def format_moses_agent_run(result: MosesAgentRunResult) -> str:
     lines = [
         "# Moses Agent Answer",
+        "",
+        result.answer.rstrip(),
+        "",
+        "## Tool calls",
+        *[f"- {line}" for line in result.tool_summary_lines],
+    ]
+    if result.trace_dir:
+        lines.extend(
+            [
+                "",
+                f"Readable report: {result.trace_dir / 'report.md'}",
+                f"Structured state: {result.state_path or result.trace_dir / 'state.json'}",
+                f"Trace directory: {result.trace_dir}",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+def format_isis_agent_run(result: IsisAgentRunResult) -> str:
+    lines = [
+        "# ISIS Agent Answer",
         "",
         result.answer.rstrip(),
         "",
@@ -510,6 +742,41 @@ def _add_agent_runtime_arguments(parser: argparse.ArgumentParser, *, include_mod
     parser.add_argument("--no-cache", action="store_true", help="Disable CrewAI tool/result cache for this run.")
     parser.add_argument("--logs-root", type=Path, default=Path("logs/crew_runs"), help="Root directory for trace runs.")
     parser.add_argument("--run-id", help="Optional fixed run id for trace output.")
+
+
+def _add_isis_selector_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--course-id", type=int, help="Verified ISIS/Moodle course id.")
+    group.add_argument("--course-url", help="ISIS course URL, e.g. https://isis.tu-berlin.de/course/view.php?id=47025.")
+    group.add_argument("--course-query", help="Course title/search text when no ISIS course id is known.")
+    parser.add_argument("--term-hint", help='Optional term hint, e.g. "SoSe 2026".')
+    parser.add_argument("--expected-title", help="Optional expected title for verification.")
+
+
+def _add_isis_access_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--allow-temp-enrollment",
+        action="store_true",
+        help="Allow temporary self-enrollment for this read-only command if ISIS denies access.",
+    )
+
+
+def _isis_selector_kwargs(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "course_id": args.course_id,
+        "course_url": args.course_url,
+        "course_query": args.course_query,
+        "term_hint": args.term_hint,
+        "expected_title": args.expected_title,
+    }
+
+
+def _validate_json_text(value: str) -> str:
+    try:
+        parsed = json.loads(value or "{}")
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid JSON for --isis-context-json: {exc}") from exc
+    return json.dumps(parsed, ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def _set_runner(parser: argparse.ArgumentParser, runner: Runner) -> None:

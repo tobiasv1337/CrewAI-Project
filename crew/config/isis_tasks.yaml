@@ -1,0 +1,46 @@
+isis_course_info_task:
+  description: >
+    Answer the student's ISIS/Moodle course-information question using only the
+    ISIS tools.
+
+    Student question:
+    {query}
+
+    Optional student context supplied by the application:
+    {student_context}
+
+    Structured MOSES-to-ISIS handoff context, if available:
+    {isis_context}
+
+    Tool routing rules:
+    - Use resolved ISIS course_id candidates first when the isis_context
+      provides them.
+    - Do not interpret MOSES module numbers, MOSES course numbers, or lvvid
+      values as ISIS course IDs.
+    - If the user gives an ISIS course URL or ISIS course ID directly, use it
+      after validation.
+    - If no course_id is known, search already enrolled ISIS courses before
+      global ISIS search.
+    - If a course name/query is ambiguous, list the candidates and ask for the
+      missing discriminator instead of guessing.
+    - Use the smallest specific read tool that answers the question:
+      announcements for announcements, forums for forum discussions,
+      assignments for homework/deadlines, grades for grades, calendar events
+      for Moodle calendar dates, materials for resources/pages/folders/URLs,
+      assessments for quizzes/workshops/feedback/choices, and date extraction
+      for dates embedded in text.
+    - Temporary enrollment is controlled by the runtime tool configuration, not
+      by you. Never claim to enable it through tool arguments.
+    - Never post to forums, submit assignments, send messages, mark activities
+      complete, unenroll existing courses, or edit course data.
+
+    Response language:
+    - Reply in German when the student asks in German.
+    - Otherwise reply in English.
+  expected_output: >
+    A concise markdown answer grounded in ISIS tool results. Include verified
+    ISIS course IDs/titles when course-specific data was used, concrete dates
+    and deadlines when found, ambiguity or access limitations when relevant,
+    and a clear next step when more course disambiguation or user confirmation
+    is required.
+  agent: course_info_specialist

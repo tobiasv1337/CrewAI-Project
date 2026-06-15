@@ -11,10 +11,22 @@ from crew.tools.moses_tools import (
     search_degree_programs,
     search_modules,
 )
+from crew.tools.isis_tools import (
+    CONFIRMATION_TOKEN,
+    ISIS_READ_ONLY_TOOLS,
+    ISIS_TOOLS,
+    ISIS_WRITE_TOOLS,
+    make_isis_read_only_tools,
+)
 
 __all__ = [
+    "CONFIRMATION_TOKEN",
+    "ISIS_READ_ONLY_TOOLS",
+    "ISIS_TOOLS",
+    "ISIS_WRITE_TOOLS",
     "MOSES_TOOLS",
     "MOSES_MODULE_RESEARCH_TOOLS",
+    "make_isis_read_only_tools",
     "search_modules",
     "get_module_details",
     "get_module_catalogs",

@@ -37,11 +37,20 @@ class IsisLookupContext(BaseModel):
     fallback_search_terms: list[str] = Field(default_factory=list)
 
 
+class IsisResearchState(BaseModel):
+    answer_markdown: str = ""
+    resolved_course_ids: list[int] = Field(default_factory=list)
+    search_terms_used: list[str] = Field(default_factory=list)
+    temporary_enrollment_actions: list[str] = Field(default_factory=list)
+    ambiguity_notes: list[str] = Field(default_factory=list)
+
+
 class StudyAssistantState(BaseModel):
     query: str
     student_context: str = ""
     moses_result: MosesResearchState | None = None
     isis_context: IsisLookupContext | None = None
+    isis_result: IsisResearchState | None = None
     final_answer_markdown: str = ""
 
 

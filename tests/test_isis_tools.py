@@ -50,15 +50,25 @@ class FakeToolClient:
 
     def course_contents(self, course_id: int):
         self._check_access(course_id)
+        modules = [
+            {"id": 11, "name": "Course overview", "modname": "page", "description": "<p>Starts 20.04.2026</p>"},
+            {"id": 12, "name": "Slides", "modname": "resource", "url": "https://isis.example/slides"},
+        ]
+        if course_id == 47025:
+            modules.append({
+                "id": 1001,
+                "name": "Fake Course Survey",
+                "modname": "questionnaire",
+                "instance": 5001,
+                "description": "Please submit by tomorrow",
+                "dates": [{"dataid": "timeclose", "label": "Due date:", "timestamp": 1785452340}]
+            })
         return [
             {
                 "id": 1,
                 "name": "General",
                 "summary": "<p>Lecture Monday 10:00, exam 15.07.2026.</p>",
-                "modules": [
-                    {"id": 11, "name": "Course overview", "modname": "page", "description": "<p>Starts 20.04.2026</p>"},
-                    {"id": 12, "name": "Slides", "modname": "resource", "url": "https://isis.example/slides"},
-                ],
+                "modules": modules,
             }
         ]
 
@@ -106,13 +116,13 @@ class FakeToolClient:
         self._check_access(course_id)
         return {"usergrades": [{"gradeitems": [{"itemname": "Project", "gradeformatted": "-", "grademax": 60}]}]}
 
-    def calendar_events(self, course_id: int, *, days_ahead: int = 180):
+    def calendar_events(self, course_id: int, *, days_ahead: int = 180, days_past: int = 0):
         self._check_access(course_id)
-        return {"events": [{"name": "Project due", "timestart": 1_801_000_000, "eventtype": "due"}]}
+        return {"events": [{"name": "Project due", "timestart": 1_801_000_000, "eventtype": "due", "modulename": "assign", "instance": 99}]}
 
-    def action_events_by_course(self, course_id: int, *, days_ahead: int = 180):
+    def action_events_by_course(self, course_id: int, *, days_ahead: int = 180, days_past: int = 0):
         self._check_access(course_id)
-        return {"events": [{"name": "Project action", "timesort": 1_801_000_000, "eventtype": "assign"}]}
+        return {"events": [{"name": "Project action", "timesort": 1_801_000_000, "eventtype": "assign", "modulename": "assign", "instance": 99}]}
 
     def resources(self, course_id: int):
         self._check_access(course_id)
@@ -428,3 +438,23 @@ def test_search_isis_courses_smart_fallback(monkeypatch):
     output_any = isis_tools.SearchIsisCoursesTool()._run(query="Schaltungstechnik", term_hint="any")
     assert "filtered by current semester" not in output_any
     assert "Schaltungstechnik" in output_any
+
+
+def test_get_assignments_and_assessments_includes_quizzes_and_questionnaires(monkeypatch):
+    client = FakeToolClient()
+    monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)
+
+    # Verify assignments tool returns standard assignment, quiz, and questionnaire
+    output_assign = isis_tools.GetIsisCourseAssignmentsTool()._run(course_id=47025)
+    assert "Project [assign]" in output_assign
+    assert "Quiz 1 [quiz]" in output_assign
+    assert "Fake Course Survey [questionnaire]" in output_assign
+    assert "Due: 2027-02-07 12:33" in output_assign
+    assert "Due: 2026-07-31 00:59" in output_assign
+
+    # Verify assessments tool returns questionnaires when all/questionnaires are requested
+    output_assess = isis_tools.GetIsisCourseAssessmentsTool()._run(course_id=47025, assessment_types=["all"])
+    assert "questionnaires" in output_assess
+    assert "Fake Course Survey" in output_assess
+    assert "due: 2026-07-31 00:59" in output_assess
+

@@ -396,27 +396,27 @@ class MoodleRestClient:
     def overview_course_grades(self) -> dict[str, Any]:
         return dict(self.call("gradereport_overview_get_course_grades", userid=self.user_id()) or {})
 
-    def calendar_events(self, course_id: int, *, days_ahead: int = 180) -> dict[str, Any]:
+    def calendar_events(self, course_id: int, *, days_ahead: int = 180, days_past: int = 0) -> dict[str, Any]:
         now = int(time.time())
         return dict(
             self.call(
                 "core_calendar_get_calendar_events",
                 **{
                     "events[courseids][0]": course_id,
-                    "options[timestart]": now,
+                    "options[timestart]": now - max(days_past, 0) * 86400,
                     "options[timeend]": now + max(days_ahead, 1) * 86400,
                 },
             )
             or {}
         )
 
-    def action_events_by_course(self, course_id: int, *, days_ahead: int = 180) -> dict[str, Any]:
+    def action_events_by_course(self, course_id: int, *, days_ahead: int = 180, days_past: int = 0) -> dict[str, Any]:
         now = int(time.time())
         return dict(
             self.call(
                 "core_calendar_get_action_events_by_course",
                 courseid=course_id,
-                timesortfrom=now,
+                timesortfrom=now - max(days_past, 0) * 86400,
                 timesortto=now + max(days_ahead, 1) * 86400,
             )
             or {}

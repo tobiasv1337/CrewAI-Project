@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime
 import json
 import re
+import time
 from typing import Any, Literal, Type
 
 from crewai.tools import BaseTool
@@ -77,6 +78,7 @@ class AssignmentsInput(CourseReadInput):
 
 class CalendarInput(CourseReadInput):
     days_ahead: int = Field(default=180, description="Future days to inspect for calendar/action events.")
+    days_past: int = Field(default=0, description="Past days to inspect for calendar/action events.")
     include_action_events: bool = Field(default=True, description="Include Moodle action events such as due tasks.")
 
 
@@ -89,7 +91,7 @@ class MaterialsInput(CourseReadInput):
     limit: int = Field(default=50, description="Maximum material items to show.")
 
 
-AssessmentType = Literal["quizzes", "lessons", "feedbacks", "choices", "workshops", "glossaries", "all"]
+AssessmentType = Literal["quizzes", "lessons", "feedbacks", "choices", "workshops", "glossaries", "questionnaires", "all"]
 
 
 class AssessmentsInput(CourseReadInput):
@@ -357,11 +359,12 @@ class GetIsisCourseCalendarEventsTool(_BaseIsisTool):
 
     def _run(self, **kwargs: Any) -> str:
         days_ahead = int(kwargs.pop("days_ahead", 180))
+        days_past = int(kwargs.pop("days_past", 0))
         include_action_events = bool(kwargs.pop("include_action_events", True))
         return self._read_course(
             operation="course_calendar_events",
             formatter=_format_calendar,
-            reader=lambda client, course_id: _read_calendar(client, course_id, days_ahead=days_ahead, include_action_events=include_action_events),
+            reader=lambda client, course_id: _read_calendar(client, course_id, days_ahead=days_ahead, days_past=days_past, include_action_events=include_action_events),
             **kwargs,
         )
 
@@ -603,9 +606,11 @@ def _forum_discussion_items(
 
 
 def _read_assignments(client: MoodleRestClient, course_id: int, *, include_submission_status: bool, limit: int) -> list[dict[str, Any]]:
-    data = client.assignments(course_id)
+    # 1. Fetch standard assignments
+    assignments_data = client.assignments(course_id)
     assignments: list[dict[str, Any]] = []
-    for course in data.get("courses") or []:
+    
+    for course in (assignments_data or {}).get("courses") or []:
         for assignment in course.get("assignments") or []:
             item = {
                 "id": assignment.get("id"),
@@ -617,6 +622,7 @@ def _read_assignments(client: MoodleRestClient, course_id: int, *, include_submi
                 "allowsubmissionsfromdate": unix_date(assignment.get("allowsubmissionsfromdate")),
                 "grade": assignment.get("grade"),
                 "teamsubmission": assignment.get("teamsubmission"),
+                "type": "assign",
             }
             if include_submission_status and assignment.get("id"):
                 status, error = safe_call(lambda assignment_id=int(assignment["id"]): client.assignment_submission_status(assignment_id))
@@ -625,14 +631,96 @@ def _read_assignments(client: MoodleRestClient, course_id: int, *, include_submi
             assignments.append(item)
             if len(assignments) >= limit:
                 return assignments
+                
+    # 2. Fetch quizzes
+    quizzes_data, _ = safe_call(lambda: client.quizzes(course_id))
+    for quiz in quizzes_data or []:
+        item = {
+            "id": quiz.get("id"),
+            "cmid": quiz.get("coursemodule"),
+            "name": clean_text(quiz.get("name")),
+            "intro": _preview(strip_html(quiz.get("intro")), 4000),
+            "duedate": unix_date(quiz.get("timeclose")),
+            "cutoffdate": unix_date(quiz.get("timeclose")),
+            "allowsubmissionsfromdate": unix_date(quiz.get("timeopen")),
+            "grade": quiz.get("grade"),
+            "teamsubmission": False,
+            "type": "quiz",
+        }
+        assignments.append(item)
+        if len(assignments) >= limit:
+            return assignments
+            
+    # 3. Fetch course contents & calendar events to resolve other modules (like questionnaires)
+    contents, _ = safe_call(lambda: client.course_contents(course_id))
+    events_data, _ = safe_call(lambda: client.calendar_events(course_id, days_ahead=240, days_past=120))
+    
+    calendar_map = {}
+    for event in (events_data or {}).get("events") or []:
+        modname = event.get("modulename")
+        instance = event.get("instance")
+        if modname and instance:
+            if event.get("eventtype") == "due" or (modname, instance) not in calendar_map:
+                calendar_map[(modname, instance)] = event
+                
+    for section in contents or []:
+        for module in section.get("modules") or []:
+            modname = module.get("modname")
+            instance = module.get("instance")
+            # Skip what we already fetched
+            if modname in ("assign", "quiz") or not modname or not instance:
+                continue
+                
+            # Check if it has a deadline in dates/customdata or in the calendar
+            event = calendar_map.get((modname, instance))
+            is_questionnaire = (modname == "questionnaire")
+            is_due = (event is not None and event.get("eventtype") == "due")
+            
+            # Extract from dates/customdata
+            extracted_due = None
+            dates = module.get("dates") or []
+            for date_item in dates:
+                if date_item.get("dataid") in ("timeclose", "timecompleted", "duedate"):
+                    extracted_due = unix_date(date_item.get("timestamp"))
+            if not extracted_due:
+                customdata = module.get("customdata")
+                if customdata:
+                    try:
+                        parsed = json.loads(customdata)
+                        if "timeclose" in parsed:
+                            extracted_due = unix_date(parsed["timeclose"])
+                        elif "duedate" in parsed:
+                            extracted_due = unix_date(parsed["duedate"])
+                    except Exception:
+                        pass
+            
+            due = extracted_due or (unix_date(event.get("timestart")) if event else None)
+            
+            if is_questionnaire or is_due or due:
+                item = {
+                    "id": instance,
+                    "cmid": module.get("id"),
+                    "name": clean_text(module.get("name")),
+                    "intro": _preview(strip_html(module.get("description")), 4000),
+                    "duedate": due,
+                    "cutoffdate": due,
+                    "allowsubmissionsfromdate": None,
+                    "grade": None,
+                    "teamsubmission": False,
+                    "type": modname,
+                }
+                assignments.append(item)
+                if len(assignments) >= limit:
+                    return assignments
+                    
     return assignments
 
 
-def _read_calendar(client: MoodleRestClient, course_id: int, *, days_ahead: int, include_action_events: bool) -> dict[str, Any]:
-    calendar, calendar_error = safe_call(lambda: client.calendar_events(course_id, days_ahead=days_ahead))
+def _read_calendar(client: MoodleRestClient, course_id: int, *, days_ahead: int, days_past: int, include_action_events: bool) -> dict[str, Any]:
+    calendar, calendar_error = safe_call(lambda: client.calendar_events(course_id, days_ahead=days_ahead, days_past=days_past))
     result = {"calendar_events": calendar, "calendar_error": calendar_error}
     if include_action_events:
-        action, action_error = safe_call(lambda: client.action_events_by_course(course_id, days_ahead=days_ahead))
+        action, action_error = safe_call(lambda: client.action_events_by_course(course_id, days_ahead=days_ahead, days_past=days_past))
         result["action_events"] = action
         result["action_events_error"] = action_error
     return result
@@ -675,7 +763,7 @@ def _read_materials(
 def _read_assessments(client: MoodleRestClient, course_id: int, *, assessment_types: list[str], limit: int) -> dict[str, Any]:
     wanted = set(assessment_types or ["all"])
     if "all" in wanted:
-        wanted = {"quizzes", "lessons", "feedbacks", "choices", "workshops", "glossaries"}
+        wanted = {"quizzes", "lessons", "feedbacks", "choices", "workshops", "glossaries", "questionnaires"}
     readers = {
         "quizzes": client.quizzes,
         "lessons": client.lessons,
@@ -692,6 +780,58 @@ def _read_assessments(client: MoodleRestClient, course_id: int, *, assessment_ty
         result[name] = _compact_activity_items(value or [], include_text=True, limit=limit)
         if error:
             result[f"{name}_error"] = error
+            
+    if "questionnaires" in wanted:
+        contents, error = safe_call(lambda: client.course_contents(course_id))
+        if error:
+            result["questionnaires_error"] = error
+        else:
+            events_data, _ = safe_call(lambda: client.calendar_events(course_id, days_ahead=240, days_past=120))
+            calendar_map = {}
+            for event in (events_data or {}).get("events") or []:
+                modname = event.get("modulename")
+                instance = event.get("instance")
+                if modname == "questionnaire" and instance:
+                    if event.get("eventtype") == "due" or ("questionnaire", instance) not in calendar_map:
+                        calendar_map[instance] = event
+            
+            questionnaires = []
+            for section in contents or []:
+                for module in section.get("modules") or []:
+                    if module.get("modname") == "questionnaire":
+                        instance = module.get("instance")
+                        event = calendar_map.get(instance)
+                        
+                        # Extract from dates/customdata
+                        extracted_due = None
+                        dates = module.get("dates") or []
+                        for date_item in dates:
+                            if date_item.get("dataid") in ("timeclose", "timecompleted", "duedate"):
+                                extracted_due = unix_date(date_item.get("timestamp"))
+                        if not extracted_due:
+                            customdata = module.get("customdata")
+                            if customdata:
+                                try:
+                                    parsed = json.loads(customdata)
+                                    if "timeclose" in parsed:
+                                        extracted_due = unix_date(parsed["timeclose"])
+                                    elif "duedate" in parsed:
+                                        extracted_due = unix_date(parsed["duedate"])
+                                except Exception:
+                                    pass
+                                    
+                        due = extracted_due or (unix_date(event.get("timestart")) if event else None)
+                        
+                        item = {
+                            "id": instance,
+                            "coursemodule": module.get("id"),
+                            "name": clean_text(module.get("name")),
+                            "url": module.get("url"),
+                            "due": due,
+                            "intro": _preview(strip_html(module.get("description")), 3000),
+                        }
+                        questionnaires.append({k: v for k, v in item.items() if v not in (None, "")})
+            result["questionnaires"] = questionnaires[:limit]
     return result
 
 
@@ -745,7 +885,7 @@ def _read_candidate_inspection(
         ("overview", lambda: _read_overview(client, course_id)),
         ("announcements", lambda: _read_announcements(client, course_id, since_days=since_days, limit=8, include_message_preview=True)),
         ("assignments", lambda: _read_assignments(client, course_id, include_submission_status=False, limit=20)),
-        ("calendar", lambda: _read_calendar(client, course_id, days_ahead=days_ahead, include_action_events=True)),
+        ("calendar", lambda: _read_calendar(client, course_id, days_ahead=days_ahead, days_past=since_days, include_action_events=True)),
         ("dates_from_text", lambda: _read_date_hits(client, course_id, since_days=since_days, days_ahead=days_ahead, limit=40)),
     ]:
         value, error = safe_call(reader)
@@ -885,7 +1025,8 @@ def _format_assignments(result: IsisReadResult) -> str:
     if not assignments:
         lines.append("No assignments were returned.")
     for item in assignments:
-        lines.append(f"- {item.get('name') or 'Untitled assignment'}")
+        mod_type = f" [{item['type']}]" if item.get("type") else ""
+        lines.append(f"- {item.get('name') or 'Untitled assignment'}{mod_type}")
         lines.append(f"  - Due: {_value(item.get('duedate'))}")
         lines.append(f"  - Cutoff: {_value(item.get('cutoffdate'))}")
         lines.append(f"  - Available from: {_value(item.get('allowsubmissionsfromdate'))}")

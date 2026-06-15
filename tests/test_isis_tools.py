@@ -288,3 +288,20 @@ def test_json_limited_structural_pruning():
     assert json.dumps(pruned_dummy) == '{"ref": {"id": 123, "name": "Dummy Course"}}'
 
 
+def test_course_read_input_none_like_normalization():
+    from crew.tools.isis_tools import ForumsInput
+
+    # "None" string or empty/whitespace string should be normalized to None
+    inp = ForumsInput(course_id=47025, forum_name="None", expected_title="  ", term_hint="null")
+    assert inp.forum_name is None
+    assert inp.expected_title is None
+    assert inp.term_hint is None
+
+    # Test the wider set of MOSES-like none tokens
+    inp2 = ForumsInput(course_id=47025, forum_name="n/a", expected_title="any", term_hint="notavailable")
+    assert inp2.forum_name is None
+    assert inp2.expected_title is None
+    assert inp2.term_hint is None
+
+
+

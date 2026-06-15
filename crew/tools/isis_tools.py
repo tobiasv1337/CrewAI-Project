@@ -31,8 +31,10 @@ class IsisToolInput(BaseModel):
     @field_validator("*", mode="before")
     @classmethod
     def _none_like_strings(cls, value: object) -> object:
-        if isinstance(value, str) and value.strip().lower() in {"", "none", "null", "nil", "n/a"}:
-            return None
+        if isinstance(value, str):
+            normalized = re.sub(r"[^a-z0-9äöüß]+", "", value.casefold())
+            if normalized in {"", "none", "null", "nil", "na", "n/a", "notlisted", "notavailable", "any"}:
+                return None
         return value
 
 
@@ -47,7 +49,7 @@ class SearchCoursesInput(IsisToolInput):
     max_results: int = Field(default=10, description="Maximum search candidates to show.")
 
 
-class CourseReadInput(IsisCourseSelector):
+class CourseReadInput(IsisCourseSelector, IsisToolInput):
     pass
 
 

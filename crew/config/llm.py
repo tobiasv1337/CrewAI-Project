@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 
 DEFAULT_GWDG_API_BASE = "https://chat-ai.hpc.gwdg.de/v1"
-DEFAULT_STUDY_ASSISTANT_MODEL = "mistral-large-3-675b-instruct-2512"
+DEFAULT_STUDY_ASSISTANT_MODEL = "qwen3.5-122b-a10b"
 DEFAULT_TEMPERATURE = 0.2
 DEFAULT_TIMEOUT_SECONDS = 180
 

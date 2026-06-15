@@ -23,10 +23,12 @@ from crew.tools.moses_tools import (
 )
 
 
+from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL
+
 Runner = Callable[[argparse.Namespace], str]
 SECTION_SEPARATOR = "\n\n" + "=" * 80 + "\n\n"
 DEFAULT_EVAL_QUERIES_PATH = Path("tests/fixtures/moses_agent_queries.jsonl")
-DEFAULT_AGENT_MODEL = "mistral-large-3-675b-instruct-2512"
+DEFAULT_AGENT_MODEL = DEFAULT_STUDY_ASSISTANT_MODEL
 
 
 @dataclass

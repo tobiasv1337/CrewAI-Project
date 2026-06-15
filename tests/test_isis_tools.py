@@ -311,7 +311,7 @@ def test_json_limited_structural_pruning():
 
 
 def test_course_read_input_none_like_normalization():
-    from crew.tools.isis_tools import ForumsInput
+    from crew.tools.isis_tools import ForumsInput, SearchCoursesInput
 
     # "None" string or empty/whitespace string should be normalized to None
     inp = ForumsInput(course_id=47025, forum_name="None", expected_title="  ", term_hint="null")
@@ -320,10 +320,14 @@ def test_course_read_input_none_like_normalization():
     assert inp.term_hint is None
 
     # Test the wider set of MOSES-like none tokens
-    inp2 = ForumsInput(course_id=47025, forum_name="n/a", expected_title="any", term_hint="notavailable")
+    inp2 = ForumsInput(course_id=47025, forum_name="n/a", expected_title="notlisted", term_hint="notavailable")
     assert inp2.forum_name is None
     assert inp2.expected_title is None
     assert inp2.term_hint is None
+
+    assert SearchCoursesInput(query="RL", term_hint="any").term_hint == "any"
+    assert ForumsInput(course_id=47025, term_hint="any").term_hint == "any"
+    assert ForumsInput(course_id=47025, expected_title="any").expected_title == "any"
 
 
 def test_new_date_and_time_extraction():
@@ -341,6 +345,7 @@ def test_new_date_and_time_extraction():
     assert isis_tools._find_time_text("at 10:00am - 11:00am") == "10:00am - 11:00am"
     assert isis_tools._find_time_text("lecture 14:15 -15:45") == "14:15 -15:45"
     assert isis_tools._find_time_text("lecture 14:15 — 15:45") == "14:15 — 15:45"
+    assert isis_tools._find_time_text("lecture 14:00 - 16:00 in room X") == "14:00 - 16:00"
     assert isis_tools._find_time_text("Deadline 14.04.2026") is None
 
     # Test _split_into_logical_chunks
@@ -356,6 +361,9 @@ def test_new_date_and_time_extraction():
     assert "Final presentation on 14 July 2026 from 02:15 p.m. to 03:45 p.m." in chunks
     assert "First detail." in chunks
     assert "Second detail." in chunks
+    assert isis_tools._split_into_logical_chunks("Lecture Monday 14:00 - 16:00 in room X.") == [
+        "Lecture Monday 14:00 - 16:00 in room X."
+    ]
 
     # Test _extract_date_hits produces multiple hits
     hits = isis_tools._extract_date_hits(
@@ -372,6 +380,12 @@ def test_new_date_and_time_extraction():
 
     assert "14:15 -15:45" in time_texts
     assert "02:15 p.m. to 03:45 p.m." in time_texts
+
+    range_hits = isis_tools._extract_date_hits(
+        "overview",
+        {"summary": "Lecture Monday 14:00 - 16:00 in room X."},
+    )
+    assert [(h.date_text, h.time_text) for h in range_hits] == [("Monday", "14:00 - 16:00")]
 
 
 def test_get_my_isis_grades_overview_tool(monkeypatch):
@@ -410,7 +424,7 @@ def test_search_isis_courses_smart_fallback(monkeypatch):
     assert "filtered by current semester" not in output_bypass
     assert "Schaltungstechnik" in output_bypass
 
-
-
-
-
+    # 4. The documented "any" alias must also bypass the current-semester filter.
+    output_any = isis_tools.SearchIsisCoursesTool()._run(query="Schaltungstechnik", term_hint="any")
+    assert "filtered by current semester" not in output_any
+    assert "Schaltungstechnik" in output_any

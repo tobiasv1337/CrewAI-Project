@@ -39,7 +39,7 @@ OfferingFilter = Literal[
 ]
 LanguageFilter = Literal["any", "de", "en", "German", "English", "german", "english", "Deutsch", "Englisch"]
 GradingFilter = Literal["any", "graded", "ungraded", "benotet", "unbenotet", "Benotet", "Unbenotet"]
-NONE_LIKE_TOKENS = {"", "none", "null", "nil", "na", "n/a", "notlisted", "notavailable", "any"}
+NONE_LIKE_TOKENS = {"", "none", "null", "nil", "na", "n/a", "notlisted", "notavailable"}
 
 DEFAULT_MOSES_TIMEOUT_SECONDS = 15
 MAX_SEARCH_VARIANTS = 6
@@ -1072,8 +1072,16 @@ def _is_none_like(value: object) -> bool:
     return False
 
 
+def _is_any_token(value: object) -> bool:
+    return isinstance(value, str) and _normalize_token(value) == "any"
+
+
 def _normalize_optional_filter_value(value: object) -> object | None:
     return None if _is_none_like(value) else value
+
+
+def _normalize_optional_text_filter_value(value: object) -> object | None:
+    return None if _is_none_like(value) or _is_any_token(value) else value
 
 
 def _normalize_any_filter_value(value: object) -> object:
@@ -1081,7 +1089,7 @@ def _normalize_any_filter_value(value: object) -> object:
 
 
 def _normalize_optional_credit_filter(value: object) -> object | None:
-    if _is_none_like(value):
+    if _is_none_like(value) or _is_any_token(value):
         return None
     try:
         number = float(value)
@@ -1198,7 +1206,7 @@ class MosesToolInput(BaseModel):
     )
     @classmethod
     def normalize_optional_text_fields(cls, value):
-        return _normalize_optional_filter_value(value)
+        return _normalize_optional_text_filter_value(value)
 
     @field_validator("credits", "min_credits", "max_credits", mode="before", check_fields=False)
     @classmethod

@@ -55,6 +55,16 @@ def test_selector_rejects_lvvid_and_numeric_query():
         IsisCourseSelector(course_query="40782")
 
 
+def test_selector_rejects_lvvid_even_with_valid_course_id():
+    with pytest.raises(ValueError, match="lvvid"):
+        IsisCourseSelector(
+            course_id=47025,
+            course_url="https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=78",
+        )
+    with pytest.raises(ValueError, match="lvvid"):
+        IsisCourseSelector(course_id=47025, course_query="lvvid=78")
+
+
 def test_resolver_uses_course_url_and_validates_id():
     client = FakeClient()
     result = IsisCourseResolver(client).resolve(
@@ -185,4 +195,3 @@ def test_selector_rejects_conflicting_locators():
     # Conflicting ID and URL ID should raise ValueError
     with pytest.raises(ValueError, match="Conflicting course locators"):
         IsisCourseSelector(course_id=47025, course_url="https://isis.tu-berlin.de/course/view.php?id=99999")
-

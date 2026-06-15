@@ -120,6 +120,11 @@ class IsisCourseSelector(BaseModel):
         if sum(locators) == 0:
             raise ValueError("Provide at least one course locator: course_id, course_url, or course_query.")
 
+        if self.course_url and "lvvid=" in self.course_url.lower():
+            raise ValueError("A MOSES coursemanager lvvid URL is not an ISIS course URL. Use a resolved course/view.php?id=... URL.")
+        if self.course_query and "lvvid" in self.course_query.lower():
+            raise ValueError("Do not pass lvvid values to ISIS tools. Use course_query text or a resolved ISIS course_id.")
+
         # Normalize/prioritize locators: course_id > course_url > course_query
         if self.course_id is not None:
             if self.course_url:
@@ -145,10 +150,6 @@ class IsisCourseSelector(BaseModel):
             else:
                 self.course_query = None
 
-        if self.course_url and "lvvid=" in self.course_url.lower():
-            raise ValueError("A MOSES coursemanager lvvid URL is not an ISIS course URL. Use a resolved course/view.php?id=... URL.")
-        if self.course_query and "lvvid" in self.course_query.lower():
-            raise ValueError("Do not pass lvvid values to ISIS tools. Use course_query text or a resolved ISIS course_id.")
         if self.course_query and self.course_query.strip().isdigit():
             raise ValueError(
                 "Numeric course_query is ambiguous and may be a MOSES module number. "
@@ -204,4 +205,3 @@ class IsisTraceEvent(BaseModel):
     candidates: list[IsisCourseRef] = Field(default_factory=list)
     note: str | None = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
-

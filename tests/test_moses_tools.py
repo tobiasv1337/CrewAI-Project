@@ -188,6 +188,28 @@ def test_degree_area_schema_normalizes_llm_empty_filter_values():
     assert parsed.grading == "any"
 
 
+def test_moses_any_token_is_field_specific():
+    parsed = moses_tools.SearchModulesInput.model_validate(
+        {
+            "query": "Machine Learning",
+            "offered_in": "any",
+            "language": "any",
+            "credits": "any",
+            "exam_type": "any",
+            "course_type": "any",
+            "grading": "any",
+        }
+    )
+
+    assert "any" not in moses_tools.NONE_LIKE_TOKENS
+    assert parsed.offered_in == "any"
+    assert parsed.language == "any"
+    assert parsed.grading == "any"
+    assert parsed.credits is None
+    assert parsed.exam_type is None
+    assert parsed.course_type is None
+
+
 def test_module_details_input_normalizes_version_none():
     parsed = moses_tools.ModuleDetailsInput.model_validate(
         {

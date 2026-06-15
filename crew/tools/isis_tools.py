@@ -34,7 +34,7 @@ class IsisToolInput(BaseModel):
     def _none_like_strings(cls, value: object) -> object:
         if isinstance(value, str):
             normalized = re.sub(r"[^a-z0-9äöüß]+", "", value.casefold())
-            if normalized in {"", "none", "null", "nil", "na", "n/a", "notlisted", "notavailable", "any"}:
+            if normalized in {"", "none", "null", "nil", "na", "n/a", "notlisted", "notavailable"}:
                 return None
         return value
 
@@ -1053,44 +1053,44 @@ def _split_into_logical_chunks(text: str) -> list[str]:
     delim = " ||| "
     # Split on list items like "1) "
     processed = re.sub(r"\b\d+\)\s+", delim, text)
-    # Split on bullet points
-    processed = re.sub(r"\s*[\-\*•]\s+", delim, processed)
-    
+    # Split on bullets after sentence/list punctuation, but keep time ranges like "14:00 - 16:00" intact.
+    processed = re.sub(r"(^|(?<=[.!?;:])\s+)[\-\*•]\s+", lambda match: match.group(1) + delim, processed)
+
     months = (
         r"Januar|January|Februar|February|M[aä]rz|March|April|Mai|May|Juni|June|"
         r"Juli|July|August|September|Oktober|October|November|Dezember|December"
     )
     month_pattern = re.compile(rf"^(?:{months})\b", re.I)
-    
+
     parts = []
     current_idx = 0
     # Search for sentence ending patterns: a dot, exclamation, or question mark, followed by one or more spaces
     for match in re.finditer(r"[\.\!\?]\s+", processed):
         split_pos = match.start()
         post_text = processed[match.end():].strip()
-        
+
         # Check if we should skip splitting:
         # A. Preceded by digit and followed by month name (e.g., "21. May")
         pre_match = re.search(r"\b\d+$", processed[current_idx:split_pos])
         if pre_match and month_pattern.match(post_text):
             continue
-            
+
         # B. Preceded by a.m./p.m. and followed by a lowercase letter
         is_ampm = re.search(r"\b[ap]\.?m\.?$", processed[current_idx:split_pos], re.I)
         if is_ampm and post_text and post_text[0].islower():
             continue
-            
+
         # C. Single letter abbreviation (e.g. "z. B.")
         is_single_letter = re.search(r"(?:^|\s)[a-zA-Z]$", processed[current_idx:split_pos])
         if is_single_letter:
             continue
-            
+
         # Otherwise, split here!
         parts.append(processed[current_idx:split_pos + 1].strip())
         current_idx = match.end()
-        
+
     parts.append(processed[current_idx:].strip())
-    
+
     final_chunks = []
     for part in parts:
         if not part:
@@ -1106,13 +1106,13 @@ def _split_into_logical_chunks(text: str) -> list[str]:
             sub_parts.append(part[sub_current_idx:sub_split_pos].strip())
             sub_current_idx = sub_match.end()
         sub_parts.append(part[sub_current_idx:].strip())
-        
+
         for sp in sub_parts:
             for c in sp.split("|||"):
                 c_clean = c.strip()
                 if c_clean:
                     final_chunks.append(c_clean)
-                    
+
     return final_chunks
 
 
@@ -1175,11 +1175,11 @@ def _find_time_text(text: str) -> str | None:
     # 1. Colon-based times (with optional a.m./p.m.)
     time_colon = r"\b\d{1,2}:\d{2}(?:\s*[ap]\.?m\.?)?"
     pattern_colon = rf"{time_colon}(?:\s*(?:-|bis|to|–|—)\s*{time_colon})?(?:\s*(?:Uhr|h))?"
-    
+
     # 2. Dot-based times (requires Uhr/h suffix)
     time_dot = r"\b\d{1,2}\.\d{2}"
     pattern_dot = rf"{time_dot}(?:\s*(?:-|bis|to|–|—)\s*{time_dot})?\s*(?:Uhr|h)\b"
-    
+
     pattern = rf"{pattern_colon}|{pattern_dot}"
     match = re.search(pattern, text, flags=re.I)
     return match.group(0) if match else None
@@ -1294,4 +1294,3 @@ def _json_limited(value: Any, *, max_chars: int = 15000) -> Any:
             return str(obj)
 
     return emergency_prune(pruned)
-

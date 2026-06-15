@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from contextvars import ContextVar
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -528,16 +529,20 @@ def _int_or_none(value: object | None) -> int | None:
     return None
 
 
-_DEFAULT_CLIENT: MoodleRestClient | None = None
+_CLIENT_VAR: ContextVar[MoodleRestClient | None] = ContextVar("isis_client", default=None)
 
 
 def get_default_isis_client() -> MoodleRestClient:
-    global _DEFAULT_CLIENT
-    if _DEFAULT_CLIENT is None:
-        _DEFAULT_CLIENT = MoodleRestClient.from_env()
-    return _DEFAULT_CLIENT
+    client = _CLIENT_VAR.get()
+    if client is None:
+        client = MoodleRestClient.from_env()
+        _CLIENT_VAR.set(client)
+    return client
+
+
+def set_default_isis_client(client: MoodleRestClient) -> None:
+    _CLIENT_VAR.set(client)
 
 
 def reset_default_isis_client() -> None:
-    global _DEFAULT_CLIENT
-    _DEFAULT_CLIENT = None
+    _CLIENT_VAR.set(None)

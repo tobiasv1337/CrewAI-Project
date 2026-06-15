@@ -35,6 +35,10 @@ module_research_task:
     - Only include teaching language, prerequisites, detailed content, or exam
       details when the called tool output actually contains those fields. Use
       "not listed in the retrieved MOSES data" otherwise.
+    - When module details include an "ISIS course candidates" section, treat
+      it only as a handoff hint for future ISIS lookup. You may mention a
+      resolved ISIS course candidate by course ID/title if it is useful, but
+      do not expose or infer MOSES/ISIS bridge internals such as lvvid.
     - This phase is read-only. Do not claim that a module was added to a study
       plan.
 

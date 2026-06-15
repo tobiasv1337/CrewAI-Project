@@ -29,6 +29,8 @@ from ...models import (
     MosesExamElement,
     MosesGradingRow,
     MosesGradingTable,
+    MosesIsisCandidate,
+    MosesIsisProvenance,
     MosesModuleData,
     MosesModuleElement,
     MosesSearchResult,
@@ -43,6 +45,10 @@ SEARCH_URL = f"{BASE_URL}/suchen.html?sprache=en"
 DETAIL_URL_TEMPLATE = f"{BASE_URL}/beschreibung/anzeigen.html?nummer={{number}}&version={{version}}"
 DEGREE_BASE_URL = "https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge"
 DEGREE_SEARCH_URL = f"{DEGREE_BASE_URL}/suchen.html"
+ISIS_BASE_URL = "https://isis.tu-berlin.de/"
+ISIS_COURSEMANAGER_PATH = "/local/coursemanager/search.php"
+ISIS_RESOLVE_TIMEOUT_SECONDS = 5
+MAX_ISIS_LINKS_PER_MODULE = 10
 USER_AGENT = "TU-Notenmanager/2.0 (+https://tu-berlin.de)"
 _KNOWN_USAGE_HEADERS = {
     "",
@@ -143,6 +149,19 @@ class _DegreeCatalogTreeRow:
     credits: Optional[float] = None
 
 
+@dataclass(frozen=True)
+class _IsisResolvedCourse:
+    course_id: int
+    course_url: str
+    course_title: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class _IsisCoursemanagerResolution:
+    courses: tuple[_IsisResolvedCourse, ...] = ()
+    error: Optional[str] = None
+
+
 _DEGREE_CATALOG_URLS_BY_PROGRAM = {
     "TU Berlin - Computer Science (M.Sc.)": "https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/anzeigen.html?studiengang=179",
     "TU Berlin - Medieninformatik (M.Sc.)": "https://moseskonto.tu-berlin.de/moses/modultransfersystem/studiengaenge/anzeigen.html?studiengang=228",
@@ -157,12 +176,105 @@ def fetch_html(url: str, timeout: int = 15) -> str:
     return html
 
 
+def parse_isis_lvvid(url: str | None) -> Optional[str]:
+    """Return the MOSES/ISIS coursemanager lookup id from an ISIS search URL."""
+    if not url:
+        return None
+    parsed = urlparse(html_lib.unescape(url))
+    if parsed.path.rstrip("/") != ISIS_COURSEMANAGER_PATH.rstrip("/"):
+        return None
+    values = parse_qs(parsed.query).get("lvvid")
+    return values[0].strip() if values and values[0].strip() else None
+
+
+def extract_isis_course_ids(html: str) -> list[tuple[int, str, Optional[str]]]:
+    """Extract public ISIS course IDs and titles from a coursemanager result page."""
+    soup = BeautifulSoup(html or "", "html.parser")
+    courses: list[tuple[int, str, Optional[str]]] = []
+    seen: set[tuple[int, str]] = set()
+    for link in soup.find_all("a", href=True):
+        course_url = _absolute_isis_url(str(link.get("href") or ""))
+        if not course_url:
+            continue
+        parsed = urlparse(course_url)
+        if parsed.path not in ("/course/view.php", "/enrol/index.php"):
+            continue
+        values = parse_qs(parsed.query).get("id")
+        if not values:
+            continue
+        try:
+            course_id = int(values[0])
+        except (TypeError, ValueError):
+            continue
+        key = (course_id, course_url)
+        if key in seen:
+            continue
+        seen.add(key)
+        course_title = _clean_ws(link.get_text(" ", strip=True)) or _clean_ws(str(link.get("title") or ""))
+        courses.append((course_id, course_url, course_title or None))
+    return courses
+
+
+def resolve_isis_coursemanager_url(
+    url: str,
+    timeout: int = ISIS_RESOLVE_TIMEOUT_SECONDS,
+    *,
+    module_title: str = "Unknown module",
+    module_element_title: Optional[str] = None,
+    fallback_search_terms: Optional[list[str]] = None,
+) -> list[MosesIsisCandidate]:
+    """Resolve one public ISIS coursemanager URL into normalized course candidates."""
+    safe_terms = list(fallback_search_terms or [])
+    try:
+        html = _fetch_isis_coursemanager_html(url, timeout=timeout)
+        courses = extract_isis_course_ids(html)
+    except Exception:
+        return [
+            MosesIsisCandidate(
+                module_title=module_title or "Unknown module",
+                module_element_title=module_element_title,
+                fallback_search_terms=safe_terms,
+                confidence="low",
+                status="failed",
+            )
+        ]
+
+    if not courses:
+        return [
+            MosesIsisCandidate(
+                module_title=module_title or "Unknown module",
+                module_element_title=module_element_title,
+                fallback_search_terms=safe_terms,
+                confidence="low",
+                status="not_found",
+            )
+        ]
+
+    status = "resolved" if len(courses) == 1 else "ambiguous"
+    confidence = "high" if len(courses) == 1 else "medium"
+    return [
+        MosesIsisCandidate(
+            course_id=course_id,
+            course_url=course_url,
+            course_title=course_title,
+            term_hint=_extract_term_hint(course_title),
+            module_title=module_title or "Unknown module",
+            module_element_title=module_element_title,
+            fallback_search_terms=safe_terms,
+            confidence=confidence,
+            status=status,
+        )
+        for course_id, course_url, course_title in courses
+    ]
+
+
 class _MosesSession:
     def __init__(self, timeout: int = 15) -> None:
         self.timeout = timeout
         self.cookie_jar = CookieJar()
         self.opener = build_opener(HTTPCookieProcessor(self.cookie_jar))
         self.degree_catalog_cache: dict[tuple[str, str, str], dict[tuple[str, int], list[str]]] = {}
+        self.isis_coursemanager_cache: dict[str, _IsisCoursemanagerResolution] = {}
 
     def get(self, url: str) -> tuple[str, str]:
         req = Request(url, headers={"User-Agent": USER_AGENT})
@@ -683,6 +795,7 @@ def fetch_course_details(
         detail_url=detail_url,
         fetched_url=final_url,
         preferred_term=preferred_term,
+        resolve_isis_links=True,
     )
     _apply_catalog_fallbacks_from_same_module_versions(session, data, preferred_term=preferred_term)
     return data
@@ -797,6 +910,7 @@ def _fetch_course_details_with_session(
         detail_url=detail_url,
         fetched_url=final_url,
         preferred_term=preferred_term,
+        resolve_isis_links=True,
     )
     _apply_catalog_fallbacks_from_same_module_versions(session, data, preferred_term=preferred_term)
     return data
@@ -862,6 +976,7 @@ def fetch_course_details_from_url(
         detail_url=detail_url,
         fetched_url=final_url,
         preferred_term=preferred_term,
+        resolve_isis_links=True,
     )
     _apply_catalog_fallbacks_from_same_module_versions(session, data, preferred_term=preferred_term)
     return data
@@ -2271,6 +2386,7 @@ def _parse_course_details_html(
     detail_url: str,
     fetched_url: str,
     preferred_term: Optional[str] = None,
+    resolve_isis_links: bool = False,
 ) -> MosesModuleData:
     soup = BeautifulSoup(html, "html.parser")
     labels = _collect_labeled_values(soup)
@@ -2340,6 +2456,16 @@ def _parse_course_details_html(
     data.offered_in = _offering_from_texts([*data.start_semesters, *(element.cycle or "" for element in data.module_elements)])
     data.degree_usages = _parse_and_expand_degree_usages(session, html, detail_url, preferred_term=preferred_term)
     _normalize_degree_usages(data)
+    if resolve_isis_links:
+        candidates, provenance = _resolve_module_isis_candidates(
+            session,
+            data,
+            detail_url=detail_url,
+            timeout=ISIS_RESOLVE_TIMEOUT_SECONDS,
+            max_links=MAX_ISIS_LINKS_PER_MODULE,
+        )
+        data.isis_candidates = candidates
+        data.isis_provenance = provenance
     return data
 
 
@@ -3022,7 +3148,9 @@ def _parse_module_elements(table: Optional[Tag]) -> list[MosesModuleElement]:
     for row in rows:
         if not row:
             continue
-        vvz_link = row[-1].find("a", href=True) if row and row[-1] else None
+        links = _module_element_links(row)
+        isis_search_url = next((link for link in links if _is_isis_coursemanager_url(link)), None)
+        vvz_url = next((link for link in links if not _is_isis_coursemanager_url(link)), None)
         texts = [_clean_ws(cell.get_text(" ", strip=True)) for cell in row]
         if len(texts) < 6:
             continue
@@ -3034,10 +3162,186 @@ def _parse_module_elements(table: Optional[Tag]) -> list[MosesModuleElement]:
                 cycle=texts[3],
                 language=texts[4],
                 sws=texts[5],
-                vvz_url=_absolute_url(vvz_link.get("href")) if vvz_link else None,
+                vvz_url=vvz_url,
+                isis_search_url=isis_search_url,
             )
         )
     return elements
+
+
+def _module_element_links(row: list[Tag]) -> list[str]:
+    links: list[str] = []
+    for cell in row:
+        for link in cell.find_all("a", href=True):
+            absolute = _absolute_url(str(link.get("href") or ""))
+            if absolute and absolute not in links:
+                links.append(absolute)
+    return links
+
+
+def _resolve_module_isis_candidates(
+    session: _MosesSession,
+    data: MosesModuleData,
+    *,
+    detail_url: str,
+    timeout: int,
+    max_links: int,
+) -> tuple[list[MosesIsisCandidate], list[MosesIsisProvenance]]:
+    candidates: list[MosesIsisCandidate] = []
+    provenance: list[MosesIsisProvenance] = []
+    seen_urls: set[str] = set()
+
+    for element in data.module_elements:
+        url = element.isis_search_url
+        if not url or url in seen_urls:
+            continue
+        if len(seen_urls) >= max_links:
+            break
+        seen_urls.add(url)
+
+        resolution = _resolve_isis_coursemanager_url_cached(session, url, timeout=timeout)
+        provenance.append(
+            MosesIsisProvenance(
+                moses_module_number=data.number,
+                moses_module_version=data.version,
+                moses_detail_url=detail_url,
+                module_element_course_number=element.number,
+                isis_search_url=url,
+                lvvid=parse_isis_lvvid(url),
+                raw_candidate_count=len(resolution.courses),
+                resolution_error=resolution.error,
+            )
+        )
+        fallback_terms = _isis_fallback_search_terms(data.title, element.title, element.cycle)
+        if resolution.error:
+            candidates.append(
+                MosesIsisCandidate(
+                    module_title=data.title,
+                    module_element_title=element.title,
+                    fallback_search_terms=fallback_terms,
+                    confidence="low",
+                    status="failed",
+                )
+            )
+            continue
+        if not resolution.courses:
+            candidates.append(
+                MosesIsisCandidate(
+                    module_title=data.title,
+                    module_element_title=element.title,
+                    fallback_search_terms=fallback_terms,
+                    confidence="low",
+                    status="not_found",
+                )
+            )
+            continue
+
+        status = "resolved" if len(resolution.courses) == 1 else "ambiguous"
+        confidence = "high" if len(resolution.courses) == 1 else "medium"
+        for course in resolution.courses:
+            candidates.append(
+                MosesIsisCandidate(
+                    course_id=course.course_id,
+                    course_url=course.course_url,
+                    course_title=course.course_title,
+                    term_hint=_extract_term_hint(course.course_title, element.cycle),
+                    module_title=data.title,
+                    module_element_title=element.title,
+                    fallback_search_terms=fallback_terms,
+                    confidence=confidence,
+                    status=status,
+                )
+            )
+
+    return _dedupe_isis_candidates(candidates), provenance
+
+
+def _resolve_isis_coursemanager_url_cached(
+    session: _MosesSession,
+    url: str,
+    *,
+    timeout: int,
+) -> _IsisCoursemanagerResolution:
+    normalized_url = _absolute_url(url) or url
+    if normalized_url in session.isis_coursemanager_cache:
+        return session.isis_coursemanager_cache[normalized_url]
+
+    try:
+        html = _fetch_isis_coursemanager_html(normalized_url, timeout=timeout)
+        courses = tuple(
+            _IsisResolvedCourse(course_id=course_id, course_url=course_url, course_title=course_title)
+            for course_id, course_url, course_title in extract_isis_course_ids(html)
+        )
+        resolution = _IsisCoursemanagerResolution(courses=courses)
+    except Exception as exc:
+        resolution = _IsisCoursemanagerResolution(courses=(), error=str(exc))
+
+    session.isis_coursemanager_cache[normalized_url] = resolution
+    return resolution
+
+
+def _fetch_isis_coursemanager_html(url: str, timeout: int = ISIS_RESOLVE_TIMEOUT_SECONDS) -> str:
+    req = Request(url, headers={"User-Agent": USER_AGENT})
+    with build_opener().open(req, timeout=timeout) as response:
+        return response.read().decode("utf-8", errors="ignore")
+
+
+def _dedupe_isis_candidates(candidates: list[MosesIsisCandidate]) -> list[MosesIsisCandidate]:
+    deduped: list[MosesIsisCandidate] = []
+    seen: set[tuple[object, ...]] = set()
+    resolved_element_titles = {
+        _normalize_key(candidate.module_element_title or candidate.module_title)
+        for candidate in candidates
+        if candidate.course_id is not None
+    }
+    for candidate in candidates:
+        element_title_key = _normalize_key(candidate.module_element_title or candidate.module_title)
+        if candidate.course_id is None and element_title_key in resolved_element_titles:
+            continue
+        if candidate.course_id is not None:
+            key = ("course", candidate.course_id, candidate.status)
+        else:
+            key = (
+                "fallback",
+                candidate.status,
+                candidate.module_element_title,
+                tuple(candidate.fallback_search_terms),
+            )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+def _isis_fallback_search_terms(module_title: str, element_title: Optional[str], cycle: Optional[str]) -> list[str]:
+    terms: list[str] = []
+    for term in (element_title, module_title):
+        cleaned = _clean_ws(term or "")
+        if cleaned and cleaned not in terms:
+            terms.append(cleaned)
+        cycle_hint = _extract_term_hint(cycle)
+        if cleaned and cycle_hint:
+            with_cycle = f"{cleaned} {cycle_hint}"
+            if with_cycle not in terms:
+                terms.append(with_cycle)
+    return terms
+
+
+def _extract_term_hint(*values: Optional[str]) -> Optional[str]:
+    for value in values:
+        text = _clean_ws(value or "")
+        if not text:
+            continue
+        bracketed = re.search(r"\[(WiSe|SoSe|WS|SS)[^\]]*\]", text, re.I)
+        if bracketed:
+            return bracketed.group(0).strip("[] ")
+        inline = re.search(r"\b(WiSe|SoSe|WS|SS)\s*\d{2,4}(?:/\d{2,4})?\b", text, re.I)
+        if inline:
+            return inline.group(0)
+        if any(token in _normalize_key(text) for token in ("sommersemester", "wintersemester", "sose", "wise")):
+            return text
+    return None
 
 
 def _parse_workload(table: Optional[Tag]) -> tuple[list[MosesWorkloadItem], Optional[str]]:
@@ -3745,6 +4049,23 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
     if not match:
         return None
     return int(match.group(1))
+
+
+def _is_isis_coursemanager_url(url: Optional[str]) -> bool:
+    if not url:
+        return False
+    parsed = urlparse(html_lib.unescape(url))
+    return parsed.netloc.endswith("isis.tu-berlin.de") and parsed.path.rstrip("/") == ISIS_COURSEMANAGER_PATH.rstrip("/") and parse_isis_lvvid(url) is not None
+
+
+def _absolute_isis_url(url: Optional[str]) -> Optional[str]:
+    if not url:
+        return None
+    absolute = urljoin(ISIS_BASE_URL, html_lib.unescape(url))
+    parsed = urlparse(absolute)
+    if not parsed.netloc.endswith("isis.tu-berlin.de"):
+        return None
+    return absolute
 
 
 def _absolute_url(url: Optional[str]) -> Optional[str]:

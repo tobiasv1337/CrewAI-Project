@@ -33,7 +33,7 @@ def test_capture_tool_traces_registers_unregisters_and_writes_files(tmp_path):
         )
         recorder.before_tool_call(context)
         recorder.after_tool_call(context)
-        recorder.write_answer("Final answer", usage_metrics={"total_tokens": 123})
+        recorder.write_answer("Final answer", usage_metrics={"total_tokens": 123}, state={"isis_context": {"fallback_search_terms": ["ML"]}})
 
     assert len(get_before_tool_call_hooks()) == before_count
     assert len(get_after_tool_call_hooks()) == after_count
@@ -47,10 +47,13 @@ def test_capture_tool_traces_registers_unregisters_and_writes_files(tmp_path):
     assert "Machine Learning 1" in event["output_preview"]
 
     assert (run_dir / "answer.md").read_text(encoding="utf-8") == "Final answer"
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    assert state == {"isis_context": {"fallback_search_terms": ["ML"]}}
     summary = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["query"] == "Find ML modules"
     assert summary["model"] == "devstral"
     assert summary["tool_call_count"] == 1
+    assert summary["state_path"] == str(run_dir / "state.json")
     assert summary["usage_metrics"] == {"total_tokens": 123}
 
     report = (run_dir / "report.md").read_text(encoding="utf-8")

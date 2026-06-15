@@ -7,6 +7,7 @@ from typing import Literal, Type
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field, field_validator
 
+from crew.state import record_moses_module_artifact
 from core.models import (
     MosesDegreeAreaModules,
     MosesDegreeProgramArea,
@@ -282,6 +283,7 @@ def get_module_details(module_query: str, version: int | None = None, term: str 
     except Exception as exc:
         return f"MOSES module details lookup failed for `{module_query}`: {exc}"
 
+    record_moses_module_artifact(resolved.data)
     return _format_module_details(resolved.data, resolution=resolved.resolution)
 
 
@@ -506,6 +508,29 @@ def _format_module_details(data: MosesModuleData, *, resolution: str | None = No
                 _labeled_value("SWS", item.sws),
             ]
             lines.append(f"- {_join_present(parts)}")
+
+    if data.isis_candidates:
+        lines.extend(["", "## ISIS course candidates"])
+        for candidate in data.isis_candidates:
+            element_label = candidate.module_element_title or "Unknown module element"
+            if candidate.course_id is not None:
+                parts = [
+                    element_label,
+                    _labeled_value("ISIS course ID", str(candidate.course_id)),
+                    _labeled_value("title", candidate.course_title),
+                    _labeled_value("URL", candidate.course_url),
+                    _labeled_value("term", candidate.term_hint),
+                    _labeled_value("status", candidate.status),
+                    _labeled_value("confidence", candidate.confidence),
+                ]
+                lines.append(f"- {_join_present(parts)}")
+            else:
+                fallback_terms = _format_inline_list(candidate.fallback_search_terms) if candidate.fallback_search_terms else "none"
+                lines.append(
+                    f"- {element_label}: no ISIS course ID resolved "
+                    f"(status: {candidate.status}; confidence: {candidate.confidence}). "
+                    f"Fallback ISIS search terms: {fallback_terms}"
+                )
 
     if data.workload_items:
         lines.extend(["", "## Workload"])

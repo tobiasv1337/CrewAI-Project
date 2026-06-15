@@ -36,6 +36,7 @@ class MosesAgentRunResult:
     answer: str
     tool_summary_lines: list[str]
     trace_dir: Path | None
+    state_path: Path | None = None
     raw_result: Any = None
 
 
@@ -382,6 +383,7 @@ def run_moses_agent_query(
     run_id: str | None = None,
 ) -> MosesAgentRunResult:
     from crew.crew import StudyAssistantCrew
+    from crew.state import build_study_assistant_state, collect_moses_state_artifacts
     from crew.tracing import capture_tool_traces
 
     load_dotenv()
@@ -397,7 +399,7 @@ def run_moses_agent_query(
         "query": query,
         "student_context": student_context or "No student context supplied.",
     }
-    with capture_tool_traces(
+    with collect_moses_state_artifacts() as moses_artifacts, capture_tool_traces(
         enabled=trace,
         query=query,
         student_context=student_context or "No student context supplied.",
@@ -411,11 +413,18 @@ def run_moses_agent_query(
         raw_result = crew_instance.kickoff(inputs=inputs)
         answer = str(getattr(raw_result, "raw", raw_result))
         usage_metrics = getattr(raw_result, "usage_metrics", None) or getattr(raw_result, "token_usage", None)
-        recorder.write_answer(answer, usage_metrics=usage_metrics)
+        state = build_study_assistant_state(
+            query=query,
+            student_context=student_context or "",
+            answer_markdown=answer,
+            artifacts=moses_artifacts,
+        )
+        recorder.write_answer(answer, usage_metrics=usage_metrics, state=state)
         return MosesAgentRunResult(
             answer=answer,
             tool_summary_lines=recorder.compact_summary_lines(),
             trace_dir=recorder.run_dir,
+            state_path=getattr(recorder, "state_path", None),
             raw_result=raw_result,
         )
 
@@ -434,6 +443,7 @@ def format_moses_agent_run(result: MosesAgentRunResult) -> str:
             [
                 "",
                 f"Readable report: {result.trace_dir / 'report.md'}",
+                f"Structured state: {result.state_path or result.trace_dir / 'state.json'}",
                 f"Trace directory: {result.trace_dir}",
             ]
         )

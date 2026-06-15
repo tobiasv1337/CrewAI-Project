@@ -10,6 +10,7 @@ from core.models import (
     MosesDegreeProgramStructure,
     MosesCatalogFallback,
     MosesExamElement,
+    MosesIsisCandidate,
     MosesModuleData,
     MosesModuleElement,
     MosesSearchResult,
@@ -219,6 +220,19 @@ def test_get_module_details_formats_llm_readable_summary(monkeypatch):
                 sws="4",
             )
         ],
+        isis_candidates=[
+            MosesIsisCandidate(
+                course_id=47025,
+                course_url="https://isis.tu-berlin.de/course/view.php?id=47025",
+                course_title="[SoSe 2026] Machine Learning 1",
+                term_hint="SoSe 2026",
+                module_title="Machine Learning 1",
+                module_element_title="Machine Learning 1 Lecture",
+                fallback_search_terms=["Machine Learning 1 Lecture", "Machine Learning 1"],
+                confidence="high",
+                status="resolved",
+            )
+        ],
         workload_items=[MosesWorkloadItem(description="Lecture attendance", hours="60", total="60h")],
         workload_total="180h",
         exam_elements=[MosesExamElement(name="Written exam", duration="90 min")],
@@ -252,6 +266,10 @@ def test_get_module_details_formats_llm_readable_summary(monkeypatch):
     assert "- Credits: 6 LP" in output
     assert "## Module elements" in output
     assert "type: VL" in output
+    assert "## ISIS course candidates" in output
+    assert "ISIS course ID: 47025" in output
+    assert "https://isis.tu-berlin.de/course/view.php?id=47025" in output
+    assert "lvvid" not in output
     assert "## Workload" in output
     assert "## Exam elements" in output
     assert "Understand core ML methods." in output

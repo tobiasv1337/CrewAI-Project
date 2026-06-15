@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import os
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
+from bs4 import BeautifulSoup
 
 from core.models import (
     CatalogAssignmentMode,
@@ -14,6 +18,7 @@ from core.models import (
     MosesDegreeProgramArea,
     MosesDegreeProgramSearchResult,
     MosesDegreeUsage,
+    MosesIsisCandidate,
     MosesModuleData,
     MosesModuleElement,
     MosesSearchResult,
@@ -35,6 +40,7 @@ def _fixture_text(name: str) -> str:
 class _FakeSession:
     def __init__(self, partial_xml: str) -> None:
         self.partial_xml = partial_xml
+        self.isis_coursemanager_cache = {}
 
     def post(self, url: str, payload: dict[str, object], partial: bool = False) -> str:
         del url, payload, partial
@@ -103,6 +109,13 @@ class TestMosesIntegration(unittest.TestCase):
         self.assertEqual(data.credits, 3.0)
         self.assertEqual(data.offered_in.value, "WS & SS")
         self.assertEqual(len(data.module_elements), 1)
+        self.assertEqual(
+            data.module_elements[0].isis_search_url,
+            "https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=4663",
+        )
+        self.assertEqual(data.module_elements[0].vvz_url, None)
+        self.assertEqual(data.isis_candidates, [])
+        self.assertEqual(data.isis_provenance, [])
         self.assertEqual(len(data.workload_items), 1)
         self.assertEqual(len(data.exam_elements), 3)
         self.assertEqual(data.grading_table.rows[0].thresholds["1.0"], "95.0pt")
@@ -111,6 +124,103 @@ class TestMosesIntegration(unittest.TestCase):
             data.normalized_catalogs_by_program["TU Berlin - Computer Science (M.Sc.)"],
             ["Embedded Systems and Computer Architectures"],
         )
+
+    def test_parse_module_elements_extracts_multiple_isis_search_urls(self):
+        html = """
+        <table><tbody>
+          <tr>
+            <td>Schaltungstechnik</td><td>VL</td><td>123</td><td>SoSe</td><td>Deutsch</td><td>2</td>
+            <td><a href="https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=78">ISIS</a></td>
+          </tr>
+          <tr>
+            <td>Schaltungstechnik Übung</td><td>UE</td><td>124</td><td>SoSe</td><td>Deutsch</td><td>2</td>
+            <td><a href="https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=5796">ISIS</a></td>
+          </tr>
+        </tbody></table>
+        """
+        table = BeautifulSoup(html, "html.parser").find("table")
+
+        elements = moses._parse_module_elements(table)
+
+        self.assertEqual(
+            [element.isis_search_url for element in elements],
+            [
+                "https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=78",
+                "https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=5796",
+            ],
+        )
+        self.assertEqual([element.vvz_url for element in elements], [None, None])
+
+    def test_extract_isis_course_ids_from_coursemanager_fixture(self):
+        courses = moses.extract_isis_course_ids(_fixture_text("isis_coursemanager_single.html"))
+
+        self.assertEqual(
+            courses,
+            [(47025, "https://isis.tu-berlin.de/course/view.php?id=47025", "[SoSe 2026] Schaltungstechnik")],
+        )
+
+    def test_resolve_isis_coursemanager_url_marks_missing_and_ambiguous_results(self):
+        with patch.object(moses, "_fetch_isis_coursemanager_html", return_value=_fixture_text("isis_coursemanager_empty.html")):
+            missing = moses.resolve_isis_coursemanager_url(
+                "https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=78",
+                module_title="Schaltungstechnik",
+                module_element_title="Schaltungstechnik",
+                fallback_search_terms=["Schaltungstechnik"],
+            )
+        self.assertEqual(len(missing), 1)
+        self.assertEqual(missing[0].status, "not_found")
+        self.assertEqual(missing[0].course_id, None)
+        self.assertEqual(missing[0].fallback_search_terms, ["Schaltungstechnik"])
+
+        with patch.object(moses, "_fetch_isis_coursemanager_html", return_value=_fixture_text("isis_coursemanager_ambiguous.html")):
+            ambiguous = moses.resolve_isis_coursemanager_url(
+                "https://isis.tu-berlin.de/local/coursemanager/search.php?lvvid=78",
+                module_title="Schaltungstechnik",
+            )
+        self.assertEqual([candidate.status for candidate in ambiguous], ["ambiguous", "ambiguous"])
+        self.assertEqual([candidate.course_id for candidate in ambiguous], [47025, 47026])
+
+    def test_isis_resolution_failure_does_not_fail_module_detail_parse(self):
+        detail_html = _fixture_text("detail_page.html")
+        expanded_xml = _fixture_text("degree_usage_expanded.xml")
+
+        with patch.object(moses, "_fetch_isis_coursemanager_html", side_effect=RuntimeError("ISIS offline")):
+            data = moses._parse_course_details_html(
+                session=_FakeSession(expanded_xml),
+                html=detail_html,
+                detail_url="https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule/beschreibung/anzeigen.html?nummer=40388&version=8",
+                fetched_url="https://moseskonto.tu-berlin.de/moses/modultransfersystem/bolognamodule/beschreibung/anzeigen.html?nummer=40388&version=8",
+                resolve_isis_links=True,
+            )
+
+        self.assertEqual(data.title, "Computer Security - Seminar")
+        self.assertEqual(len(data.isis_candidates), 1)
+        self.assertEqual(data.isis_candidates[0].status, "failed")
+        self.assertEqual(data.isis_candidates[0].course_id, None)
+        self.assertEqual(data.isis_provenance[0].lvvid, "4663")
+        self.assertEqual(data.isis_provenance[0].resolution_error, "ISIS offline")
+
+    def test_dedupe_isis_candidates_omits_redundant_unresolved_same_element_title(self):
+        resolved = MosesIsisCandidate(
+            course_id=46983,
+            course_url="https://isis.tu-berlin.de/course/view.php?id=46983",
+            course_title="[SoSe 2026] Algorithmen und Datenstrukturen",
+            module_title="Algorithmen und Datenstrukturen",
+            module_element_title="Algorithmen und Datenstrukturen",
+            confidence="high",
+            status="resolved",
+        )
+        unresolved = MosesIsisCandidate(
+            module_title="Algorithmen und Datenstrukturen",
+            module_element_title="Algorithmen und Datenstrukturen",
+            fallback_search_terms=["Algorithmen und Datenstrukturen"],
+            confidence="low",
+            status="not_found",
+        )
+
+        candidates = moses._dedupe_isis_candidates([resolved, unresolved])
+
+        self.assertEqual(candidates, [resolved])
 
     def test_canonical_detail_url_forces_english_page(self):
         self.assertEqual(
@@ -2163,6 +2273,16 @@ class TestMosesIntegration(unittest.TestCase):
         self.assertEqual(moses_module.institution, "TU Berlin")
         self.assertEqual(external_module.source, ModuleSource.EXTERNAL)
         self.assertEqual(external_module.institution, "HU Berlin")
+
+
+@pytest.mark.skipif(
+    os.getenv("RUN_LIVE_MOSES_TESTS") != "1",
+    reason="Set RUN_LIVE_MOSES_TESTS=1 to run live MOSES/ISIS resolver checks.",
+)
+def test_live_moses_detail_resolves_isis_course_id_40782():
+    data = moses.fetch_course_details("40782", 11, timeout=15)
+
+    assert any(candidate.course_id == 47025 for candidate in data.isis_candidates)
 
 
 if __name__ == "__main__":

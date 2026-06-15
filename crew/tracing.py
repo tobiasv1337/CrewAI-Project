@@ -107,6 +107,10 @@ class ToolTraceRecorder:
         return self.run_dir / "summary.json"
 
     @property
+    def state_path(self) -> Path:
+        return self.run_dir / "state.json"
+
+    @property
     def ordered_tool_calls(self) -> list[ToolCallSummary]:
         return sorted(self.tool_calls, key=lambda call: call.call_id)
 
@@ -176,10 +180,17 @@ class ToolTraceRecorder:
         )
         return None
 
-    def write_answer(self, answer: str, *, usage_metrics: Any = None) -> None:
+    def write_answer(self, answer: str, *, usage_metrics: Any = None, state: Any = None) -> None:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.answer_path.write_text(answer, encoding="utf-8")
         self.report_path.write_text(self._build_markdown_report(answer), encoding="utf-8")
+        state_path: str | None = None
+        if state is not None:
+            self.state_path.write_text(
+                json.dumps(safe_jsonable(state), ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            state_path = str(self.state_path)
         summary = {
             "run_id": self.run_id,
             "query": self.query,
@@ -188,6 +199,7 @@ class ToolTraceRecorder:
             "top_p": self.top_p,
             "answer_chars": len(answer),
             "report_path": str(self.report_path),
+            "state_path": state_path,
             "tool_call_count": len(self.tool_calls),
             "tool_calls": [
                 {
@@ -305,9 +317,10 @@ class ToolTraceRecorder:
 class NullToolTraceRecorder:
     run_dir: Path | None = None
     tool_calls: list[ToolCallSummary] = []
+    state_path: Path | None = None
 
-    def write_answer(self, answer: str, *, usage_metrics: Any = None) -> None:
-        del answer, usage_metrics
+    def write_answer(self, answer: str, *, usage_metrics: Any = None, state: Any = None) -> None:
+        del answer, usage_metrics, state
 
     def compact_summary_lines(self) -> list[str]:
         return ["Tool tracing disabled."]

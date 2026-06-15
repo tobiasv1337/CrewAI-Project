@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, Field, field_validator
 
@@ -226,6 +226,53 @@ class MosesCatalogFallback(BaseModel):
         return _normalize_text_list(value)
 
 
+class MosesIsisCandidate(BaseModel):
+    model_config = {"validate_assignment": True}
+
+    course_id: Optional[int] = None
+    course_url: Optional[str] = None
+    course_title: Optional[str] = None
+    term_hint: Optional[str] = None
+    module_title: str
+    module_element_title: Optional[str] = None
+    fallback_search_terms: List[str] = Field(default_factory=list)
+    confidence: Literal["high", "medium", "low"] = "low"
+    status: Literal["resolved", "not_found", "ambiguous", "failed"] = "not_found"
+
+    @field_validator("course_url", "course_title", "term_hint", "module_title", "module_element_title", mode="before")
+    def _normalize_isis_candidate_text(cls, value):
+        return _normalize_optional_text(value)
+
+    @field_validator("fallback_search_terms", mode="before")
+    def _normalize_isis_fallback_terms(cls, value):
+        return _normalize_text_list(value)
+
+
+class MosesIsisProvenance(BaseModel):
+    model_config = {"validate_assignment": True}
+
+    moses_module_number: str
+    moses_module_version: int
+    moses_detail_url: Optional[str] = None
+    module_element_course_number: Optional[str] = None
+    isis_search_url: str
+    lvvid: Optional[str] = None
+    raw_candidate_count: int = 0
+    resolution_error: Optional[str] = None
+
+    @field_validator(
+        "moses_module_number",
+        "moses_detail_url",
+        "module_element_course_number",
+        "isis_search_url",
+        "lvvid",
+        "resolution_error",
+        mode="before",
+    )
+    def _normalize_isis_provenance_text(cls, value):
+        return _normalize_optional_text(value)
+
+
 class MosesModuleElement(BaseModel):
     model_config = {"validate_assignment": True}
 
@@ -236,8 +283,9 @@ class MosesModuleElement(BaseModel):
     language: Optional[str] = None
     sws: Optional[str] = None
     vvz_url: Optional[str] = None
+    isis_search_url: Optional[str] = None
 
-    @field_validator("title", "course_type", "number", "cycle", "language", "sws", "vvz_url", mode="before")
+    @field_validator("title", "course_type", "number", "cycle", "language", "sws", "vvz_url", "isis_search_url", mode="before")
     def _normalize_module_element_text(cls, value):
         return _normalize_optional_text(value)
 
@@ -330,6 +378,8 @@ class MosesModuleData(BaseModel):
     literature: List[str] = Field(default_factory=list)
     offered_in: ModuleOffering = ModuleOffering.BOTH
     module_elements: List[MosesModuleElement] = Field(default_factory=list)
+    isis_candidates: List[MosesIsisCandidate] = Field(default_factory=list)
+    isis_provenance: List[MosesIsisProvenance] = Field(default_factory=list)
     workload_items: List[MosesWorkloadItem] = Field(default_factory=list)
     workload_total: Optional[str] = None
     exam_elements: List[MosesExamElement] = Field(default_factory=list)

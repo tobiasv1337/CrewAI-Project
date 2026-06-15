@@ -19,6 +19,27 @@ from crew.isis_models import (
 from core.terms import parse_term_label
 
 
+# Moodle errorcode returned when self-enrollment requires a password/key
+_ENROLMENT_KEY_ERRORCODES = frozenset({
+    "wsselfenrolmentrequireskey",
+    "passwordrequired",
+    "requirepassword",
+    "self_enrolment_requires_key",
+})
+
+
+class IsisEnrolmentKeyRequired(Exception):
+    """Raised when a course requires an enrollment password that was not supplied."""
+    def __init__(self, course_id: int, course_title: str) -> None:
+        self.course_id = course_id
+        self.course_title = course_title
+        super().__init__(
+            f"ISIS course '{course_title}' (ID {course_id}) requires an enrollment key. "
+            "Provide the key via the enrollment_key parameter, or ask the student to "
+            "manually enroll on ISIS using the key they received from the course instructor."
+        )
+
+
 MIN_CONFIDENT_SCORE = 0.72
 AMBIGUITY_DELTA = 0.08
 
@@ -122,10 +143,25 @@ class ReadOnlyCourseAccess:
         # Proactively attempt temporary enrollment if allowed and not already enrolled
         if not initially_enrolled and self.allow_temp_enrollment:
             enrol_error = None
+            key_required = False
             try:
-                self._self_enrol_for_read(course.id, report)
+                self._self_enrol_for_read(course.id, course.title, report)
+            except IsisEnrolmentKeyRequired as exc:
+                enrol_error = exc
+                key_required = True
             except MoodleApiError as exc:
                 enrol_error = exc
+
+            if key_required:
+                return IsisReadResult(
+                    course=course,
+                    access=report,
+                    data={
+                        "error": str(enrol_error),
+                        "enrolment_key_required": True,
+                        "access_required": True,
+                    },
+                )
 
             if enrol_error is None:
                 try:
@@ -134,7 +170,8 @@ class ReadOnlyCourseAccess:
                 finally:
                     self._cleanup_temporary_enrollment(course.id, enrolled_before, report)
             else:
-                # Self-enrollment failed, fall back to direct read in case guest access is active
+                # Self-enrollment failed for a non-key reason; fall back to direct read
+                # in case guest access is active
                 try:
                     data = reader(course.id)
                     return IsisReadResult(course=course.model_copy(update={"enrolled": initially_enrolled}), access=report, data=data)
@@ -163,8 +200,19 @@ class ReadOnlyCourseAccess:
     def _enrolled_course_ids(self) -> set[int]:
         return {course.id for course in self.client.enrolled_course_refs()}
 
-    def _self_enrol_for_read(self, course_id: int, report: IsisAccessReport) -> None:
-        self.client.self_enrol_course(course_id)
+    def _self_enrol_for_read(self, course_id: int, course_title: str, report: IsisAccessReport) -> None:
+        try:
+            self.client.self_enrol_course(course_id)
+        except MoodleApiError as exc:
+            # Detect key-required before re-raising so callers can show a clear message
+            errorcode = (exc.errorcode or "").lower()
+            if errorcode in _ENROLMENT_KEY_ERRORCODES or "key" in errorcode or "password" in errorcode:
+                report.access_note = (
+                    f"Course requires an enrollment key. "
+                    "No key was supplied, so temporary enrollment was not possible."
+                )
+                raise IsisEnrolmentKeyRequired(course_id, course_title) from exc
+            raise
         report.temporary_enrolled = True
         report.access_note = "Temporarily self-enrolled for read-only inspection."
 

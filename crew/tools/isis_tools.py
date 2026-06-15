@@ -155,6 +155,8 @@ class _BaseIsisTool(BaseTool):
         if isinstance(result, IsisResolvedCourse):
             return _format_resolution(result)
         try:
+            if isinstance(result.data, dict) and result.data.get("enrolment_key_required"):
+                return _format_enrolment_key_required(result)
             if isinstance(result.data, dict) and result.data.get("access_required"):
                 return _format_access_required(result)
             return formatter(result)
@@ -980,6 +982,35 @@ def _format_overview(result: IsisReadResult) -> str:
             lines.append(f"  - {_join(parts)}")
     if data.get("enrolment_methods_error"):
         lines.extend(["", f"Enrolment-method lookup warning: {data['enrolment_methods_error']}"])
+    lines.extend(_format_access(result))
+    return "\n".join(lines)
+
+
+def _format_enrolment_key_required(result: IsisReadResult) -> str:
+    lines = [
+        f"# ISIS course requires enrollment key: {result.course.title}",
+        "",
+        f"- ISIS course ID: `{result.course.id}`",
+        f"- URL: {result.course.url or 'unknown'}",
+        "",
+        "## ⚠️ Enrollment Key Required",
+        "",
+        "This ISIS course is protected by an enrollment key (password). ",
+        "Temporary self-enrollment was attempted but failed because no key was provided.",
+        "",
+        "**What this means:** The course instructor has set a password that students must ",
+        "enter to join the ISIS course. This is common for restricted courses, project ",
+        "seminars, labs, or courses that require manual approval.",
+        "",
+        "**What the student can do:**",
+        "1. Obtain the enrollment key from the course instructor or course description.",
+        "2. Go to the ISIS course page and enter the key when prompted.",
+        "3. Once enrolled, course information (deadlines, assignments, announcements) ",
+        "   will be accessible via the ISIS tools.",
+    ]
+    error = result.data.get("error") if isinstance(result.data, dict) else None
+    if error:
+        lines.extend(["", f"- Raw Moodle error: {error}"])
     lines.extend(_format_access(result))
     return "\n".join(lines)
 

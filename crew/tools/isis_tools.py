@@ -507,7 +507,7 @@ def _forum_discussion_items(
                 "url": discussion.get("discussionlink") or discussion.get("url"),
             }
             if include_message_preview:
-                item["message"] = _preview(strip_html(discussion.get("message")), 800)
+                item["message"] = _preview(strip_html(discussion.get("message")), 4000)
             items.append(item)
             if len(items) >= limit:
                 return items
@@ -523,7 +523,7 @@ def _read_assignments(client: MoodleRestClient, course_id: int, *, include_submi
                 "id": assignment.get("id"),
                 "cmid": assignment.get("cmid"),
                 "name": clean_text(assignment.get("name")),
-                "intro": _preview(strip_html(assignment.get("intro")), 1000),
+                "intro": _preview(strip_html(assignment.get("intro")), 4000),
                 "duedate": unix_date(assignment.get("duedate")),
                 "cutoffdate": unix_date(assignment.get("cutoffdate")),
                 "allowsubmissionsfromdate": unix_date(assignment.get("allowsubmissionsfromdate")),
@@ -746,7 +746,7 @@ def _format_overview(result: IsisReadResult) -> str:
     for section in sections[:MAX_OUTPUT_ITEMS]:
         lines.append(f"- {clean_text(section.get('name')) or 'Unnamed section'}")
         if section.get("summary"):
-            lines.append(f"  - Summary: {_preview(section.get('summary'), 800)}")
+            lines.append(f"  - Summary: {_preview(section.get('summary'), 2000)}")
         for module in (section.get("modules") or [])[:10]:
             parts = [clean_text(module.get("name")), f"type: {module.get('modname')}" if module.get("modname") else None]
             lines.append(f"  - {_join(parts)}")
@@ -880,7 +880,7 @@ def _format_mapping_items(result: IsisReadResult, title: str) -> str:
             lines.append(f"- {item.get('name') or item.get('title') or 'Untitled'}")
             for field in ("type", "modname", "intro", "content", "url", "available_from", "due"):
                 if item.get(field):
-                    lines.append(f"  - {field}: {_preview(str(item[field]), 800)}")
+                    lines.append(f"  - {field}: {_preview(str(item[field]), 3000)}")
     lines.extend(_format_access(result))
     return "\n".join(lines)
 
@@ -895,7 +895,7 @@ def _format_date_hits(result: IsisReadResult) -> str:
         lines.append(f"- {hit.get('source')}: {hit.get('title') or 'Untitled'}")
         lines.append(f"  - Date text: {_value(hit.get('date_text'))}")
         lines.append(f"  - Time text: {_value(hit.get('time_text'))}")
-        lines.append(f"  - Context: {_preview(hit.get('text') or '', 500)}")
+        lines.append(f"  - Context: {_preview(hit.get('text') or '', 1500)}")
     if data.get("errors"):
         lines.extend(["", "## Warnings"])
         for key, error in data["errors"].items():
@@ -937,7 +937,7 @@ def _compact_activity_items(items: list[dict[str, Any]], *, include_text: bool, 
             "due": unix_date(item.get("timeclose") or item.get("duedate") or item.get("cutoffdate")),
         }
         if include_text:
-            compact_item["intro"] = _preview(strip_html(item.get("intro") or item.get("content") or item.get("summary")), 1200)
+            compact_item["intro"] = _preview(strip_html(item.get("intro") or item.get("content") or item.get("summary")), 3000)
         compact.append({key: value for key, value in compact_item.items() if value not in (None, "")})
     return compact
 
@@ -953,7 +953,7 @@ def _labels_from_contents(contents: list[dict[str, Any]], *, limit: int) -> list
                     "id": module.get("id"),
                     "name": clean_text(module.get("name")),
                     "section": clean_text(section.get("name")),
-                    "content": _preview(strip_html(module.get("description")), 1200),
+                    "content": _preview(strip_html(module.get("description")), 3000),
                 }
             )
             if len(labels) >= limit:
@@ -973,7 +973,7 @@ def _extract_date_hits(source: str, payload: Any) -> list[IsisDateHit]:
             IsisDateHit(
                 source=source,
                 title=title,
-                text=_preview(text, 800),
+                text=_preview(text, 2000),
                 date_text=date_text or weekday_text,
                 time_text=time_text,
                 url=url,
@@ -1048,7 +1048,7 @@ def _cell(value: object | None) -> str:
     return _value(value).replace("|", "\\|")
 
 
-def _preview(value: object | None, limit: int = 500) -> str:
+def _preview(value: object | None, limit: int = 2000) -> str:
     text = clean_text(value)
     if len(text) <= limit:
         return text
@@ -1059,8 +1059,74 @@ def _clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(int(value), maximum))
 
 
-def _json_limited(value: Any, *, max_chars: int = 6000) -> Any:
-    dumped = json.dumps(value, ensure_ascii=False, default=str)
-    if len(dumped) <= max_chars:
-        return value
-    return {"preview": dumped[:max_chars], "truncated_chars": len(dumped) - max_chars}
+def _json_limited(value: Any, *, max_chars: int = 15000) -> Any:
+    try:
+        dumped = json.dumps(value, ensure_ascii=False)
+        if len(dumped) <= max_chars:
+            return value
+    except TypeError:
+        pass
+
+    def prune(obj: Any) -> Any:
+        if isinstance(obj, BaseModel):
+            return prune(obj.model_dump())
+        elif isinstance(obj, dict):
+            pruned_dict = {}
+            for k, v in obj.items():
+                if isinstance(v, str) and len(v) > 1000:
+                    pruned_dict[k] = v[:1000].rstrip() + f"... [field truncated; original length: {len(v)}]"
+                else:
+                    pruned_dict[k] = prune(v)
+            return pruned_dict
+        elif isinstance(obj, list):
+            max_list_items = 12
+            if len(obj) > max_list_items:
+                pruned_list = [prune(item) for item in obj[:max_list_items]]
+                pruned_list.append({
+                    "__truncated_items__": f"{len(obj) - max_list_items} more items omitted to conserve token context."
+                })
+                return pruned_list
+            else:
+                return [prune(item) for item in obj]
+        elif isinstance(obj, (str, int, float, bool)) or obj is None:
+            return obj
+        else:
+            return str(obj)
+
+    pruned = prune(value)
+
+    try:
+        dumped_pruned = json.dumps(pruned, ensure_ascii=False)
+        if len(dumped_pruned) <= max_chars:
+            return pruned
+    except TypeError:
+        pass
+
+    def emergency_prune(obj: Any) -> Any:
+        if isinstance(obj, BaseModel):
+            return emergency_prune(obj.model_dump())
+        elif isinstance(obj, dict):
+            pruned_dict = {}
+            for k, v in obj.items():
+                if isinstance(v, str) and len(v) > 200:
+                    pruned_dict[k] = v[:200].rstrip() + f"... [emergency field truncated; original length: {len(v)}]"
+                else:
+                    pruned_dict[k] = emergency_prune(v)
+            return pruned_dict
+        elif isinstance(obj, list):
+            max_list_items = 5
+            if len(obj) > max_list_items:
+                pruned_list = [emergency_prune(item) for item in obj[:max_list_items]]
+                pruned_list.append({
+                    "__truncated_items__": f"{len(obj) - max_list_items} more items omitted."
+                })
+                return pruned_list
+            else:
+                return [emergency_prune(item) for item in obj]
+        elif isinstance(obj, (str, int, float, bool)) or obj is None:
+            return obj
+        else:
+            return str(obj)
+
+    return emergency_prune(pruned)
+

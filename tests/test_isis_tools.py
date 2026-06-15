@@ -248,3 +248,43 @@ def test_permanent_enrollment_requires_confirmation(monkeypatch):
 
     assert "refused" in output
     assert client.enrol_calls == []
+
+
+def test_json_limited_structural_pruning():
+    small_data = {"key": "value", "list": [1, 2, 3]}
+    assert isis_tools._json_limited(small_data, max_chars=1000) == small_data
+
+    long_string = "a" * 1500
+    pruned_str_std = isis_tools._json_limited({"text": long_string}, max_chars=1100)
+    assert len(pruned_str_std["text"]) == 1000 + len("... [field truncated; original length: 1500]")
+    assert pruned_str_std["text"].startswith("a" * 1000)
+    assert "field truncated" in pruned_str_std["text"]
+
+    long_list = list(range(100))
+    pruned_list_std = isis_tools._json_limited(long_list, max_chars=150)
+    assert len(pruned_list_std) == 13
+    assert pruned_list_std[:12] == list(range(12))
+    assert "__truncated_items__" in pruned_list_std[12]
+
+    emergency_data = {
+        "text": "b" * 1200,
+        "items": list(range(30))
+    }
+    emergency_pruned = isis_tools._json_limited(emergency_data, max_chars=200)
+    assert len(emergency_pruned["text"]) == 200 + len("... [emergency field truncated; original length: 1200]")
+    assert len(emergency_pruned["items"]) == 6
+    assert emergency_pruned["items"][:5] == list(range(5))
+    assert "__truncated_items__" in emergency_pruned["items"][5]
+
+    import json
+    from pydantic import BaseModel as PydanticBaseModel
+    class DummyRef(PydanticBaseModel):
+        id: int
+        name: str
+
+    dummy = DummyRef(id=123, name="Dummy Course")
+    pruned_dummy = isis_tools._json_limited({"ref": dummy}, max_chars=1000)
+    assert pruned_dummy == {"ref": {"id": 123, "name": "Dummy Course"}}
+    assert json.dumps(pruned_dummy) == '{"ref": {"id": 123, "name": "Dummy Course"}}'
+
+

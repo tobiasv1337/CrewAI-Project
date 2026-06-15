@@ -1183,6 +1183,7 @@ CREDITS_DESCRIPTION = "Exact LP/ECTS credits. Do not combine with min_credits or
 
 class MosesToolInput(BaseModel):
     @field_validator(
+        "version",
         "term",
         "duration",
         "exam_type",

@@ -188,6 +188,28 @@ def test_degree_area_schema_normalizes_llm_empty_filter_values():
     assert parsed.grading == "any"
 
 
+def test_module_details_input_normalizes_version_none():
+    parsed = moses_tools.ModuleDetailsInput.model_validate(
+        {
+            "module_query": "41140",
+            "term": "None",
+            "version": "None",
+        }
+    )
+    assert parsed.module_query == "41140"
+    assert parsed.term is None
+    assert parsed.version is None
+
+    parsed_int = moses_tools.ModuleDetailsInput.model_validate(
+        {
+            "module_query": "41140",
+            "term": "None",
+            "version": "2",
+        }
+    )
+    assert parsed_int.version == 2
+
+
 def test_search_modules_rejects_ambiguous_credit_filters():
     output = moses_tools.search_modules("project", credits=6, min_credits=3)
 

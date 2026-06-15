@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 import re
 from typing import Any
 
-from crew.isis_client import MoodleApiError, MoodleRestClient, parse_isis_course_id_from_url
+from crew.isis_client import MoodleApiError, MoodleRestClient
 from crew.isis_models import (
     IsisAccessReport,
     IsisCourseRef,
@@ -14,6 +14,7 @@ from crew.isis_models import (
     IsisReadResult,
     IsisResolvedCourse,
     clean_text,
+    parse_isis_course_id_from_url,
 )
 from core.terms import parse_term_label
 

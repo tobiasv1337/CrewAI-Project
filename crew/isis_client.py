@@ -18,7 +18,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 import requests
 
-from crew.isis_models import ISIS_BASE_URL, IsisCourseRef, clean_text, normalize_optional_text
+from crew.isis_models import ISIS_BASE_URL, IsisCourseRef, clean_text, normalize_optional_text, parse_isis_course_id_from_url
 
 
 ISIS_API_PATH = "/webservice/rest/server.php"
@@ -106,22 +106,6 @@ def strip_html(value: object | None) -> str:
         return clean_text(raw)
     soup = BeautifulSoup(html.unescape(raw), "html.parser")
     return clean_text(soup.get_text(" ", strip=True))
-
-
-def parse_isis_course_id_from_url(url: str | None) -> int | None:
-    if not url:
-        return None
-    parsed = urlparse(html.unescape(url))
-    if parsed.netloc and not parsed.netloc.endswith("isis.tu-berlin.de"):
-        return None
-    if parsed.path.rstrip("/") not in {"/course/view.php", "/enrol/index.php"}:
-        return None
-    values = parse_qs(parsed.query).get("id")
-    if not values:
-        return None
-    with suppress(TypeError, ValueError):
-        return int(values[0])
-    return None
 
 
 def is_coursemanager_lvvid_url(url: str | None) -> bool:

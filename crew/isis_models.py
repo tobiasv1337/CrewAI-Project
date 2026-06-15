@@ -1,12 +1,31 @@
 from __future__ import annotations
 
 from datetime import datetime
+import html
+from contextlib import suppress
 from typing import Any, Literal
+from urllib.parse import parse_qs, urlparse
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ISIS_BASE_URL = "https://isis.tu-berlin.de"
+
+
+def parse_isis_course_id_from_url(url: str | None) -> int | None:
+    if not url:
+        return None
+    parsed = urlparse(html.unescape(url))
+    if parsed.netloc and not parsed.netloc.endswith("isis.tu-berlin.de"):
+        return None
+    if parsed.path.rstrip("/") not in {"/course/view.php", "/enrol/index.php"}:
+        return None
+    values = parse_qs(parsed.query).get("id")
+    if not values:
+        return None
+    with suppress(TypeError, ValueError):
+        return int(values[0])
+    return None
 
 
 def clean_text(value: object | None) -> str:
@@ -98,8 +117,34 @@ class IsisCourseSelector(BaseModel):
             bool(self.course_url),
             bool(self.course_query),
         ]
-        if sum(locators) != 1:
-            raise ValueError("Provide exactly one course locator: course_id, course_url, or course_query.")
+        if sum(locators) == 0:
+            raise ValueError("Provide at least one course locator: course_id, course_url, or course_query.")
+
+        # Normalize/prioritize locators: course_id > course_url > course_query
+        if self.course_id is not None:
+            if self.course_url:
+                url_id = parse_isis_course_id_from_url(self.course_url)
+                if url_id is not None and url_id != self.course_id:
+                    raise ValueError(
+                        f"Conflicting course locators: course_id={self.course_id} "
+                        f"does not match the ID in course_url ({url_id})."
+                    )
+            self.course_url = None
+            self.course_query = None
+        elif self.course_url:
+            url_id = parse_isis_course_id_from_url(self.course_url)
+            if url_id is not None:
+                if url_id < 1000:
+                    raise ValueError(
+                        "This looks like a MOSES/coursemanager lookup id such as lvvid, not an ISIS course_id. "
+                        "Use an ISIS course URL/id or course_query instead."
+                    )
+                self.course_id = url_id
+                self.course_url = None
+                self.course_query = None
+            else:
+                self.course_query = None
+
         if self.course_url and "lvvid=" in self.course_url.lower():
             raise ValueError("A MOSES coursemanager lvvid URL is not an ISIS course URL. Use a resolved course/view.php?id=... URL.")
         if self.course_query and "lvvid" in self.course_query.lower():

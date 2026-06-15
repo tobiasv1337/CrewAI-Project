@@ -160,3 +160,29 @@ def test_resolver_bypass_active_semester_hint():
     assert result.status == "ambiguous"
     assert {course.id for course in result.candidates} == {2020, 4040}
 
+
+def test_selector_allows_multiple_consistent_locators():
+    # If both course_id and course_url are consistent, it should pass and resolve to course_id
+    sel = IsisCourseSelector(course_id=47025, course_url="https://isis.tu-berlin.de/course/view.php?id=47025")
+    assert sel.course_id == 47025
+    assert sel.course_url is None
+    assert sel.course_query is None
+
+    # If course_id and course_query are provided, it should prioritize course_id
+    sel2 = IsisCourseSelector(course_id=47025, course_query="Schaltungstechnik")
+    assert sel2.course_id == 47025
+    assert sel2.course_url is None
+    assert sel2.course_query is None
+
+    # If course_url and course_query are provided, it should prioritize course_id/course_url
+    sel3 = IsisCourseSelector(course_url="https://isis.tu-berlin.de/course/view.php?id=47025", course_query="Schaltungstechnik")
+    assert sel3.course_id == 47025
+    assert sel3.course_url is None
+    assert sel3.course_query is None
+
+
+def test_selector_rejects_conflicting_locators():
+    # Conflicting ID and URL ID should raise ValueError
+    with pytest.raises(ValueError, match="Conflicting course locators"):
+        IsisCourseSelector(course_id=47025, course_url="https://isis.tu-berlin.de/course/view.php?id=99999")
+

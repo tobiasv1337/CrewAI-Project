@@ -11,7 +11,7 @@ import os
 import re
 import time
 from typing import Any
-from urllib.parse import parse_qs, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from dotenv import load_dotenv
@@ -101,6 +101,8 @@ def strip_html(value: object | None) -> str:
     raw = "" if value is None else str(value)
     if not raw:
         return ""
+    if "<" not in raw and raw.strip().lower().startswith(("http://", "https://")):
+        return clean_text(raw)
     soup = BeautifulSoup(html.unescape(raw), "html.parser")
     return clean_text(soup.get_text(" ", strip=True))
 
@@ -129,10 +131,10 @@ def is_coursemanager_lvvid_url(url: str | None) -> bool:
 
 
 def extract_mobile_wstoken(location_header: str) -> str:
-    match = re.search(r"(?:^|[?&])token=([^&]+)", location_header or "")
+    match = re.search(r"(?:^|[?&/])token=([^&]+)", location_header or "")
     if not match:
         raise IsisAuthenticationError("Moodle mobile launch response did not contain a token parameter.")
-    token_b64 = match.group(1)
+    token_b64 = unquote(match.group(1))
     try:
         raw = base64.b64decode(token_b64).decode("utf-8")
     except Exception as exc:  # pragma: no cover - defensive guard
@@ -539,4 +541,3 @@ def get_default_isis_client() -> MoodleRestClient:
 def reset_default_isis_client() -> None:
     global _DEFAULT_CLIENT
     _DEFAULT_CLIENT = None
-

@@ -235,6 +235,11 @@ def test_date_extraction_scans_multiple_course_sources(monkeypatch):
     assert "Friday" in output or "Tuesday" in output or "Monday" in output
 
 
+def test_time_extraction_does_not_treat_date_as_time():
+    assert isis_tools._find_time_text("Date 14.04.2026, time 12:00-14:00") == "12:00-14:00"
+    assert isis_tools._find_time_text("Deadline 14.04.2026") is None
+
+
 def test_permanent_enrollment_requires_confirmation(monkeypatch):
     client = FakeToolClient()
     monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)

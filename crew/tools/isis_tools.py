@@ -1011,7 +1011,12 @@ def _find_date_text(text: str) -> str | None:
 
 
 def _find_time_text(text: str) -> str | None:
-    match = re.search(r"\b\d{1,2}[:.]\d{2}\s*(?:-|bis|to)?\s*(?:\d{1,2}[:.]\d{2})?\s*(?:Uhr|h)?\b", text, flags=re.I)
+    match = re.search(
+        r"\b\d{1,2}:\d{2}\s*(?:-|bis|to|–)?\s*(?:\d{1,2}:\d{2})?\s*(?:Uhr|h)?\b"
+        r"|\b\d{1,2}\.\d{2}\s*(?:Uhr|h)\b",
+        text,
+        flags=re.I,
+    )
     return match.group(0) if match else None
 
 

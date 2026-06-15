@@ -49,6 +49,15 @@ class IsisAgentRunResult:
     raw_result: Any = None
 
 
+@dataclass
+class StudyAdvisorAgentRunResult:
+    answer: str
+    tool_summary_lines: list[str]
+    trace_dir: Path | None
+    state_path: Path | None = None
+    raw_result: Any = None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run TU Berlin MOSES tool wrappers from the command line.",
@@ -213,6 +222,43 @@ def build_parser() -> argparse.ArgumentParser:
     ask_isis_parser.add_argument("--allow-temp-enrollment", action="store_true", help="Allow temporary self-enrollment for read-only course inspection during this run.")
     _add_agent_runtime_arguments(ask_isis_parser)
     _set_runner(ask_isis_parser, _run_ask_isis_agent)
+
+    study_snapshot_parser = subparsers.add_parser("study-snapshot", help="Show the active Grade Manager study-plan snapshot.")
+    study_snapshot_parser.add_argument("--program-key", help="Optional degree program filter.")
+    study_snapshot_parser.add_argument("--include-modules", action="store_true", help="Include module tables.")
+    study_snapshot_parser.add_argument("--max-modules", type=int, default=30, help="Maximum modules per table.")
+    _set_runner(study_snapshot_parser, _run_study_snapshot)
+
+    study_modules_parser = subparsers.add_parser("study-modules", help="List Grade Manager modules with filters.")
+    study_modules_parser.add_argument("--program-key", help="Optional degree program filter.")
+    study_modules_parser.add_argument(
+        "--state",
+        default="any",
+        choices=["any", "Completed", "In Progress", "Planned", "Possible Candidate"],
+        help="Module state filter.",
+    )
+    study_modules_parser.add_argument("--area", help="Optional area filter.")
+    study_modules_parser.add_argument("--term", help='Optional term filter, e.g. "WS 26/27".')
+    study_modules_parser.add_argument("--query", help="Optional module name, MOSES number, or catalog filter.")
+    study_modules_parser.add_argument("--max-modules", type=int, default=50, help="Maximum modules to show.")
+    _set_runner(study_modules_parser, _run_study_modules)
+
+    study_requirements_parser = subparsers.add_parser("study-requirements", help="Show Grade Manager degree requirement details.")
+    study_requirements_parser.add_argument("--program-key", help="Optional degree program filter.")
+    study_requirements_parser.add_argument("--only-missing", action="store_true", help="Hide satisfied requirements.")
+    _set_runner(study_requirements_parser, _run_study_requirements)
+
+    study_fit_parser = subparsers.add_parser("study-module-fit", help="Check one MOSES module against the study plan.")
+    study_fit_parser.add_argument("module_query", help="MOSES module number, URL, or exact module title.")
+    study_fit_parser.add_argument("--version", type=int, help="Optional MOSES version.")
+    study_fit_parser.add_argument("--program-key", help="Optional degree program filter.")
+    study_fit_parser.add_argument("--term", help='Optional planned term, e.g. "WS 26/27".')
+    _set_runner(study_fit_parser, _run_study_module_fit)
+
+    ask_study_parser = subparsers.add_parser("ask-study-advisor", help="Ask the Phase 3B-1 CrewAI Study Advisor.")
+    ask_study_parser.add_argument("query", help="Student question for the Study Advisor.")
+    _add_agent_runtime_arguments(ask_study_parser)
+    _set_runner(ask_study_parser, _run_ask_study_advisor)
 
     return parser
 
@@ -513,6 +559,66 @@ def _run_ask_isis_agent(args: argparse.Namespace) -> str:
     return format_isis_agent_run(result)
 
 
+def _run_study_snapshot(args: argparse.Namespace) -> str:
+    from crew.tools.grademanager_tools import get_study_plan_snapshot
+
+    return get_study_plan_snapshot(
+        program_key=args.program_key,
+        include_modules=args.include_modules,
+        max_modules=args.max_modules,
+    )
+
+
+def _run_study_modules(args: argparse.Namespace) -> str:
+    from crew.tools.grademanager_tools import list_study_plan_modules
+
+    return list_study_plan_modules(
+        program_key=args.program_key,
+        state=args.state,
+        area=args.area,
+        term=args.term,
+        query=args.query,
+        max_modules=args.max_modules,
+    )
+
+
+def _run_study_requirements(args: argparse.Namespace) -> str:
+    from crew.tools.grademanager_tools import get_degree_requirement_details
+
+    return get_degree_requirement_details(
+        program_key=args.program_key,
+        include_satisfied=not args.only_missing,
+    )
+
+
+def _run_study_module_fit(args: argparse.Namespace) -> str:
+    from crew.tools.grademanager_tools import check_module_against_study_plan
+
+    return check_module_against_study_plan(
+        module_query=args.module_query,
+        version=args.version,
+        program_key=args.program_key,
+        term=args.term,
+    )
+
+
+def _run_ask_study_advisor(args: argparse.Namespace) -> str:
+    result = run_study_advisor_query(
+        query=args.query,
+        student_context=args.student_context,
+        model=args.model,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        trace=args.trace,
+        trace_full=args.trace_full,
+        verbose=args.verbose,
+        cache=not args.no_cache,
+        logs_root=args.logs_root,
+        run_id=args.run_id,
+    )
+    return format_study_advisor_agent_run(result)
+
+
 def run_moses_agent_query(
     *,
     query: str,
@@ -554,6 +660,7 @@ def run_moses_agent_query(
         logs_root=logs_root,
         trace_full=trace_full,
         run_id=run_id,
+        run_label="Moses Agent Run Report",
     ) as recorder:
         raw_result = crew_instance.kickoff(inputs=inputs)
         answer = str(getattr(raw_result, "raw", raw_result))
@@ -619,6 +726,7 @@ def run_isis_agent_query(
         logs_root=logs_root,
         trace_full=trace_full,
         run_id=run_id,
+        run_label="ISIS Agent Run Report",
     ) as recorder:
         raw_result = crew_instance.kickoff(inputs=inputs)
         answer = str(getattr(raw_result, "raw", raw_result))
@@ -632,6 +740,70 @@ def run_isis_agent_query(
         }
         recorder.write_answer(answer, usage_metrics=usage_metrics, state=state)
         return IsisAgentRunResult(
+            answer=answer,
+            tool_summary_lines=recorder.compact_summary_lines(),
+            trace_dir=recorder.run_dir,
+            state_path=getattr(recorder, "state_path", None),
+            raw_result=raw_result,
+        )
+
+
+def run_study_advisor_query(
+    *,
+    query: str,
+    student_context: str = "",
+    model: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    trace: bool = True,
+    trace_full: bool = False,
+    verbose: bool = False,
+    cache: bool = True,
+    logs_root: Path | str = Path("logs/crew_runs"),
+    run_id: str | None = None,
+) -> StudyAdvisorAgentRunResult:
+    from crew.state import StudyAdvisorState
+    from crew.study_advisor_crew import StudyAdvisorCrew
+    from crew.tools.grademanager_tools import build_student_plan_context
+    from crew.tracing import capture_tool_traces
+
+    load_dotenv()
+    trace_model = model or os.getenv("STUDY_ASSISTANT_MODEL", DEFAULT_AGENT_MODEL)
+    plan_context = build_student_plan_context()
+    crew_instance = StudyAdvisorCrew(
+        model=model,
+        temperature=temperature,
+        top_p=top_p,
+        verbose=verbose,
+        cache=cache,
+    ).crew()
+    inputs = {
+        "query": query,
+        "student_context": student_context or "No student context supplied.",
+    }
+    with capture_tool_traces(
+        enabled=trace,
+        query=query,
+        student_context=student_context or "No student context supplied.",
+        model=trace_model,
+        temperature=temperature,
+        top_p=top_p,
+        logs_root=logs_root,
+        trace_full=trace_full,
+        run_id=run_id,
+        run_label="Study Advisor Agent Run Report",
+    ) as recorder:
+        raw_result = crew_instance.kickoff(inputs=inputs)
+        answer = str(getattr(raw_result, "raw", raw_result))
+        usage_metrics = getattr(raw_result, "usage_metrics", None) or getattr(raw_result, "token_usage", None)
+        state = StudyAdvisorState(
+            query=query,
+            student_context=student_context or "",
+            plan_context=plan_context,
+            answer_markdown=answer,
+        )
+        recorder.write_answer(answer, usage_metrics=usage_metrics, state=state)
+        return StudyAdvisorAgentRunResult(
             answer=answer,
             tool_summary_lines=recorder.compact_summary_lines(),
             trace_dir=recorder.run_dir,
@@ -664,6 +836,27 @@ def format_moses_agent_run(result: MosesAgentRunResult) -> str:
 def format_isis_agent_run(result: IsisAgentRunResult) -> str:
     lines = [
         "# ISIS Agent Answer",
+        "",
+        result.answer.rstrip(),
+        "",
+        "## Tool calls",
+        *[f"- {line}" for line in result.tool_summary_lines],
+    ]
+    if result.trace_dir:
+        lines.extend(
+            [
+                "",
+                f"Readable report: {result.trace_dir / 'report.md'}",
+                f"Structured state: {result.state_path or result.trace_dir / 'state.json'}",
+                f"Trace directory: {result.trace_dir}",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+def format_study_advisor_agent_run(result: StudyAdvisorAgentRunResult) -> str:
+    lines = [
+        "# Study Advisor Answer",
         "",
         result.answer.rstrip(),
         "",

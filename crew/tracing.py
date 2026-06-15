@@ -75,6 +75,7 @@ class ToolTraceRecorder:
         run_id: str | None = None,
         trace_full: bool = False,
         preview_chars: int = DEFAULT_PREVIEW_CHARS,
+        run_label: str = "Moses Agent Run Report",
     ) -> None:
         self.query = query
         self.student_context = student_context or ""
@@ -85,6 +86,7 @@ class ToolTraceRecorder:
         self.run_dir = Path(logs_root) / self.run_id
         self.trace_full = trace_full
         self.preview_chars = preview_chars
+        self.run_label = run_label
         self.tool_calls: list[ToolCallSummary] = []
         self._pending: list[dict[str, Any]] = []
         self._next_call_id = 1
@@ -221,7 +223,7 @@ class ToolTraceRecorder:
 
     def _build_markdown_report(self, answer: str) -> str:
         lines = [
-            "# Moses Agent Run Report",
+            f"# {self.run_label}",
             "",
             "## Prompt",
             "",
@@ -338,6 +340,7 @@ def capture_tool_traces(
     logs_root: Path | str = DEFAULT_RUNS_DIR,
     trace_full: bool = False,
     run_id: str | None = None,
+    run_label: str = "Moses Agent Run Report",
 ) -> Iterator[ToolTraceRecorder | NullToolTraceRecorder]:
     if not enabled:
         yield NullToolTraceRecorder()
@@ -352,6 +355,7 @@ def capture_tool_traces(
         logs_root=logs_root,
         run_id=run_id,
         trace_full=trace_full,
+        run_label=run_label,
     )
     recorder.install()
     try:

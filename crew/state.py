@@ -45,9 +45,66 @@ class IsisResearchState(BaseModel):
     ambiguity_notes: list[str] = Field(default_factory=list)
 
 
+class StudentModuleBrief(BaseModel):
+    id: str
+    name: str
+    state: str
+    program_key: str | None = None
+    credits: float
+    grade: float | None = None
+    estimated_grade: float | None = None
+    area: str
+    term: str | None = None
+    catalogs: list[str] = Field(default_factory=list)
+    module_types: list[str] = Field(default_factory=list)
+    moses_number: str | None = None
+    moses_version: int | None = None
+
+
+class RequirementBrief(BaseModel):
+    rule_name: str
+    satisfied: bool
+    message: str
+    severity: str = "error"
+
+
+class StudyPlanProgramSummary(BaseModel):
+    program_key: str
+    total_required_cp: float
+    completed_cp: float = 0.0
+    in_progress_cp: float = 0.0
+    planned_cp: float = 0.0
+    candidate_cp: float = 0.0
+    total_degree_cp: float = 0.0
+    gpa: float | None = None
+    valid_areas: list[str] = Field(default_factory=list)
+    catalog_suggestions: list[str] = Field(default_factory=list)
+    requirements: list[RequirementBrief] = Field(default_factory=list)
+    search_directives: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class StudentPlanContext(BaseModel):
+    profile_slug: str
+    profile_display_name: str
+    programs: list[StudyPlanProgramSummary] = Field(default_factory=list)
+    completed_modules: list[StudentModuleBrief] = Field(default_factory=list)
+    in_progress_modules: list[StudentModuleBrief] = Field(default_factory=list)
+    planned_modules: list[StudentModuleBrief] = Field(default_factory=list)
+    candidate_modules: list[StudentModuleBrief] = Field(default_factory=list)
+
+
+class StudyAdvisorState(BaseModel):
+    query: str
+    student_context: str = ""
+    plan_context: StudentPlanContext | None = None
+    answer_markdown: str = ""
+
+
 class StudyAssistantState(BaseModel):
     query: str
     student_context: str = ""
+    study_advisor_result: StudyAdvisorState | None = None
     moses_result: MosesResearchState | None = None
     isis_context: IsisLookupContext | None = None
     isis_result: IsisResearchState | None = None

@@ -154,6 +154,48 @@ def build_study_assistant_state(
     answer_markdown: str,
     artifacts: list[MosesModuleStateArtifact],
 ) -> StudyAssistantState:
+    moses_result, isis_context = _moses_state_from_artifacts(
+        answer_markdown=answer_markdown,
+        artifacts=artifacts,
+    )
+    return StudyAssistantState(
+        query=query,
+        student_context=student_context,
+        moses_result=moses_result,
+        isis_context=isis_context,
+        final_answer_markdown=answer_markdown,
+    )
+
+
+def build_multi_agent_study_assistant_state(
+    *,
+    query: str,
+    student_context: str,
+    answer_markdown: str,
+    artifacts: list[MosesModuleStateArtifact],
+    supplied_isis_context: dict | None = None,
+) -> StudyAssistantState:
+    moses_result, inferred_isis_context = _moses_state_from_artifacts(
+        answer_markdown="",
+        artifacts=artifacts,
+    )
+    return StudyAssistantState(
+        query=query,
+        student_context=student_context,
+        moses_result=moses_result if artifacts else None,
+        isis_context=_merge_isis_contexts(
+            inferred=inferred_isis_context,
+            supplied=supplied_isis_context,
+        ),
+        final_answer_markdown=answer_markdown,
+    )
+
+
+def _moses_state_from_artifacts(
+    *,
+    answer_markdown: str,
+    artifacts: list[MosesModuleStateArtifact],
+) -> tuple[MosesResearchState, IsisLookupContext]:
     modules = _dedupe_modules([artifact.module for artifact in artifacts])
     candidates = _dedupe_candidates(
         candidate
@@ -175,21 +217,43 @@ def build_study_assistant_state(
         for candidate in candidates
         if candidate.course_id is not None
     ]
-    moses_result = MosesResearchState(
-        answer_markdown=answer_markdown,
-        modules=modules,
-        isis_candidates=candidates,
-        isis_provenance=provenance,
-    )
-    return StudyAssistantState(
-        query=query,
-        student_context=student_context,
-        moses_result=moses_result,
-        isis_context=IsisLookupContext(
+    return (
+        MosesResearchState(
+            answer_markdown=answer_markdown,
+            modules=modules,
+            isis_candidates=candidates,
+            isis_provenance=provenance,
+        ),
+        IsisLookupContext(
             preferred_course_candidates=preferred_candidates,
             fallback_search_terms=fallback_terms,
         ),
-        final_answer_markdown=answer_markdown,
+    )
+
+
+def _merge_isis_contexts(
+    *,
+    inferred: IsisLookupContext,
+    supplied: dict | None,
+) -> IsisLookupContext | None:
+    supplied_context = IsisLookupContext.model_validate(supplied or {})
+    preferred_candidates = _dedupe_candidates(
+        [
+            *supplied_context.preferred_course_candidates,
+            *inferred.preferred_course_candidates,
+        ]
+    )
+    fallback_terms = _dedupe_strings(
+        [
+            *supplied_context.fallback_search_terms,
+            *inferred.fallback_search_terms,
+        ]
+    )
+    if not preferred_candidates and not fallback_terms:
+        return None
+    return IsisLookupContext(
+        preferred_course_candidates=preferred_candidates,
+        fallback_search_terms=fallback_terms,
     )
 
 

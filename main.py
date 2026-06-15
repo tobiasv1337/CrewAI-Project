@@ -58,6 +58,15 @@ class StudyAdvisorAgentRunResult:
     raw_result: Any = None
 
 
+@dataclass
+class MultiAgentStudyAssistantRunResult:
+    answer: str
+    tool_summary_lines: list[str]
+    trace_dir: Path | None
+    state_path: Path | None = None
+    raw_result: Any = None
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run TU Berlin MOSES tool wrappers from the command line.",
@@ -259,6 +268,17 @@ def build_parser() -> argparse.ArgumentParser:
     ask_study_parser.add_argument("query", help="Student question for the Study Advisor.")
     _add_agent_runtime_arguments(ask_study_parser)
     _set_runner(ask_study_parser, _run_ask_study_advisor)
+
+    ask_multi_parser = subparsers.add_parser(
+        "ask-study-assistant",
+        help="Ask the Phase 3B-2 hierarchical multi-agent TU Study Assistant.",
+    )
+    ask_multi_parser.add_argument("query", help="Student question for the multi-agent assistant.")
+    ask_multi_parser.add_argument("--isis-context-json", default="{}", help="Optional structured IsisLookupContext JSON.")
+    ask_multi_parser.add_argument("--allow-temp-enrollment", action="store_true", help="Allow temporary ISIS self-enrollment for read-only course inspection during this run.")
+    ask_multi_parser.add_argument("--manager-model", help="Override the LLM model used by the orchestrator/manager agent.")
+    _add_agent_runtime_arguments(ask_multi_parser)
+    _set_runner(ask_multi_parser, _run_ask_study_assistant)
 
     return parser
 
@@ -619,6 +639,26 @@ def _run_ask_study_advisor(args: argparse.Namespace) -> str:
     return format_study_advisor_agent_run(result)
 
 
+def _run_ask_study_assistant(args: argparse.Namespace) -> str:
+    result = run_study_assistant_query(
+        query=args.query,
+        student_context=args.student_context,
+        isis_context_json=args.isis_context_json,
+        allow_temp_enrollment=args.allow_temp_enrollment,
+        model=args.model,
+        manager_model=args.manager_model,
+        temperature=args.temperature,
+        top_p=args.top_p,
+        trace=args.trace,
+        trace_full=args.trace_full,
+        verbose=args.verbose,
+        cache=not args.no_cache,
+        logs_root=args.logs_root,
+        run_id=args.run_id,
+    )
+    return format_study_assistant_run(result)
+
+
 def run_moses_agent_query(
     *,
     query: str,
@@ -812,6 +852,77 @@ def run_study_advisor_query(
         )
 
 
+def run_study_assistant_query(
+    *,
+    query: str,
+    student_context: str = "",
+    isis_context_json: str = "{}",
+    allow_temp_enrollment: bool = False,
+    model: str | None = None,
+    manager_model: str | None = None,
+    temperature: float | None = None,
+    top_p: float | None = None,
+    trace: bool = True,
+    trace_full: bool = False,
+    verbose: bool = False,
+    cache: bool = True,
+    logs_root: Path | str = Path("logs/crew_runs"),
+    run_id: str | None = None,
+) -> MultiAgentStudyAssistantRunResult:
+    from crew.multi_agent_crew import MultiAgentStudyAssistantCrew
+    from crew.state import build_multi_agent_study_assistant_state, collect_moses_state_artifacts
+    from crew.tracing import capture_tool_traces
+
+    load_dotenv()
+    trace_model = manager_model or model or os.getenv("STUDY_ASSISTANT_MODEL", DEFAULT_AGENT_MODEL)
+    validated_context = _validate_json_text(isis_context_json)
+    parsed_isis_context = json.loads(validated_context)
+    crew_instance = MultiAgentStudyAssistantCrew(
+        model=model,
+        manager_model=manager_model,
+        temperature=temperature,
+        top_p=top_p,
+        allow_temp_enrollment=allow_temp_enrollment,
+        verbose=verbose,
+        cache=cache,
+    ).crew()
+    inputs = {
+        "query": query,
+        "student_context": student_context or "No student context supplied.",
+        "isis_context": validated_context,
+    }
+    with collect_moses_state_artifacts() as moses_artifacts, capture_tool_traces(
+        enabled=trace,
+        query=query,
+        student_context=student_context or "No student context supplied.",
+        model=trace_model,
+        temperature=temperature,
+        top_p=top_p,
+        logs_root=logs_root,
+        trace_full=trace_full,
+        run_id=run_id,
+        run_label="Multi-Agent Study Assistant Run Report",
+    ) as recorder:
+        raw_result = crew_instance.kickoff(inputs=inputs)
+        answer = str(getattr(raw_result, "raw", raw_result))
+        usage_metrics = getattr(raw_result, "usage_metrics", None) or getattr(raw_result, "token_usage", None)
+        state = build_multi_agent_study_assistant_state(
+            query=query,
+            student_context=student_context or "",
+            answer_markdown=answer,
+            artifacts=moses_artifacts,
+            supplied_isis_context=parsed_isis_context,
+        )
+        recorder.write_answer(answer, usage_metrics=usage_metrics, state=state)
+        return MultiAgentStudyAssistantRunResult(
+            answer=answer,
+            tool_summary_lines=recorder.compact_summary_lines(),
+            trace_dir=recorder.run_dir,
+            state_path=getattr(recorder, "state_path", None),
+            raw_result=raw_result,
+        )
+
+
 def format_moses_agent_run(result: MosesAgentRunResult) -> str:
     lines = [
         "# Moses Agent Answer",
@@ -857,6 +968,27 @@ def format_isis_agent_run(result: IsisAgentRunResult) -> str:
 def format_study_advisor_agent_run(result: StudyAdvisorAgentRunResult) -> str:
     lines = [
         "# Study Advisor Answer",
+        "",
+        result.answer.rstrip(),
+        "",
+        "## Tool calls",
+        *[f"- {line}" for line in result.tool_summary_lines],
+    ]
+    if result.trace_dir:
+        lines.extend(
+            [
+                "",
+                f"Readable report: {result.trace_dir / 'report.md'}",
+                f"Structured state: {result.state_path or result.trace_dir / 'state.json'}",
+                f"Trace directory: {result.trace_dir}",
+            ]
+        )
+    return "\n".join(lines).rstrip()
+
+
+def format_study_assistant_run(result: MultiAgentStudyAssistantRunResult) -> str:
+    lines = [
+        "# Multi-Agent Study Assistant Answer",
         "",
         result.answer.rstrip(),
         "",

@@ -55,7 +55,7 @@ def render_chat_page() -> None:
     profile_slug = str(st.session_state.get("active_profile") or "primary")
     profile_name = _active_profile_display_name(profile_slug)
 
-    settings = _render_chat_sidebar(profile_slug)
+    settings = _render_chat_config_panel(profile_slug)
     messages = get_profile_messages(profile_slug)
 
     st.markdown(
@@ -71,7 +71,7 @@ def render_chat_page() -> None:
     )
 
     if not messages:
-        _render_empty_state()
+        _render_empty_state(profile_slug)
 
     for message in messages:
         _render_chat_message(message)
@@ -92,13 +92,15 @@ def render_chat_page() -> None:
             _run_and_render_assistant_turn(profile_slug, run_prompt, settings)
 
 
-def _render_chat_sidebar(profile_slug: str) -> ChatRuntimeSettings:
-    with st.sidebar:
-        st.markdown("---")
-        st.markdown("### Study Chat")
-        _render_isis_account_panel(profile_slug)
+def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
+    with st.expander("🛠️ Configuration & Connections", expanded=False):
+        col_isis, col_agent = st.columns(2)
 
-        with st.expander("Agent runtime", expanded=False):
+        with col_isis:
+            _render_isis_account_panel(profile_slug)
+
+        with col_agent:
+            st.markdown("#### Agent runtime settings")
             specialist_model = st.text_input(
                 "Specialist model",
                 value=DEFAULT_STUDY_ASSISTANT_MODEL,
@@ -111,43 +113,53 @@ def _render_chat_sidebar(profile_slug: str) -> ChatRuntimeSettings:
                 help="Optional override for the Orchestrator. Leave empty to use the specialist model.",
                 key=f"chat_manager_model_{profile_slug}",
             ).strip()
-            temperature = st.slider(
-                "Temperature",
-                min_value=0.0,
-                max_value=1.0,
-                value=DEFAULT_TEMPERATURE,
-                step=0.05,
-                key=f"chat_temperature_{profile_slug}",
-            )
-            top_p_enabled = st.toggle("Set top_p", value=False, key=f"chat_top_p_enabled_{profile_slug}")
-            top_p = (
-                st.slider("top_p", min_value=0.1, max_value=1.0, value=0.9, step=0.05, key=f"chat_top_p_{profile_slug}")
-                if top_p_enabled
-                else None
-            )
+
+            col_temp, col_topp = st.columns(2)
+            with col_temp:
+                temperature = st.slider(
+                    "Temperature",
+                    min_value=0.0,
+                    max_value=1.0,
+                    value=DEFAULT_TEMPERATURE,
+                    step=0.05,
+                    key=f"chat_temperature_{profile_slug}",
+                )
+            with col_topp:
+                top_p_enabled = st.toggle("Set top_p", value=False, key=f"chat_top_p_enabled_{profile_slug}")
+                top_p = (
+                    st.slider("top_p", min_value=0.1, max_value=1.0, value=0.9, step=0.05, key=f"chat_top_p_{profile_slug}")
+                    if top_p_enabled
+                    else None
+                )
+
             trace_mode = st.segmented_control(
-                "Tracing",
+                "Tracing level",
                 ["Preview", "Full", "Disabled"],
                 default="Preview",
                 key=f"chat_trace_mode_{profile_slug}",
             )
-            allow_temp_enrollment = st.toggle(
-                "Temporary ISIS self-enrollment",
-                value=True,
-                help="When enabled, read-only ISIS tools may enroll briefly, inspect course information, then unenroll.",
-                key=f"chat_temp_enrollment_{profile_slug}",
-            )
-            verbose = st.toggle("CrewAI verbose logs", value=False, key=f"chat_verbose_{profile_slug}")
-            cache = st.toggle("CrewAI cache", value=True, key=f"chat_cache_{profile_slug}")
-            st.toggle(
-                "CrewAI Planning",
-                value=False,
-                disabled=True,
-                help="Reserved for the later Flow/Planning iteration.",
-                key=f"chat_planning_disabled_{profile_slug}",
-            )
 
-        if st.button("Clear this profile's chat", width="stretch", key=f"chat_clear_{profile_slug}"):
+            col_toggles1, col_toggles2 = st.columns(2)
+            with col_toggles1:
+                allow_temp_enrollment = st.toggle(
+                    "Temp ISIS enrollment",
+                    value=True,
+                    help="When enabled, read-only ISIS tools may enroll briefly, inspect course information, then unenroll.",
+                    key=f"chat_temp_enrollment_{profile_slug}",
+                )
+                verbose = st.toggle("CrewAI verbose logs", value=False, key=f"chat_verbose_{profile_slug}")
+            with col_toggles2:
+                cache = st.toggle("CrewAI cache", value=True, key=f"chat_cache_{profile_slug}")
+                st.toggle(
+                    "CrewAI Planning",
+                    value=False,
+                    disabled=True,
+                    help="Reserved for the later Flow/Planning iteration.",
+                    key=f"chat_planning_disabled_{profile_slug}",
+                )
+
+        st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
+        if st.button("🗑️ Clear this profile's chat history", type="secondary", key=f"chat_clear_{profile_slug}"):
             _set_profile_messages(profile_slug, [])
             st.rerun()
 
@@ -171,21 +183,24 @@ def _render_isis_account_panel(profile_slug: str) -> None:
     mode = str(session.get("mode") or "env")
     created_at = session.get("created_at")
 
-    st.markdown("#### ISIS access")
+    st.markdown("#### ISIS connection")
     if mode == "session" and session.get("client") is not None:
         st.success(f"Session login active. Age: {_age_label(created_at)}")
     else:
-        st.info("Using environment fallback for ISIS credentials/token.")
+        st.info("Using environment fallback for ISIS credentials.")
 
     username_key = f"chat_isis_username_{profile_slug}"
     password_key = f"chat_isis_password_{profile_slug}"
-    username = st.text_input("TUB account", key=username_key)
-    password = st.text_input("Password", type="password", key=password_key)
+    col_u, col_p = st.columns(2)
+    with col_u:
+        username = st.text_input("TUB account", key=username_key, placeholder="e.g. ab123")
+    with col_p:
+        password = st.text_input("Password", type="password", key=password_key, placeholder="••••••••")
 
-    col_login, col_env = st.columns(2)
-    if col_login.button("Login", width="stretch", key=f"chat_isis_login_{profile_slug}"):
+    col_login, col_env, col_clear = st.columns(3)
+    if col_login.button("Login", key=f"chat_isis_login_{profile_slug}", use_container_width=True):
         if not username.strip() or not password:
-            st.warning("Enter both TUB account and password.")
+            st.warning("Enter both account and password.")
         else:
             with st.spinner("Logging in to ISIS via Shibboleth..."):
                 try:
@@ -199,32 +214,39 @@ def _render_isis_account_panel(profile_slug: str) -> None:
                     }
                     st.session_state[ISIS_SESSIONS_KEY] = sessions
                     st.session_state[password_key] = ""
-                    st.success("ISIS session login is active for this profile.")
+                    st.success("ISIS login active.")
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"ISIS login failed: {exc}")
 
-    if col_env.button("Use env", width="stretch", key=f"chat_isis_env_{profile_slug}"):
+    if col_env.button("Use env", key=f"chat_isis_env_{profile_slug}", use_container_width=True):
         sessions[profile_slug] = {"mode": "env", "client": None, "created_at": _now_iso()}
         st.session_state[ISIS_SESSIONS_KEY] = sessions
-        st.toast("ISIS env fallback enabled for this profile.")
+        st.toast("ISIS env fallback enabled.")
+        st.rerun()
 
-    if st.button("Clear ISIS session", width="stretch", key=f"chat_isis_clear_{profile_slug}"):
+    if col_clear.button("Clear session", key=f"chat_isis_clear_{profile_slug}", use_container_width=True):
         sessions.pop(profile_slug, None)
         st.session_state[ISIS_SESSIONS_KEY] = sessions
         st.toast("ISIS session cleared.")
+        st.rerun()
 
 
-def _render_empty_state() -> None:
+def _render_empty_state(profile_slug: str) -> None:
     examples = [
-        "What ML modules can I still take next semester?",
-        "How many credits are still missing in my degree?",
-        "Check whether Reinforcement Learning fits my study plan.",
-        "What deadlines are visible in my current ISIS courses?",
+        ("🤖 What ML modules can I still take next semester?", "What ML modules can I still take next semester?"),
+        ("🎓 How many credits are still missing in my degree?", "How many credits are still missing in my degree?"),
+        ("🔄 Check whether Reinforcement Learning fits my study plan.", "Check whether Reinforcement Learning fits my study plan."),
+        ("📅 What deadlines are visible in my current ISIS courses?", "What deadlines are visible in my current ISIS courses?"),
     ]
-    st.markdown('<div class="chat-empty-grid">', unsafe_allow_html=True)
-    for example in examples:
-        st.markdown(f"<div class='chat-example'>{html.escape(example)}</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<div class="empty-state-header">Suggested Questions</div>', unsafe_allow_html=True)
+    col1, col2 = st.columns(2)
+    for idx, (label, prompt) in enumerate(examples):
+        target_col = col1 if idx % 2 == 0 else col2
+        with target_col:
+            if st.button(label, key=f"example_btn_{idx}_{profile_slug}", use_container_width=True):
+                st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": prompt}
+                st.rerun()
 
 
 def _render_chat_message(message: dict[str, Any]) -> None:
@@ -234,9 +256,24 @@ def _render_chat_message(message: dict[str, Any]) -> None:
             workbench = message.get("workbench")
             if workbench:
                 _render_trace_panel(workbench, expanded=False)
-            pending_write = message.get("pending_write")
-            if pending_write:
-                _render_pending_write_card(str(message.get("profile_slug") or ""), pending_write)
+            proposals = message.get("proposals")
+            if proposals:
+                _render_proposals_panel(str(message.get("profile_slug") or ""), proposals)
+            else:
+                pending_write = message.get("pending_write")
+                if pending_write:
+                    legacy_prop = [{
+                        "title": f"Module {pending_write.get('module_query')}",
+                        "grade_manager": {
+                            "type": "grade_manager",
+                            "module_query": pending_write.get("module_query"),
+                            "term": pending_write.get("term"),
+                            "area": pending_write.get("area"),
+                            "program_key": pending_write.get("program_key")
+                        },
+                        "isis": None
+                    }]
+                    _render_proposals_panel(str(message.get("profile_slug") or ""), legacy_prop)
 
 
 def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: ChatRuntimeSettings) -> None:
@@ -289,9 +326,12 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
             workbench = _workbench_from_result(result)
             if workbench:
                 _render_trace_panel(workbench, expanded=True)
-            pending_write = extract_pending_study_plan_write(result, workbench)
-            if pending_write:
-                _render_pending_write_card(profile_slug, pending_write)
+
+            # Extract and display new proposals
+            proposals = extract_all_proposals(result, workbench)
+            if proposals:
+                _render_proposals_panel(profile_slug, proposals)
+
             if workbench and trace_has_successful_study_plan_write(workbench):
                 refresh_streamlit_profile_state(profile_slug)
                 st.success("Study plan data was updated and reloaded.")
@@ -305,7 +345,7 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
                     "state_path": str(result.state_path) if result.state_path else None,
                     "tool_summary_lines": result.tool_summary_lines,
                     "workbench": workbench,
-                    "pending_write": pending_write,
+                    "proposals": proposals,
                     "profile_slug": profile_slug,
                 },
             )
@@ -355,36 +395,259 @@ def _run_chat_query(
     )
 
 
-def _render_pending_write_card(profile_slug: str, action: dict[str, Any]) -> None:
-    if not profile_slug:
+def _resolve_module_name(module_query: str, workbench: dict[str, Any] | None) -> str:
+    if not workbench:
+        return f"Module {module_query}"
+    groups = workbench.get("groups") or []
+    for group in groups:
+        for call in (group.get("tool_calls") or []):
+            if call.get("tool_name") in {"get_tu_berlin_moses_module_details", "get_module_details"}:
+                tool_input = call.get("tool_input") or {}
+                if str(tool_input.get("module_query")).strip() == str(module_query).strip():
+                    output = str(call.get("output_preview") or "")
+                    first_line = output.split("\n")[0]
+                    if first_line.startswith("#"):
+                        return first_line.lstrip("#").strip()
+    return f"Module {module_query}"
+
+
+def extract_refused_proposals(workbench: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not workbench:
+        return []
+    proposals = []
+    groups = workbench.get("groups") or []
+
+    for group in groups:
+        for call in (group.get("tool_calls") or []):
+            if call.get("tool_name") == "Add Module To Study Plan":
+                output = str(call.get("output_preview") or "").casefold()
+                if "refused" in output or "token" in output:
+                    tool_input = call.get("tool_input") or {}
+                    module_query = str(tool_input.get("module_query") or "").strip()
+                    term = str(tool_input.get("term") or "").strip()
+                    if module_query and term:
+                        if len(module_query) == 4 and 1900 <= int(module_query) <= 2099:
+                            continue
+                        module_name = _resolve_module_name(module_query, workbench)
+                        proposals.append({
+                            "type": "grade_manager",
+                            "module_query": module_query,
+                            "module_name": module_name,
+                            "term": term,
+                            "area": tool_input.get("area"),
+                            "program_key": tool_input.get("program_key"),
+                            "raw_call": call
+                        })
+
+    for group in groups:
+        for call in (group.get("tool_calls") or []):
+            if call.get("tool_name") == "Permanently Enroll In ISIS Course":
+                output = str(call.get("output_preview") or "").casefold()
+                if "refused" in output or "token" in output:
+                    tool_input = call.get("tool_input") or {}
+                    course_id = tool_input.get("course_id")
+                    course_query = tool_input.get("course_query")
+                    course_url = tool_input.get("course_url")
+                    expected_title = tool_input.get("expected_title")
+
+                    name = expected_title or course_query or (f"ISIS ID {course_id}" if course_id else "ISIS Course")
+                    proposals.append({
+                        "type": "isis",
+                        "course_id": course_id,
+                        "course_query": course_query,
+                        "course_url": course_url,
+                        "term_hint": tool_input.get("term_hint"),
+                        "name": name,
+                        "raw_call": call
+                    })
+
+    return proposals
+
+
+def group_proposals(proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    groups = []
+    gm_props = [p for p in proposals if p["type"] == "grade_manager"]
+    isis_props = [p for p in proposals if p["type"] == "isis"]
+
+    matched_isis = set()
+
+    for gm in gm_props:
+        title = gm["module_name"]
+        query = gm["module_query"]
+
+        best_isis = None
+        for isis in isis_props:
+            if isis["name"] in matched_isis:
+                continue
+
+            isis_name = str(isis["name"]).casefold()
+            isis_query = str(isis["course_query"] or "").casefold()
+            gm_name = title.casefold()
+
+            is_match = (
+                (query and query in isis_name) or
+                (query and isis["course_id"] and str(isis["course_id"]) in gm_name) or
+                (gm_name and gm_name in isis_name) or
+                (isis_name and isis_name in gm_name) or
+                (isis_query and isis_query in gm_name)
+            )
+
+            if is_match:
+                best_isis = isis
+                matched_isis.add(isis["name"])
+                break
+
+        groups.append({
+            "title": title,
+            "grade_manager": gm,
+            "isis": best_isis
+        })
+
+    for isis in isis_props:
+        if isis["name"] not in matched_isis:
+            groups.append({
+                "title": isis["name"],
+                "grade_manager": None,
+                "isis": isis
+            })
+
+    return groups
+
+
+def extract_all_proposals(result: MultiAgentStudyAssistantRunResult, workbench: dict[str, Any] | None) -> list[dict[str, Any]]:
+    proposals = extract_refused_proposals(workbench)
+    if proposals:
+        return group_proposals(proposals)
+
+    text_prop = extract_pending_study_plan_write_from_text(result.answer)
+    if text_prop:
+        module_query = text_prop["module_query"]
+        module_name = _resolve_module_name(module_query, workbench)
+        return [{
+            "title": module_name,
+            "grade_manager": {
+                "type": "grade_manager",
+                "module_query": module_query,
+                "module_name": module_name,
+                "term": text_prop["term"],
+                "area": text_prop["area"],
+                "program_key": text_prop["program_key"]
+            },
+            "isis": None
+        }]
+    return []
+
+
+def _render_proposals_panel(profile_slug: str, proposals: list[dict[str, Any]]) -> None:
+    if not profile_slug or not proposals:
         return
-    module_query = str(action.get("module_query") or "").strip()
-    term = str(action.get("term") or "").strip()
-    if not module_query or not term:
-        return
-    area = str(action.get("area") or "").strip()
-    program_key = str(action.get("program_key") or "").strip()
 
     st.markdown(
-        f"""
-        <div class="pending-write">
-          <strong>Study-plan confirmation required</strong>
-          <div>Module: <code>{html.escape(module_query)}</code></div>
-          <div>Term: <code>{html.escape(term)}</code></div>
-          <div>Area: <code>{html.escape(area or "auto")}</code></div>
-          <div>Program: <code>{html.escape(program_key or "auto")}</code></div>
+        """
+        <div class="pending-write-card">
+          <div class="pending-write-title">📋 Proposed Study Plan & ISIS Actions</div>
+          <div class="pending-write-subtitle">Review the proposed course modifications. You can select actions to approve or decline.</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
-    confirm_prompt = (
-        "I explicitly confirm this study-plan write. "
-        f"Add module {module_query} for {term}. "
-        f"{'Use area ' + area + '. ' if area else ''}"
-        f"{'Use program ' + program_key + '. ' if program_key else ''}"
-        "Use confirmation_token CONFIRM_STUDY_PLAN_WRITE."
+
+    confirmed_items = []
+
+    for idx, group in enumerate(proposals):
+        title = group["title"]
+        gm = group["grade_manager"]
+        isis = group["isis"]
+
+        st.markdown(f"**Course: {html.escape(title)}**")
+
+        col_gm, col_isis = st.columns(2)
+
+        gm_checked = False
+        isis_checked = False
+
+        with col_gm:
+            if gm:
+                term = gm["term"]
+                area = gm["area"] or "auto"
+                gm_checked = st.checkbox(
+                    f"Add to Grade Manager ({term}, Area: {area})",
+                    value=True,
+                    key=f"confirm_gm_{idx}_{profile_slug}"
+                )
+            else:
+                st.caption("No Grade Manager write proposed.")
+
+        with col_isis:
+            if isis:
+                course_id = isis["course_id"] or isis["course_query"] or isis["course_url"]
+                isis_checked = st.checkbox(
+                    f"Enroll on ISIS Moodle (ID/Query: {course_id})",
+                    value=True,
+                    key=f"confirm_isis_{idx}_{profile_slug}"
+                )
+            else:
+                st.caption("No ISIS enrollment proposed.")
+
+        confirmed_items.append({
+            "title": title,
+            "grade_manager": gm if gm_checked else None,
+            "isis": isis if isis_checked else None,
+            "gm_refused": gm,
+            "isis_refused": isis
+        })
+        st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+
+    feedback = st.text_area(
+        "Additional instructions or adjustments (optional)",
+        placeholder="e.g. 'I declined course X because I took it already. Suggest a machine learning course instead.'",
+        key=f"proposal_feedback_{profile_slug}"
     )
-    if st.button("Confirm and run Study Advisor write", type="primary", key=f"confirm_write_{profile_slug}_{module_query}_{term}"):
+
+    if st.button("Submit Decisions", type="primary", key=f"submit_proposals_{profile_slug}", use_container_width=True):
+        approved_lines = []
+        declined_lines = []
+
+        for item in confirmed_items:
+            title = item["title"]
+            gm = item["grade_manager"]
+            isis = item["isis"]
+            gm_refused = item["gm_refused"]
+            isis_refused = item["isis_refused"]
+
+            if gm:
+                area_str = f", Area: {gm['area']}" if gm["area"] else ""
+                prog_str = f", Program: {gm['program_key']}" if gm["program_key"] else ""
+                approved_lines.append(
+                    f"- Grade Manager: Add module '{title}' (query: {gm['module_query']}) for term {gm['term']}{area_str}{prog_str}. "
+                    f"Use confirmation_token {STUDY_PLAN_CONFIRMATION_TOKEN}."
+                )
+            elif gm_refused:
+                declined_lines.append(f"- Grade Manager: Do NOT add module '{title}' (query: {gm_refused['module_query']}).")
+
+            if isis:
+                id_query = isis["course_id"] or isis["course_query"] or isis["course_url"]
+                approved_lines.append(
+                    f"- ISIS Moodle: Permanently enroll in course '{title}' (locator: {id_query}). "
+                    f"Use confirmation_token {CONFIRMATION_TOKEN}."
+                )
+            elif isis_refused:
+                id_query = isis_refused["course_id"] or isis_refused["course_query"] or isis_refused["course_url"]
+                declined_lines.append(f"- ISIS Moodle: Do NOT enroll in course '{title}' (locator: {id_query}).")
+
+        prompt_parts = ["The user reviewed the proposed study plan modifications and ISIS enrollments."]
+        if approved_lines:
+            prompt_parts.append("\n**Approved Actions:**")
+            prompt_parts.extend(approved_lines)
+        if declined_lines:
+            prompt_parts.append("\n**Declined Actions:**")
+            prompt_parts.extend(declined_lines)
+
+        if feedback.strip():
+            prompt_parts.append(f"\n**User feedback / instruction:**\n{feedback.strip()}")
+
+        confirm_prompt = "\n".join(prompt_parts)
+
         _append_message(profile_slug, {"role": "user", "content": confirm_prompt, "created_at": _now_iso()})
         st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": confirm_prompt}
         st.rerun()
@@ -407,189 +670,161 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
 
 def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
     workbench = live_workbench_from_events(events)
-    label = "Crew execution trace" if completed else "Live crew execution trace"
-    st.markdown(f"<div class='live-label'>{label}</div>", unsafe_allow_html=True)
-    _render_run_timeline(workbench)
-    _render_source_flow(workbench)
-    _render_agent_lanes(workbench, live=True)
-    _render_live_event_stream(workbench)
+    st.markdown(_compile_workbench_html(workbench, live=not completed), unsafe_allow_html=True)
 
 
 def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool) -> None:
-    with st.expander("Agent workbench and tool trace", expanded=expanded):
-        _render_trace_summary(workbench)
-        _render_source_flow(workbench)
-        _render_agent_lanes(workbench, live=False)
+    with st.expander("🔍 View Agent Workbench & Tool Trace", expanded=expanded):
+        st.markdown(_compile_workbench_html(workbench, live=False), unsafe_allow_html=True)
         _render_artifact_links(workbench)
         _render_tool_expanders(workbench)
 
 
-def _render_trace_summary(workbench: dict[str, Any]) -> None:
-    groups = workbench.get("groups") or []
-    total = int(workbench.get("total_tool_calls") or 0)
-    active_agents = sum(1 for group in groups if group.get("tool_calls"))
-    warnings = sum(
-        1
-        for group in groups
-        for call in (group.get("tool_calls") or [])
-        if call.get("status") in {"warning", "error"}
-    )
-    st.markdown(
-        f"""
-        <div class="trace-summary">
-          <div><strong>{total}</strong><span>tool calls</span></div>
-          <div><strong>{active_agents}</strong><span>agents with evidence</span></div>
-          <div><strong>{warnings}</strong><span>warnings/errors</span></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_run_timeline(workbench: dict[str, Any]) -> None:
+def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> str:
     phases = workbench.get("phases") or []
-    if not phases:
-        return
-    pieces = []
-    for phase in phases:
-        cls = f"run-phase {html.escape(str(phase.get('status') or 'idle'))}"
-        pieces.append(
-            f"""
-            <div class="{cls}">
-              <div class="run-phase-kicker">{html.escape(str(phase.get('label') or 'Phase'))}</div>
-              <div class="run-phase-title">{html.escape(str(phase.get('title') or ''))}</div>
-            </div>
-            """
-        )
-    st.markdown(f"<div class='run-timeline'>{''.join(pieces)}</div>", unsafe_allow_html=True)
-
-
-def _render_source_flow(workbench: dict[str, Any]) -> None:
-    flows = workbench.get("source_flow") or []
-    if not flows:
-        flows = _default_source_flow(active=False)
-    pieces = []
-    for item in flows:
-        cls = "flow-step active" if item.get("active") else "flow-step"
-        pieces.append(
-            f"""
-            <div class="{cls}">
-              <div class="flow-source">{html.escape(str(item.get('source') or 'Source'))}</div>
-              <div class="flow-agent">{html.escape(str(item.get('agent') or 'Agent'))}</div>
-              <div class="flow-target">{html.escape(str(item.get('target') or 'Target'))}</div>
-            </div>
-            """
-        )
-    st.markdown(f"<div class='source-flow'>{''.join(pieces)}</div>", unsafe_allow_html=True)
-
-
-def _render_agent_lanes(workbench: dict[str, Any], *, live: bool) -> None:
-    groups = _groups_by_label(workbench)
-    cols = st.columns(4)
-    for index, label in enumerate(AGENT_LANES):
-        group = groups.get(
-            label,
-            {
-                "agent_label": label,
-                "tool_calls": [],
-                "status": "idle",
-                "duration_ms": 0,
-                "events": [],
-                "activity": "Waiting for the orchestrator.",
-                "llm_calls": 0,
-                "source_system": _source_for_agent_label(label),
-            },
-        )
-        with cols[index]:
-            status = str(group.get("status") or ("running" if live else "idle"))
-            calls = group.get("tool_calls") or []
-            events = group.get("events") or []
-            activity = str(group.get("activity") or "Waiting for activity.")
-            llm_calls = int(group.get("llm_calls") or 0)
-            source = str(group.get("source_system") or _source_for_agent_label(label))
-            active_tool = next((call for call in reversed(calls) if call.get("status") == "running"), None)
-            latest_tool = active_tool or (calls[-1] if calls else None)
-            st.markdown(
-                f"""
-                <div class="agent-lane {html.escape(status)}">
-                  <div class="agent-lane-head">
-                    <div>
-                      <div class="agent-lane-title">{html.escape(label)}</div>
-                      <div class="agent-source">{html.escape(source)}</div>
-                    </div>
-                    <span class="agent-status">{html.escape(status)}</span>
-                  </div>
-                  <div class="agent-activity">{html.escape(activity)}</div>
-                  <div class="agent-metrics">
-                    <span>{llm_calls} LLM</span>
-                    <span>{len(calls)} tools</span>
-                  </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if latest_tool:
-                _render_tool_call_row(latest_tool, compact=False)
-            if calls and not live:
-                for call in calls[-3:-1]:
-                    _render_tool_call_row(call, compact=True)
-            if events:
-                _render_agent_event_list(events[-3:])
-            else:
-                st.caption("No lower-level events yet.")
-
-
-def _render_agent_event_list(events: list[dict[str, Any]]) -> None:
-    pieces = []
-    for event in events:
-        elapsed = _format_elapsed(event.get("elapsed_ms"))
-        title = str(event.get("activity") or event.get("event") or "Event")
-        event_type = str(event.get("event") or "")
-        pieces.append(
-            f"<li><span>{html.escape(elapsed)}</span><strong>{html.escape(event_type)}</strong>{html.escape(title)}</li>"
-        )
-    st.markdown(f"<ul class='agent-events'>{''.join(pieces)}</ul>", unsafe_allow_html=True)
-
-
-def _render_tool_call_row(call: dict[str, Any], *, compact: bool = False) -> None:
-    badges = " ".join(f"<span class='trace-badge'>{html.escape(str(badge))}</span>" for badge in call.get("badges", []))
-    duration = call.get("duration_ms")
-    duration_text = f"{duration} ms" if duration is not None else str(call.get("status") or "running")
-    preview = "" if compact else str(call.get("output_preview") or "")
-    preview_html = f"<div class='tool-preview'>{html.escape(preview[:180])}</div>" if preview else ""
-    st.markdown(
-        f"""
-        <div class="tool-row {html.escape(str(call.get('status') or 'ok'))} {'compact' if compact else ''}">
-          <div class="tool-name">{html.escape(str(call.get('tool_name') or 'Tool'))}</div>
-          <div class="tool-meta">{html.escape(duration_text)}</div>
-          <div>{badges}</div>
-          {preview_html}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-def _render_live_event_stream(workbench: dict[str, Any]) -> None:
+    groups = {str(group.get("agent_label")): group for group in (workbench.get("groups") or [])}
     events = workbench.get("latest_events") or []
-    if not events:
-        return
-    pieces = []
-    for event in events[-8:]:
-        elapsed = _format_elapsed(event.get("elapsed_ms"))
-        label = str(event.get("agent_label") or "Crew")
-        activity = str(event.get("activity") or event.get("event") or "")
-        status = str(event.get("status") or "ok")
-        pieces.append(
-            f"""
-            <div class="live-event {html.escape(status)}">
-              <span>{html.escape(elapsed)}</span>
-              <strong>{html.escape(label)}</strong>
-              <em>{html.escape(activity)}</em>
+    total_calls = int(workbench.get("total_tool_calls") or 0)
+
+    phases_html = ""
+    for phase in phases:
+        status = str(phase.get("status") or "idle")
+        label = str(phase.get("label") or "")
+        title = str(phase.get("title") or "")
+        phases_html += f"""
+        <div class="phase-node {status}">
+          <div class="phase-num">{html.escape(label)}</div>
+          <div class="phase-txt">{html.escape(title)}</div>
+        </div>
+        """
+
+    flows = workbench.get("source_flow") or []
+    flow_html = ""
+    for item in flows:
+        active_cls = "active" if item.get("active") else ""
+        source = str(item.get("source") or "")
+        agent = str(item.get("agent") or "")
+        flow_html += f"""
+        <div class="flow-card {active_cls}">
+          <span class="flow-src">{html.escape(source)}</span>
+          <span class="flow-connector">➔</span>
+          <span class="flow-agt">{html.escape(agent)}</span>
+        </div>
+        """
+
+    agents_html = ""
+    for label in AGENT_LANES:
+        group = groups.get(label, {
+            "agent_label": label,
+            "status": "idle",
+            "activity": _default_activity_for_agent(label),
+            "llm_calls": 0,
+            "tool_calls": [],
+            "source_system": _source_for_agent_label(label)
+        })
+        status = str(group.get("status") or "idle")
+        activity = str(group.get("activity") or "Waiting for activity.")
+        llm = int(group.get("llm_calls") or 0)
+        calls = group.get("tool_calls") or []
+        source = str(group.get("source_system") or _source_for_agent_label(label))
+
+        theme_class = label.lower().replace(" ", "-")
+        pulse_html = '<span class="pulse-indicator"></span>' if status == "running" or (live and status == "idle" and label == "Orchestrator") else ""
+
+        tools_list_html = ""
+        if calls:
+            for call in calls:
+                tool_name = str(call.get("tool_name") or "")
+                duration = call.get("duration_ms")
+                dur_str = f"{duration}ms" if duration is not None else "running"
+                status_cls = str(call.get("status") or "ok")
+                tools_list_html += f"""
+                <div class="tool-item {status_cls}">
+                  <span class="tool-lbl">⚙️ {html.escape(tool_name)}</span>
+                  <span class="tool-dur">{html.escape(dur_str)}</span>
+                </div>
+                """
+        else:
+            tools_list_html = '<div class="no-tools">No tool calls yet.</div>'
+
+        agents_html += f"""
+        <div class="agent-card {status} {theme_class}">
+          <div class="agent-card-header">
+            <div>
+              <div class="agent-card-name">{pulse_html}{html.escape(label)}</div>
+              <div class="agent-card-source">{html.escape(source)}</div>
             </div>
-            """
-        )
-    st.markdown(f"<div class='live-events'>{''.join(pieces)}</div>", unsafe_allow_html=True)
+            <span class="status-badge {status}">{status.upper()}</span>
+          </div>
+          <div class="agent-card-activity">{html.escape(activity)}</div>
+          <div class="agent-card-stats">
+            <span>{llm} LLM Calls</span>
+            <span>{len(calls)} Tools</span>
+          </div>
+          <div class="agent-card-tools">
+            {tools_list_html}
+          </div>
+        </div>
+        """
+
+    events_html = ""
+    for event in events[-12:]:
+        elapsed = _format_elapsed(event.get("elapsed_ms"))
+        agent_label = str(event.get("agent_label") or "Crew")
+        activity = str(event.get("activity") or event.get("event") or "")
+        status_cls = str(event.get("status") or "ok")
+        events_html += f"""
+        <div class="log-line {status_cls}">
+          <span class="log-time">[{html.escape(elapsed)}]</span>
+          <span class="log-agent">&lt;{html.escape(agent_label)}&gt;</span>
+          <span class="log-text">{html.escape(activity)}</span>
+        </div>
+        """
+
+    title_label = "Live Agent Coordination Workbench" if live else "Agent Coordination Workbench & Trace"
+    pulse_dot = '<span class="live-dot"></span>' if live else ""
+
+    html_content = f"""
+    <div class="workbench-container">
+      <div class="workbench-header">
+        <div class="workbench-title">{pulse_dot}{title_label}</div>
+        <div class="workbench-summary">{total_calls} Total Tool Calls | {len(events)} Events</div>
+      </div>
+
+      <!-- Run Phases -->
+      <div class="phases-timeline-container">
+        <div class="phases-timeline-title">Run Phases</div>
+        <div class="phases-timeline">
+          {phases_html}
+        </div>
+      </div>
+
+      <!-- Data Pipeline -->
+      <div class="flow-pipeline-container">
+        <div class="flow-pipeline-title">Active Data Pipeline</div>
+        <div class="flow-pipeline">
+          {flow_html}
+        </div>
+      </div>
+
+      <!-- Agents Grid -->
+      <div class="agents-grid">
+        {agents_html}
+      </div>
+
+      <!-- Live Log Console -->
+      <div class="console-container">
+        <div class="console-header">
+          <div class="console-title">Live Log Console</div>
+          <div class="console-status">STREAMING</div>
+        </div>
+        <div class="console-body">
+          {events_html}
+        </div>
+      </div>
+    </div>
+    """
+    return html_content
 
 
 def _render_tool_expanders(workbench: dict[str, Any]) -> None:
@@ -1145,291 +1380,472 @@ def inject_chat_css() -> None:
             color: #2d3748;
             min-height: 4.25rem;
         }
-        .live-label {
-            font-weight: 760;
-            color: #1f2937;
-            margin: 0.25rem 0 0.5rem 0;
+        /* Workbench Container */
+        .workbench-container {
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            background-color: #ffffff;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+            margin: 1rem 0 1.5rem 0;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
-        .trace-summary {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+
+        /* Header block */
+        .workbench-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background-color: #f8fafc;
+            padding: 0.85rem 1.25rem;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        .workbench-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
             gap: 0.5rem;
-            margin: 0.25rem 0 0.75rem 0;
         }
-        .trace-summary div {
-            border: 1px solid #d8dee8;
-            border-radius: 8px;
-            padding: 0.6rem 0.7rem;
-            background: #ffffff;
+        .workbench-summary {
+            font-size: 0.8rem;
+            color: #64748b;
+            font-weight: 500;
         }
-        .trace-summary strong {
-            display: block;
-            font-size: 1.2rem;
-            color: #111827;
-            line-height: 1.15;
+
+        /* Green live dot animation */
+        .live-dot {
+            height: 8px;
+            width: 8px;
+            background-color: #10b981;
+            border-radius: 50%;
+            display: inline-block;
+            box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            animation: pulse-dot-key 1.5s infinite;
         }
-        .trace-summary span {
-            color: #667085;
-            font-size: 0.74rem;
+        @keyframes pulse-dot-key {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7);
+            }
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 6px rgba(16, 185, 129, 0);
+            }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(16, 185, 129, 0);
+            }
         }
-        .run-timeline {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 0.45rem;
-            margin: 0.5rem 0 0.75rem 0;
+
+        /* Timeline and phase classes */
+        .phases-timeline-container {
+            padding: 1rem 1.25rem;
+            border-bottom: 1px solid #f1f5f9;
         }
-        .run-phase {
-            border: 1px solid #d8dee8;
-            border-radius: 8px;
-            padding: 0.5rem 0.6rem;
-            background: #ffffff;
-            min-height: 3.6rem;
-        }
-        .run-phase.idle {
-            background: #f8fafc;
-            color: #7a8699;
-        }
-        .run-phase.active {
-            border-color: #376fd0;
-            background: #f1f6ff;
-        }
-        .run-phase.done {
-            border-color: #2f8f68;
-            background: #eef9f3;
-        }
-        .run-phase.error {
-            border-color: #c94b5b;
-            background: #fff1f3;
-        }
-        .run-phase-kicker {
-            color: #667085;
-            font-size: 0.68rem;
-            text-transform: uppercase;
-            font-weight: 760;
-        }
-        .run-phase-title {
-            color: #1f2937;
-            font-size: 0.78rem;
-            font-weight: 720;
-            margin-top: 0.15rem;
-        }
-        .source-flow {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 0.5rem;
-            margin: 0.5rem 0 0.75rem 0;
-        }
-        .flow-step {
-            border: 1px solid #d8dee8;
-            background: #f7f9fc;
-            color: #687386;
-            border-radius: 8px;
-            padding: 0.55rem 0.65rem;
-            font-size: 0.76rem;
-            min-height: 3rem;
-        }
-        .flow-step.active {
-            border-color: rgba(39, 125, 96, 0.45);
-            background: #eef9f3;
-            color: #155b42;
-        }
-        .flow-source {
-            font-weight: 760;
-            color: #1f2937;
-        }
-        .flow-agent {
-            color: #475467;
-            margin-top: 0.15rem;
-        }
-        .flow-target {
-            color: #667085;
+        .phases-timeline-title {
             font-size: 0.7rem;
-            margin-top: 0.12rem;
+            text-transform: uppercase;
+            letter-spacing: 0.075em;
+            color: #94a3b8;
+            font-weight: 700;
+            margin-bottom: 0.65rem;
         }
-        .agent-lane {
-            border: 1px solid #d8dee8;
-            background: #ffffff;
+        .phases-timeline {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .phase-node {
+            flex: 1;
+            min-width: 130px;
+            border: 1px solid #e2e8f0;
             border-radius: 8px;
-            padding: 0.7rem;
-            min-height: 7.8rem;
+            padding: 0.5rem 0.75rem;
+            background-color: #f8fafc;
+            transition: all 0.2s ease-in-out;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        .phase-node.idle {
+            background-color: #f8fafc;
+            color: #94a3b8;
+            border-color: #e2e8f0;
+        }
+        .phase-node.active {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+            color: #1e3a8a;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+        .phase-node.done {
+            border-color: #10b981;
+            background-color: #ecfdf5;
+            color: #065f46;
+        }
+        .phase-node.error {
+            border-color: #ef4444;
+            background-color: #fef2f2;
+            color: #991b1b;
+        }
+        .phase-num {
+            height: 18px;
+            width: 18px;
+            border-radius: 50%;
+            background-color: rgba(0, 0, 0, 0.05);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 700;
+        }
+        .phase-node.active .phase-num {
+            background-color: #3b82f6;
+            color: #ffffff;
+        }
+        .phase-node.done .phase-num {
+            background-color: #10b981;
+            color: #ffffff;
+        }
+        .phase-node.error .phase-num {
+            background-color: #ef4444;
+            color: #ffffff;
+        }
+        .phase-txt {
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+
+        /* Flow pipeline styles */
+        .flow-pipeline-container {
+            padding: 0.75rem 1.25rem;
+            background-color: #f8fafc;
+            border-bottom: 1px solid #f1f5f9;
+        }
+        .flow-pipeline-title {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.075em;
+            color: #94a3b8;
+            font-weight: 700;
             margin-bottom: 0.5rem;
         }
-        .agent-lane.idle {
-            background: #fbfcfe;
-        }
-        .agent-lane.running {
-            border-color: #7093d8;
-            background: #f3f7ff;
-        }
-        .agent-lane.warning {
-            border-color: #d9a441;
-            background: #fff8e8;
-        }
-        .agent-lane.error {
-            border-color: #c94b5b;
-            background: #fff1f3;
-        }
-        .agent-lane-head {
+        .flow-pipeline {
             display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
             gap: 0.5rem;
-        }
-        .agent-lane-title {
-            font-weight: 760;
-            font-size: 0.92rem;
-            color: #1f2937;
-        }
-        .agent-source {
-            color: #687386;
-            font-size: 0.76rem;
-            margin-top: 0.2rem;
-        }
-        .agent-status {
-            border-radius: 999px;
-            border: 1px solid #d8dee8;
-            color: #344054;
-            background: #f8fafc;
-            padding: 0.05rem 0.35rem;
-            font-size: 0.66rem;
-            white-space: nowrap;
-        }
-        .agent-activity {
-            color: #344054;
-            font-size: 0.78rem;
-            line-height: 1.3;
-            min-height: 2.45rem;
-            margin: 0.55rem 0 0.45rem 0;
-            overflow-wrap: anywhere;
-        }
-        .agent-metrics {
-            display: flex;
             flex-wrap: wrap;
+            align-items: center;
+        }
+        .flow-card {
+            border: 1px solid #e2e8f0;
+            background-color: #ffffff;
+            border-radius: 6px;
+            padding: 0.35rem 0.6rem;
+            font-size: 0.72rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+            font-weight: 500;
+            color: #64748b;
+        }
+        .flow-card.active {
+            border-color: #10b981;
+            background-color: #ecfdf5;
+            color: #047857;
+            font-weight: 600;
+            box-shadow: 0 1px 2px rgba(16, 185, 129, 0.05);
+        }
+        .flow-src {
+            font-weight: 700;
+            color: #334155;
+        }
+        .flow-card.active .flow-src {
+            color: #065f46;
+        }
+        .flow-connector {
+            color: #94a3b8;
+        }
+        .flow-agt {
+            color: #475569;
+        }
+        .flow-card.active .flow-agt {
+            color: #047857;
+        }
+
+        /* Agents grid */
+        .agents-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+            gap: 1rem;
+            padding: 1.25rem;
+            background-color: #ffffff;
+        }
+        .agent-card {
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            background-color: #ffffff;
+            padding: 0.85rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.65rem;
+            transition: all 0.2s ease-in-out;
+            position: relative;
+        }
+        .agent-card.running {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+        .agent-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+        .agent-card-name {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #1e293b;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .agent-card-source {
+            font-size: 0.68rem;
+            color: #64748b;
+            font-weight: 500;
+            margin-top: 0.1rem;
+        }
+        .status-badge {
+            font-size: 0.62rem;
+            font-weight: 700;
+            padding: 0.125rem 0.375rem;
+            border-radius: 9999px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .status-badge.idle {
+            background-color: #f1f5f9;
+            color: #64748b;
+            border: 1px solid #cbd5e1;
+        }
+        .status-badge.running {
+            background-color: #eff6ff;
+            color: #2563eb;
+            border: 1px solid #93c5fd;
+        }
+        .status-badge.success, .status-badge.ok, .status-badge.done {
+            background-color: #ecfdf5;
+            color: #059669;
+            border: 1px solid #a7f3d0;
+        }
+        .status-badge.error, .status-badge.failed {
+            background-color: #fef2f2;
+            color: #dc2626;
+            border: 1px solid #fca5a5;
+        }
+        .agent-card-activity {
+            font-size: 0.74rem;
+            color: #475569;
+            line-height: 1.35;
+            min-height: 2.2rem;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .agent-card-stats {
+            display: flex;
+            gap: 0.5rem;
+            font-size: 0.68rem;
+            color: #64748b;
+            font-weight: 500;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 0.5rem;
+        }
+        .agent-card-stats span {
+            background-color: #f8fafc;
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            border: 1px solid #e2e8f0;
+        }
+        .agent-card-tools {
+            display: flex;
+            flex-direction: column;
             gap: 0.3rem;
         }
-        .agent-metrics span {
-            border: 1px solid #e1e6ef;
-            background: #ffffff;
-            color: #536070;
-            border-radius: 999px;
-            padding: 0.08rem 0.4rem;
+        .no-tools {
             font-size: 0.68rem;
+            color: #94a3b8;
+            font-style: italic;
         }
-        .agent-events {
-            list-style: none;
-            padding: 0;
-            margin: 0.25rem 0 0 0;
-        }
-        .agent-events li {
-            border-left: 2px solid #d8dee8;
-            padding: 0.15rem 0 0.15rem 0.45rem;
-            margin: 0.15rem 0;
-            color: #536070;
+
+        /* Tool items inside agent cards */
+        .tool-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
             font-size: 0.68rem;
-            line-height: 1.25;
-            overflow-wrap: anywhere;
-        }
-        .agent-events span {
-            color: #8792a3;
-            margin-right: 0.35rem;
-        }
-        .agent-events strong {
-            color: #344054;
-            margin-right: 0.35rem;
-        }
-        .tool-row {
-            border: 1px solid #e1e6ef;
-            border-radius: 8px;
-            padding: 0.55rem;
-            margin: 0.45rem 0;
-            background: #ffffff;
-        }
-        .tool-row.running {
-            border-color: #7093d8;
-        }
-        .tool-row.warning {
-            border-color: #d9a441;
-        }
-        .tool-row.error {
-            border-color: #c94b5b;
-        }
-        .tool-row.compact {
-            padding: 0.42rem;
-        }
-        .tool-name {
-            font-size: 0.78rem;
-            font-weight: 700;
-            color: #1f2937;
-            overflow-wrap: anywhere;
-        }
-        .tool-meta {
-            color: #687386;
-            font-size: 0.72rem;
-            margin: 0.15rem 0 0.35rem 0;
-        }
-        .tool-preview {
-            border-top: 1px solid #eef1f6;
-            color: #536070;
-            font-size: 0.7rem;
-            margin-top: 0.35rem;
-            padding-top: 0.35rem;
-            line-height: 1.3;
-            overflow-wrap: anywhere;
-        }
-        .trace-badge {
-            display: inline-block;
-            border-radius: 999px;
-            border: 1px solid #d8dee8;
-            padding: 0.05rem 0.35rem;
-            margin: 0.08rem 0.12rem 0.08rem 0;
-            font-size: 0.68rem;
-            color: #344054;
-            background: #f8fafc;
-        }
-        .live-events {
-            border-top: 1px solid #e1e6ef;
-            margin-top: 0.75rem;
-            padding-top: 0.55rem;
-        }
-        .live-event {
-            display: grid;
-            grid-template-columns: 4.2rem minmax(7rem, 13rem) minmax(0, 1fr);
-            gap: 0.45rem;
-            align-items: start;
-            font-size: 0.72rem;
-            color: #536070;
-            padding: 0.22rem 0;
-        }
-        .live-event span {
-            color: #8792a3;
-        }
-        .live-event strong {
-            color: #1f2937;
-        }
-        .live-event em {
-            font-style: normal;
-            overflow-wrap: anywhere;
-        }
-        .pending-write {
-            border: 1px solid rgba(190, 54, 73, 0.35);
-            background: #fff5f6;
-            color: #3f1720;
-            border-radius: 8px;
-            padding: 0.85rem;
-            margin-top: 0.75rem;
-        }
-        .pending-write code {
-            background: rgba(255, 255, 255, 0.75);
-            padding: 0.05rem 0.25rem;
+            background-color: #f8fafc;
+            border: 1px solid #e2e8f0;
             border-radius: 4px;
+            padding: 0.25rem 0.4rem;
         }
-        @media (max-width: 720px) {
-            .live-event {
-                grid-template-columns: 3.4rem minmax(0, 1fr);
+        .tool-item.running {
+            border-color: #93c5fd;
+            background-color: #eff6ff;
+        }
+        .tool-item.error {
+            border-color: #fca5a5;
+            background-color: #fef2f2;
+        }
+        .tool-lbl {
+            font-weight: 600;
+            color: #334155;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            max-width: 140px;
+        }
+        .tool-dur {
+            font-family: monospace;
+            color: #64748b;
+            font-size: 0.62rem;
+        }
+
+        /* Pulsing indicator for running agents */
+        .pulse-indicator {
+            height: 6px;
+            width: 6px;
+            background-color: #3b82f6;
+            border-radius: 50%;
+            display: inline-block;
+            box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
+            animation: pulse-indicator-key 1.5s infinite;
+        }
+        @keyframes pulse-indicator-key {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.7);
             }
-            .live-event em {
-                grid-column: 2;
+            70% {
+                transform: scale(1);
+                box-shadow: 0 0 0 4px rgba(59, 130, 246, 0);
             }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(59, 130, 246, 0);
+            }
+        }
+
+        /* Agent Theme Overrides */
+        .agent-card.orchestrator {
+            border-left: 3px solid #6366f1;
+        }
+        .agent-card.study-advisor {
+            border-left: 3px solid #10b981;
+        }
+        .agent-card.moses-module-researcher {
+            border-left: 3px solid #14b8a6;
+        }
+        .agent-card.isis-course-info-specialist {
+            border-left: 3px solid #f59e0b;
+        }
+
+        /* Console Container (Developer Terminal style) */
+        .console-container {
+            background-color: #0f172a;
+            border-radius: 8px;
+            margin: 0.5rem 1.25rem 1.25rem 1.25rem;
+            overflow: hidden;
+            border: 1px solid #1e293b;
+        }
+        .console-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background-color: #1e293b;
+            padding: 0.4rem 0.85rem;
+            border-bottom: 1px solid #334155;
+        }
+        .console-title {
+            color: #94a3b8;
+            font-size: 0.72rem;
+            font-family: monospace;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+        }
+        .console-status {
+            color: #ef4444;
+            font-family: monospace;
+            font-size: 0.65rem;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.35rem;
+            animation: blink-console-key 1.5s step-end infinite;
+        }
+        @keyframes blink-console-key {
+            from, to { opacity: 1; }
+            50% { opacity: 0.4; }
+        }
+        .console-body {
+            padding: 0.75rem;
+            max-height: 220px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .log-line {
+            font-family: Consolas, Monaco, "Lucida Console", "Liberation Mono", "DejaVu Sans Mono", monospace;
+            font-size: 0.72rem;
+            line-height: 1.4;
+            display: flex;
+            gap: 0.45rem;
+            color: #cbd5e1;
+        }
+        .log-line.error {
+            color: #fca5a5;
+        }
+        .log-line.warning {
+            color: #fde047;
+        }
+        .log-time {
+            color: #64748b;
+            flex-shrink: 0;
+        }
+        .log-agent {
+            color: #38bdf8;
+            font-weight: 700;
+            flex-shrink: 0;
+        }
+        .log-text {
+            word-break: break-all;
+        }
+
+        /* Proposals panel styling */
+        .pending-write-card {
+            border: 1px solid #cbd5e1;
+            background-color: #f8fafc;
+            border-radius: 10px;
+            padding: 1rem;
+            margin: 1.25rem 0 0.85rem 0;
+        }
+        .pending-write-title {
+            font-size: 1.05rem;
+            font-weight: 700;
+            color: #0f172a;
+            margin-bottom: 0.25rem;
+        }
+        .pending-write-subtitle {
+            font-size: 0.8rem;
+            color: #475569;
+        }
+        .divider {
+            height: 1px;
+            background-color: #e2e8f0;
+            margin: 0.85rem 0;
         }
         </style>
         """,

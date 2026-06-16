@@ -5,6 +5,7 @@ from pathlib import Path
 import streamlit as st
 
 from crew.isis_client import MoodleRestClient
+from crew.tools.proposal_tools import ProposalCourseInput, build_course_proposal
 from main import MultiAgentStudyAssistantRunResult
 from ui import chat
 
@@ -238,6 +239,111 @@ def test_resolve_course_proposals_rebuilds_explicit_proposal_tool_call():
     assert [action.kind for action in proposal.actions] == ["grade_manager_add", "isis_enroll"]
     assert proposal.actions[0].grade_manager_payload["module_query"] == "41240"
     assert proposal.actions[1].isis_payload["course_id"] == 48474
+
+
+def test_course_card_decisions_default_to_unsure_and_respect_action_toggles():
+    proposal = build_course_proposal(
+        proposal_title="Security option",
+        proposal_summary="One suggested course.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Software Security Lab",
+                rationale="Matches the security focus.",
+                module_query="41240",
+                term="SS 26",
+                area="Elective",
+                isis_course_id=48474,
+                include_grade_manager=True,
+                include_isis=True,
+            )
+        ],
+    )
+    card = chat._course_cards_from_proposals([proposal])[0]
+
+    assert len(card["actions"]) == 2
+    assert chat._course_card_metadata(card) == [
+        ("Term", "SS 26"),
+        ("Area", "Elective"),
+        ("Module", "41240"),
+        ("ISIS ID", "48474"),
+    ]
+
+    decisions = chat._collect_course_card_decisions("alice", [proposal])
+
+    assert decisions[0]["decision"] == "unsure"
+    assert [action["enabled"] for action in decisions[0]["actions"]] == [True, True]
+    assert chat._action_decisions_from_course_card_decisions(decisions) == []
+
+    st.session_state[chat._course_decision_key("alice", card)] = "accept"
+    st.session_state[chat._course_action_toggle_key("alice", card, card["actions"][1].action_id)] = False
+    decisions = chat._collect_course_card_decisions("alice", [proposal])
+    action_decisions = chat._action_decisions_from_course_card_decisions(decisions)
+
+    assert decisions[0]["decision"] == "accept"
+    assert [action["enabled"] for action in decisions[0]["actions"]] == [True, False]
+    assert len(action_decisions) == 1
+    assert action_decisions[0].action_id == card["actions"][0].action_id
+    assert action_decisions[0].approved is True
+
+
+def test_apply_selected_prompt_is_intentional_and_decision_context_is_compact():
+    decisions = [
+        {
+            "course_title": "Software Security Lab",
+            "decision": "reject",
+            "actions": [
+                {"kind": "grade_manager_add", "enabled": True},
+                {"kind": "isis_enroll", "enabled": False},
+            ],
+        }
+    ]
+
+    assert chat._is_apply_selected_prompt("apply selected")
+    assert not chat._is_apply_selected_prompt("I am unsure, suggest an alternative")
+    context = chat._format_course_card_decisions_context(decisions)
+    assert "Software Security Lab" in context
+    assert '"decision": "reject"' in context
+    assert '"enabled": false' in context
+
+
+def test_clear_active_course_proposals_removes_widgets_and_card_state(monkeypatch, tmp_path):
+    _setup_chat_profiles(monkeypatch, tmp_path)
+    from crew.chat_persistence import append_turn, load_chat_thread
+
+    proposal = build_course_proposal(
+        proposal_title="Security option",
+        proposal_summary="One suggested course.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Software Security Lab",
+                rationale="Matches the security focus.",
+                module_query="41240",
+                term="SS 26",
+                isis_course_id=48474,
+                include_grade_manager=True,
+                include_isis=True,
+            )
+        ],
+    )
+    append_turn(
+        "alice",
+        user_content="Suggest a course.",
+        assistant_content="Here is one.",
+        proposals=[proposal],
+        rolling_summary="Course suggestion.",
+    )
+    card = chat._course_cards_from_proposals([proposal])[0]
+    decision_key = chat._course_decision_key("alice", card)
+    toggle_key = chat._course_action_toggle_key("alice", card, card["actions"][0].action_id)
+    st.session_state[decision_key] = "accept"
+    st.session_state[toggle_key] = False
+
+    chat._clear_active_course_proposals("alice")
+    chat._clear_course_card_state("alice", [proposal])
+
+    assert load_chat_thread("alice").active_proposals == []
+    assert decision_key not in st.session_state
+    assert toggle_key not in st.session_state
 
 
 def test_profile_chat_history_and_isis_session_are_scoped(monkeypatch, tmp_path):

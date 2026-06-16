@@ -30,6 +30,7 @@ from main import MultiAgentStudyAssistantRunResult, run_study_assistant_query
 CHAT_HISTORY_KEY = "study_chat_messages_by_profile"
 ISIS_SESSIONS_KEY = "study_chat_isis_sessions"
 PENDING_PROMPT_KEY = "study_chat_pending_prompt"
+PROPOSAL_DECISION_PREFIX = "study_chat_course_decision"
 DEFAULT_MANAGER_MODEL = ""
 DEFAULT_TEMPERATURE = 0.2
 AGENT_LANES = [
@@ -100,17 +101,34 @@ def render_chat_page() -> None:
                 profile_slug,
                 prompt_text,
                 settings,
+                display_prompt=str(pending_prompt.get("display_prompt") or prompt_text),
+                proposal_decisions=pending_prompt.get("proposal_decisions") or [],
                 approved_actions=pending_prompt.get("approved_actions") or [],
             )
 
     if thread.active_proposals and not run_active:
         _render_proposals_panel(profile_slug, thread.active_proposals)
 
-    prompt = st.chat_input("Ask the TU Study Assistant...")
+    prompt = st.chat_input("Ask, revise, or type 'apply selected'...")
     if prompt:
         run_prompt = prompt.strip()
         if run_prompt:
-            st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": run_prompt}
+            proposal_decisions = _collect_course_card_decisions(profile_slug, thread.active_proposals)
+            approved_actions = (
+                _action_decisions_from_course_card_decisions(proposal_decisions)
+                if _is_apply_selected_prompt(run_prompt)
+                else []
+            )
+            if thread.active_proposals:
+                _clear_active_course_proposals(profile_slug)
+                _clear_course_card_state(profile_slug, thread.active_proposals)
+            st.session_state[PENDING_PROMPT_KEY] = {
+                "profile_slug": profile_slug,
+                "prompt": run_prompt,
+                "display_prompt": run_prompt,
+                "proposal_decisions": proposal_decisions,
+                "approved_actions": [decision.model_dump(mode="json") for decision in approved_actions],
+            }
             st.rerun()
 
 
@@ -346,15 +364,20 @@ def _run_and_render_assistant_turn(
     prompt: str,
     settings: ChatRuntimeSettings,
     *,
+    display_prompt: str | None = None,
+    proposal_decisions: list[dict[str, Any]] | None = None,
     approved_actions: list[dict[str, Any]] | list[ActionDecision] | None = None,
 ) -> None:
     events = initial_live_trace_events(prompt, settings)
     event_queue: Queue[dict[str, Any]] = Queue()
     student_context = build_student_context(profile_slug)
+    proposal_context = _format_course_card_decisions_context(proposal_decisions or [])
+    if proposal_context:
+        student_context = f"{student_context}\n\n{proposal_context}"
     isis_client = get_profile_isis_client(profile_slug)
 
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.markdown(display_prompt or prompt)
 
     with st.chat_message("assistant"):
         trace_placeholder = st.empty()
@@ -707,20 +730,6 @@ def _render_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:
     if not profile_slug or not proposals:
         return
 
-    st.markdown(
-        _clean_html(
-            """
-            <div class="proposal-shell">
-              <div class="proposal-kicker">Awaiting your decision</div>
-              <div class="proposal-title">Recommended course actions</div>
-              <div class="proposal-subtitle">These banners appear only when an agent explicitly calls the confirmation proposal tool.</div>
-            </div>
-            """
-        ),
-        unsafe_allow_html=True,
-    )
-
-    decisions: list[ActionDecision] = []
     typed_proposals = [_proposal_model(item) for item in proposals]
     typed_proposals = [item for item in typed_proposals if item is not None]
 
@@ -728,97 +737,291 @@ def _render_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:
         _render_legacy_proposals_panel(profile_slug, proposals)
         return
 
-    for proposal_idx, proposal in enumerate(typed_proposals):
-        action_count = len([action for action in proposal.actions if action.status == "proposed"])
-        st.markdown(
-            _clean_html(
-                f"""
-                <section class="course-proposal-card">
-                  <div class="course-proposal-head">
-                    <div>
-                      <div class="course-proposal-label">{html.escape(proposal.source_agent or "Course Commitment Specialist")}</div>
-                      <h3>{html.escape(proposal.title)}</h3>
-                    </div>
-                    <span>{action_count} open action{'s' if action_count != 1 else ''}</span>
-                  </div>
-                  <p>{html.escape(proposal.summary or "Review the proposed course actions.")}</p>
-                </section>
-                """
-            ),
-            unsafe_allow_html=True,
-        )
-        if proposal.evidence:
-            st.caption("Evidence: " + " · ".join(proposal.evidence[:4]))
+    course_cards = _course_cards_from_proposals(typed_proposals)
+    if not course_cards:
+        return
 
-        for action_idx, action in enumerate(proposal.actions):
-            if action.status != "proposed":
-                st.info(f"{action.course_title}: {action.kind} is already {action.status}.")
-                continue
-            payload = action.grade_manager_payload if action.kind == "grade_manager_add" else action.isis_payload
-            payload = payload or {}
-            action_label = (
-                f"Add {action.course_title} to Grade Manager"
-                if action.kind == "grade_manager_add"
-                else f"Enroll in {action.course_title} on ISIS"
-            )
-            detail = _action_detail_text(action.kind, payload)
-            key_base = f"proposal_{proposal_idx}_{action_idx}_{action.action_id}_{profile_slug}"
-            col_toggle, col_meta = st.columns([0.42, 0.58])
-            with col_toggle:
-                approved = st.toggle(action_label, value=True, key=f"{key_base}_approved")
-            with col_meta:
-                st.markdown(f"<div class='action-detail'>{html.escape(detail)}</div>", unsafe_allow_html=True)
-                if action.evidence:
-                    st.caption(" · ".join(action.evidence[:3]))
-            decisions.append(ActionDecision(action_id=action.action_id, approved=approved))
-
-    feedback = st.text_area(
-        "Adjustments or replacement request",
-        placeholder="e.g. Replace the non-ML course with another machine learning option.",
-        key=f"proposal_feedback_{profile_slug}"
+    st.markdown(
+        _clean_html(
+            f"""
+            <section class="course-choice-header">
+              <div>
+                <div class="course-choice-kicker">Pending Choices</div>
+                <div class="course-choice-title">Suggested courses</div>
+              </div>
+              <span>{len(course_cards)} course{'s' if len(course_cards) != 1 else ''}</span>
+            </section>
+            """
+        ),
+        unsafe_allow_html=True,
     )
 
-    col_submit, col_change = st.columns([0.5, 0.5])
-    if col_submit.button("Apply selected actions", type="primary", key=f"submit_proposals_{profile_slug}", use_container_width=True):
-        finalized = [
-            decision.model_copy(update={"feedback": feedback.strip()})
-            for decision in decisions
-        ]
-        prompt = "The user reviewed the course action proposal and submitted structured action decisions."
-        if feedback.strip():
-            prompt += f"\n\nUser adjustment note: {feedback.strip()}"
-        st.session_state[PENDING_PROMPT_KEY] = {
-            "profile_slug": profile_slug,
-            "prompt": prompt,
-            "approved_actions": [decision.model_dump(mode="json") for decision in finalized],
+    for row_start in range(0, len(course_cards), 3):
+        row_cards = course_cards[row_start : row_start + 3]
+        columns = st.columns(len(row_cards), gap="medium")
+        for column, card in zip(columns, row_cards):
+            with column:
+                _render_course_choice_card(profile_slug, card)
+
+
+def _course_cards_from_proposals(proposals: list[CourseProposal]) -> list[dict[str, Any]]:
+    cards_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for proposal in proposals:
+        for action in proposal.actions:
+            if action.status != "proposed":
+                continue
+            key = (proposal.proposal_id, action.course_title)
+            card = cards_by_key.setdefault(
+                key,
+                {
+                    "proposal_id": proposal.proposal_id,
+                    "proposal_title": proposal.title,
+                    "proposal_summary": proposal.summary,
+                    "course_title": action.course_title,
+                    "source_agent": proposal.source_agent,
+                    "actions": [],
+                    "evidence": [],
+                },
+            )
+            card["actions"].append(action)
+            card["evidence"].extend(action.evidence or [])
+            card["evidence"].extend(proposal.evidence or [])
+    for card in cards_by_key.values():
+        card["evidence"] = _dedupe_text(card["evidence"])
+    return list(cards_by_key.values())
+
+
+def _render_course_choice_card(profile_slug: str, card: dict[str, Any]) -> None:
+    decision_key = _course_decision_key(profile_slug, card)
+    selected = st.session_state.get(decision_key)
+    selected_class = str(selected or "unsure")
+    metadata = _course_card_metadata(card)
+    evidence = " · ".join(str(item) for item in card.get("evidence", [])[:2])
+    action_chips = "".join(
+        f'<span class="course-choice-chip {_action_kind_class(action.kind)}">{html.escape(_action_kind_label(action.kind))}</span>'
+        for action in card["actions"]
+    )
+    meta_html = "".join(
+        f"""
+        <div class="course-choice-meta-item">
+          <span>{html.escape(label)}</span>
+          <strong>{html.escape(value)}</strong>
+        </div>
+        """
+        for label, value in metadata
+    )
+    st.markdown(
+        _clean_html(
+            f"""
+            <section class="course-choice-card {html.escape(selected_class)}">
+              <div class="course-choice-card-top">
+                <span>{html.escape(str(card.get("proposal_title") or "Proposal"))}</span>
+                <strong>{html.escape(str(card["course_title"]))}</strong>
+              </div>
+              <div class="course-choice-chips">{action_chips}</div>
+              <div class="course-choice-meta">{meta_html}</div>
+              {f'<div class="course-choice-evidence">{html.escape(evidence)}</div>' if evidence else ''}
+            </section>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
+
+    button_cols = st.columns(3, gap="small")
+    for col, decision, label in zip(button_cols, ["accept", "unsure", "reject"], ["Accept", "Unsure", "Decline"]):
+        with col:
+            if st.button(
+                label,
+                key=f"{decision_key}_{decision}",
+                type=("primary" if selected == decision else "secondary"),
+                use_container_width=True,
+            ):
+                st.session_state[decision_key] = decision
+
+    action_toggle_actions = [action for action in card["actions"] if action.kind in {"grade_manager_add", "isis_enroll"}]
+    if len(action_toggle_actions) > 1:
+        toggle_cols = st.columns(len(action_toggle_actions), gap="small")
+        for col, action in zip(toggle_cols, action_toggle_actions):
+            toggle_key = _course_action_toggle_key(profile_slug, card, action.action_id)
+            if toggle_key not in st.session_state:
+                st.session_state[toggle_key] = True
+            with col:
+                st.toggle(
+                    _action_kind_short_label(action.kind),
+                    key=toggle_key,
+                    help=_action_kind_label(action.kind),
+                )
+
+
+def _course_card_metadata(card: dict[str, Any]) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
+    term = None
+    area = None
+    module = None
+    isis_id = None
+    for action in card["actions"]:
+        if action.kind == "grade_manager_add":
+            payload = action.grade_manager_payload or {}
+            term = term or payload.get("term")
+            area = area or payload.get("area")
+            module = module or payload.get("module_query")
+        elif action.kind == "isis_enroll":
+            payload = action.isis_payload or {}
+            term = term or payload.get("term_hint")
+            isis_id = isis_id or payload.get("course_id")
+    if term:
+        values.append(("Term", str(term)))
+    if area:
+        values.append(("Area", str(area)))
+    if module:
+        values.append(("Module", str(module)))
+    if isis_id:
+        values.append(("ISIS ID", str(isis_id)))
+    return values[:4]
+
+
+def _collect_course_card_decisions(profile_slug: str, proposals: list[Any]) -> list[dict[str, Any]]:
+    typed_proposals = [_proposal_model(item) for item in proposals]
+    cards = _course_cards_from_proposals([item for item in typed_proposals if item is not None])
+    decisions: list[dict[str, Any]] = []
+    for card in cards:
+        selected = str(st.session_state.get(_course_decision_key(profile_slug, card)) or "unsure")
+        action_items = []
+        for action in card["actions"]:
+            enabled = bool(st.session_state.get(_course_action_toggle_key(profile_slug, card, action.action_id), True))
+            action_items.append(
+                {
+                    "action_id": action.action_id,
+                    "kind": action.kind,
+                    "enabled": enabled,
+                }
+            )
+        decisions.append(
+            {
+                "proposal_id": card["proposal_id"],
+                "proposal_title": card["proposal_title"],
+                "course_title": card["course_title"],
+                "decision": selected if selected in {"accept", "reject", "unsure"} else "unsure",
+                "actions": action_items,
+            }
+        )
+    return decisions
+
+
+def _action_decisions_from_course_card_decisions(decisions: list[dict[str, Any]]) -> list[ActionDecision]:
+    action_decisions: list[ActionDecision] = []
+    for item in decisions:
+        decision = str(item.get("decision") or "unsure")
+        if decision not in {"accept", "reject"}:
+            continue
+        for action in item.get("actions") or []:
+            if not action.get("enabled", True):
+                continue
+            action_decisions.append(
+                ActionDecision(
+                    action_id=str(action.get("action_id") or ""),
+                    approved=(decision == "accept"),
+                    feedback=f"Course card decision: {decision}",
+                )
+            )
+    return [decision for decision in action_decisions if decision.action_id]
+
+
+def _format_course_card_decisions_context(decisions: list[dict[str, Any]]) -> str:
+    if not decisions:
+        return ""
+    compact = [
+        {
+            "course_title": item.get("course_title"),
+            "decision": item.get("decision") or "unsure",
+            "actions": [
+                {
+                    "kind": action.get("kind"),
+                    "enabled": bool(action.get("enabled", True)),
+                }
+                for action in (item.get("actions") or [])
+            ],
         }
-        st.rerun()
-    if col_change.button("Ask for changes", type="secondary", key=f"change_proposals_{profile_slug}", use_container_width=True):
-        change_prompt = feedback.strip() or "Please revise the current course proposal with better alternatives."
-        st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": change_prompt}
-        st.rerun()
+        for item in decisions
+    ]
+    return "Structured course-card decision payload from the UI:\n" + json.dumps(compact, ensure_ascii=False, indent=2)
+
+
+def _is_apply_selected_prompt(prompt: str) -> bool:
+    normalized = re.sub(r"\s+", " ", prompt.casefold()).strip(" .!?:;")
+    return normalized in {
+        "apply",
+        "apply selected",
+        "apply selected courses",
+        "confirm",
+        "confirm selected",
+        "confirm selected courses",
+        "execute",
+        "execute selected",
+        "submit selected",
+        "go ahead",
+        "do it",
+        "looks good",
+        "passt",
+        "übernehmen",
+        "uebernehmen",
+        "bestätigen",
+        "bestaetigen",
+        "ausführen",
+        "ausfuehren",
+    }
+
+
+def _course_decision_key(profile_slug: str, card: dict[str, Any]) -> str:
+    return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{card['proposal_id']}_{_slugify(str(card['course_title']))}"
+
+
+def _course_action_toggle_key(profile_slug: str, card: dict[str, Any], action_id: str) -> str:
+    return f"{_course_decision_key(profile_slug, card)}_{action_id}_enabled"
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", value.casefold()).strip("_")
+    return slug[:48] or "course"
+
+
+def _dedupe_text(values: list[Any]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        cleaned = str(value or "").strip()
+        if cleaned and cleaned not in seen:
+            result.append(cleaned)
+            seen.add(cleaned)
+    return result
 
 
 def _render_legacy_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:
     st.warning("Legacy proposal format detected. Ask the assistant to regenerate course actions.")
 
 
-def _action_detail_text(kind: str, payload: dict[str, Any]) -> str:
+def _action_kind_label(kind: str) -> str:
     if kind == "grade_manager_add":
-        bits = [
-            f"module: {payload.get('module_query') or 'auto'}",
-            f"term: {payload.get('term') or 'missing'}",
-            f"area: {payload.get('area') or 'auto'}",
-        ]
-        if payload.get("program_key"):
-            bits.append(f"program: {payload['program_key']}")
-        return "Grade Manager · " + " · ".join(bits)
-    bits = [
-        f"id: {payload.get('course_id') or 'unresolved'}",
-        f"query: {payload.get('course_query') or payload.get('expected_title') or 'missing'}",
-        f"term: {payload.get('term_hint') or 'any'}",
-    ]
-    return "ISIS · " + " · ".join(bits)
+        return "Study Plan"
+    if kind == "isis_enroll":
+        return "ISIS Enrollment"
+    return str(kind).replace("_", " ").title()
+
+
+def _action_kind_short_label(kind: str) -> str:
+    if kind == "grade_manager_add":
+        return "Study Plan"
+    if kind == "isis_enroll":
+        return "ISIS"
+    return str(kind).replace("_", " ").title()
+
+
+def _action_kind_class(kind: str) -> str:
+    if kind == "grade_manager_add":
+        return "grade-manager"
+    if kind == "isis_enroll":
+        return "isis"
+    return "other"
 
 
 def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
@@ -1648,6 +1851,26 @@ def _set_profile_messages(profile_slug: str, messages: list[dict[str, Any]]) -> 
     st.session_state[CHAT_HISTORY_KEY] = store
 
 
+def _clear_active_course_proposals(profile_slug: str) -> None:
+    thread = load_chat_thread(profile_slug)
+    if not thread.active_proposals:
+        return
+    thread.active_proposals = []
+    save_chat_thread(thread)
+
+
+def _clear_course_card_state(profile_slug: str, proposals: list[Any]) -> None:
+    typed_proposals = [_proposal_model(item) for item in proposals]
+    cards = _course_cards_from_proposals([item for item in typed_proposals if item is not None])
+    keys: set[str] = set()
+    for card in cards:
+        keys.add(_course_decision_key(profile_slug, card))
+        for action in card["actions"]:
+            keys.add(_course_action_toggle_key(profile_slug, card, action.action_id))
+    for key in keys:
+        st.session_state.pop(key, None)
+
+
 def _chat_store() -> dict[str, list[dict[str, Any]]]:
     store = st.session_state.get(CHAT_HISTORY_KEY)
     if not isinstance(store, dict):
@@ -1803,83 +2026,142 @@ def inject_chat_css() -> None:
             color: #2d3748;
             min-height: 4.25rem;
         }
-        .proposal-shell {
-            border: 1px solid #d8e0ea;
-            border-left: 4px solid #00843d;
-            background: linear-gradient(135deg, #ffffff 0%, #f7fbff 100%);
-            border-radius: 10px;
-            padding: 1rem 1.1rem;
-            margin: 1rem 0 0.75rem 0;
-            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
-        }
-        .proposal-kicker {
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: #5d6b7c;
-            font-size: 0.72rem;
-            font-weight: 700;
-            margin-bottom: 0.2rem;
-        }
-        .proposal-title {
-            color: #121826;
-            font-size: 1.2rem;
-            font-weight: 760;
-            line-height: 1.2;
-        }
-        .proposal-subtitle {
-            color: #536070;
-            font-size: 0.9rem;
-            margin-top: 0.25rem;
-        }
-        .course-proposal-card {
-            border: 1px solid #e1e7ef;
-            border-radius: 10px;
-            background: #ffffff;
-            padding: 1rem;
-            margin: 0.8rem 0 0.4rem 0;
-        }
-        .course-proposal-head {
+        .course-choice-header {
             display: flex;
-            align-items: flex-start;
+            align-items: center;
             justify-content: space-between;
             gap: 1rem;
-        }
-        .course-proposal-head h3 {
-            margin: 0;
-            color: #151922;
-            font-size: 1.05rem;
-            letter-spacing: 0;
-        }
-        .course-proposal-head span {
-            border: 1px solid #cbd5e1;
+            border: 1px solid #dfe7f1;
+            border-radius: 8px;
             background: #f8fafc;
-            color: #334155;
+            padding: 0.75rem 0.9rem;
+            margin: 1rem 0 0.7rem 0;
+        }
+        .course-choice-kicker {
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: #64748b;
+            font-size: 0.7rem;
+            font-weight: 750;
+        }
+        .course-choice-title {
+            color: #1e293b;
+            font-size: 1rem;
+            font-weight: 760;
+            line-height: 1.2;
+            margin-top: 0.08rem;
+        }
+        .course-choice-header span {
+            border: 1px solid #cbd5e1;
+            background: #ffffff;
             border-radius: 999px;
-            padding: 0.18rem 0.55rem;
-            font-size: 0.78rem;
+            color: #64748b;
+            font-weight: 750;
+            font-size: 0.75rem;
+            padding: 0.22rem 0.55rem;
             white-space: nowrap;
         }
-        .course-proposal-label {
-            color: #68768a;
-            font-size: 0.75rem;
-            font-weight: 700;
+        .course-choice-card {
+            border: 1px solid #dfe7f1;
+            border-radius: 8px;
+            background: #ffffff;
+            box-shadow: 0 2px 5px rgba(15, 23, 42, 0.04);
+            padding: 0.8rem;
+            min-height: 13rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.55rem;
+            margin-bottom: 0.45rem;
+        }
+        .course-choice-card.accept {
+            border-color: #86efac;
+            box-shadow: 0 0 0 1px rgba(34, 197, 94, 0.18);
+        }
+        .course-choice-card.reject {
+            border-color: #fecaca;
+            box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.15);
+        }
+        .course-choice-card.unsure {
+            border-color: #fde68a;
+        }
+        .course-choice-card-top span {
+            display: block;
+            color: #64748b;
+            font-size: 0.68rem;
+            font-weight: 750;
             text-transform: uppercase;
             letter-spacing: 0.06em;
-            margin-bottom: 0.15rem;
+            margin-bottom: 0.2rem;
         }
-        .course-proposal-card p {
-            color: #475569;
-            margin: 0.5rem 0 0 0;
-            font-size: 0.92rem;
+        .course-choice-card-top strong {
+            display: block;
+            color: #1e293b;
+            font-size: 0.98rem;
+            font-weight: 750;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
         }
-        .action-detail {
-            border: 1px solid #edf1f6;
+        .course-choice-chips {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.35rem;
+        }
+        .course-choice-chip {
+            border: 1px solid #dbe3ee;
             background: #f8fafc;
-            border-radius: 8px;
-            padding: 0.58rem 0.7rem;
-            color: #334155;
-            font-size: 0.86rem;
+            color: #475569;
+            border-radius: 999px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            padding: 0.18rem 0.48rem;
+        }
+        .course-choice-chip.grade-manager {
+            border-color: #bfdbfe;
+            background: #eff6ff;
+            color: #1d4ed8;
+        }
+        .course-choice-chip.isis {
+            border-color: #bbf7d0;
+            background: #f0fdf4;
+            color: #047857;
+        }
+        .course-choice-meta {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.4rem;
+        }
+        .course-choice-meta-item {
+            border: 1px solid #edf2f7;
+            background: #f8fafc;
+            border-radius: 6px;
+            padding: 0.42rem 0.5rem;
+        }
+        .course-choice-meta-item span {
+            display: block;
+            color: #64748b;
+            font-size: 0.64rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            margin-bottom: 0.12rem;
+        }
+        .course-choice-meta-item strong {
+            display: block;
+            color: #1e293b;
+            font-size: 0.78rem;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+        .course-choice-evidence {
+            color: #64748b;
+            font-size: 0.74rem;
             line-height: 1.35;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 0.48rem;
+        }
+        @media (max-width: 760px) {
+            .course-choice-header {
+                align-items: flex-start;
+            }
         }
         /* Workbench Container */
         .workbench-container {

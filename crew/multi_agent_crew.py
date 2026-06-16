@@ -6,7 +6,13 @@ from crewai.project import CrewBase, agent, crew, task
 
 from crew.config.llm import get_default_llm
 from crew.runtime import ensure_crewai_storage_writable
-from crew.tools import COURSE_COMMITMENT_TOOLS, MOSES_MODULE_RESEARCH_TOOLS, STUDY_ADVISOR_TOOLS, make_isis_read_only_tools
+from crew.tools import (
+    COURSE_COMMITMENT_TOOLS,
+    DEGREE_REGULATIONS_TOOLS,
+    MOSES_MODULE_RESEARCH_TOOLS,
+    STUDY_ADVISOR_TOOLS,
+    make_isis_read_only_tools,
+)
 
 
 @CrewBase
@@ -90,6 +96,18 @@ class MultiAgentStudyAssistantCrew:
         return Agent(
             config=self.agents_config["course_info_specialist"],  # type: ignore[index]
             tools=tools,
+            llm=self._llm(),
+            verbose=self.verbose,
+            cache=self.cache,
+            inject_date=True,
+            date_format="%Y-%m-%d",
+        )
+
+    @agent
+    def degree_regulations_specialist(self) -> Agent:
+        return Agent(
+            config=self.agents_config["degree_regulations_specialist"],  # type: ignore[index]
+            tools=list(DEGREE_REGULATIONS_TOOLS),
             llm=self._llm(),
             verbose=self.verbose,
             cache=self.cache,

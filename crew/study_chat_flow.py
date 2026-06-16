@@ -128,6 +128,11 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         self.state.answer_markdown = self._run_route("simple_isis")
         self._carry_forward_existing_proposals()
 
+    @listen("simple_degree_regulations")
+    def run_simple_degree_regulations(self) -> None:
+        self.state.answer_markdown = self._run_route("simple_degree_regulations")
+        self._carry_forward_existing_proposals()
+
     @listen("recommendation")
     def run_recommendation_route(self) -> None:
         self.state.answer_markdown = self._run_route("recommendation")
@@ -152,6 +157,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             run_simple_grade_manager,
             run_simple_moses,
             run_simple_isis,
+            run_simple_degree_regulations,
             run_recommendation_route,
             run_deep_dive_route,
             run_confirmed_action_execution,
@@ -209,6 +215,16 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                     "query": self._contextual_query(),
                     "student_context": self.state.student_context or "No student context supplied.",
                     "isis_context": self.state.isis_context_json or "{}",
+                }
+            )
+            return str(getattr(result, "raw", result))
+        if route == "simple_degree_regulations":
+            from crew.degree_regulations_crew import DegreeRegulationsCrew
+
+            result = DegreeRegulationsCrew(**self._crew_kwargs()).crew().kickoff(
+                inputs={
+                    "query": self._contextual_query(),
+                    "student_context": self.state.student_context or "No student context supplied.",
                 }
             )
             return str(getattr(result, "raw", result))
@@ -295,6 +311,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                             "- simple_grade_manager: Single questions about current grades, credits, GPA, degree requirements\n"
                             "- simple_moses: Single questions about module catalog, prerequisites, workload\n"
                             "- simple_isis: Read-only questions about deadlines/assignments/info in a known ISIS course\n"
+                            "- simple_degree_regulations: Single questions about AllgStuPO, StuPO, degree rules, exam regulations, free-choice/elective rules, or Regelstudienplan from local PDFs\n"
                             "- recommendation: Semester/course planning, follow-ups to active proposals, course selection, and any request to enroll/register/add/save/write course actions for confirmation\n"
                             "- deep_dive: Broad/multi-source queries, unclear intent, or when combining multiple sources makes sense\n"
                             "Prefer simple routes for read-only single-source efficiency. Never use a simple_* route for write_intent=true."
@@ -463,7 +480,7 @@ def _commitment_sources_for_query(text: str) -> list[str]:
 
 
 def _dedupe_sources(sources: list[str]) -> list[str]:
-    allowed = {"grade_manager", "moses", "isis"}
+    allowed = {"degree_regulations", "grade_manager", "moses", "isis"}
     result: list[str] = []
     for source in sources:
         if source in allowed and source not in result:

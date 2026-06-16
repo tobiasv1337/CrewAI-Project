@@ -100,6 +100,70 @@ def test_non_llm_classifier_routes_to_deep_dive_with_warning(monkeypatch, tmp_pa
     assert "WARNING" in flow.state.intent.rationale
 
 
+def test_degree_regulation_question_routes_to_simple_regulations(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    calls = []
+
+    def regulation_runner(flow):
+        calls.append("regulations")
+        return "AllgStuPO answer with PDF citation."
+
+    def forbidden(flow):
+        raise AssertionError("wrong route")
+
+    flow = _flow(
+        classifier=_classifier_for(
+            "simple_degree_regulations",
+            required_sources=["degree_regulations"],
+        ),
+        runner_overrides={
+            "simple_degree_regulations": regulation_runner,
+            "simple_grade_manager": forbidden,
+            "simple_moses": forbidden,
+            "simple_isis": forbidden,
+            "deep_dive": forbidden,
+            "recommendation": forbidden,
+        },
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Was sagt die AllgStuPO zu Wiederholungsprüfungen?",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    assert calls == ["regulations"]
+    assert flow.state.intent.route == "simple_degree_regulations"
+    assert flow.state.intent.required_sources == ["degree_regulations"]
+
+
+def test_regelstudienplan_planning_can_use_recommendation_route(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    calls = []
+
+    flow = _flow(
+        classifier=_classifier_for(
+            "recommendation",
+            required_sources=["degree_regulations", "grade_manager", "moses"],
+            complexity="scoped",
+        ),
+        runner_overrides={
+            "recommendation": lambda flow: calls.append("recommendation") or "Planned with Regelstudienplan context.",
+            "simple_degree_regulations": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+        },
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Plane mein nächstes Semester nach Regelstudienplan.",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    assert calls == ["recommendation"]
+    assert flow.state.intent.route == "recommendation"
+    assert "degree_regulations" in flow.state.intent.required_sources
+
+
 def test_isis_enrollment_classifier_result_never_uses_simple_isis(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     calls = []

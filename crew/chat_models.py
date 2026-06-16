@@ -11,6 +11,7 @@ IntentRoute = Literal[
     "simple_grade_manager",
     "simple_moses",
     "simple_isis",
+    "simple_degree_regulations",
     "recommendation",
     "deep_dive",
     "execute_confirmed_actions",
@@ -70,7 +71,7 @@ class IntentClassification(BaseModel):
     language: Literal["en", "de"] = "en"
     complexity: Literal["simple", "scoped", "deep"] = "deep"
     follow_up_target: str | None = None
-    required_sources: list[Literal["grade_manager", "moses", "isis"]] = Field(default_factory=list)
+    required_sources: list[Literal["degree_regulations", "grade_manager", "moses", "isis"]] = Field(default_factory=list)
     write_intent: bool = False
     tool_budget: int = 12
     rationale: str = ""

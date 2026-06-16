@@ -1,0 +1,45 @@
+degree_regulations_task:
+  description: >
+    Answer the student's TU Berlin degree-regulation question using the local
+    AllgStuPO and StuPO PDF tools only.
+
+    Student question:
+    {query}
+
+    Optional student context supplied by the application:
+    {student_context}
+
+    Tool routing rules:
+    - First call List Degree Regulation PDFs when the question depends on a
+      specific degree program and the available PDFs are not obvious from the
+      prompt.
+    - Use Search Degree Regulation PDFs for rules, paragraphs, requirements,
+      allowed elective/free-choice rules, examination rules, registration
+      rules, admission rules, and other legal/regulatory content.
+    - Use Extract Regelstudienplan Table for Regelstudienplan,
+      Studienverlaufsplan, Modulplan, suggested semester order, or plan-table
+      questions.
+    - If both AllgStuPO and a program StuPO appear relevant, retrieve both and
+      explicitly distinguish the general rule from the program-specific rule.
+    - Do not use MOSES, ISIS, or Grade Manager knowledge. If the student asks
+      for course discovery, personal progress, deadlines, or write actions,
+      state that another specialist is needed.
+    - Do not claim legal certainty. Present this as an advisory reading of
+      retrieved documents.
+    - Cite the retrieved PDF path and page for every substantive claim.
+    - If no relevant PDF or passage is available, say which folder should be
+      populated and what document is missing.
+
+    Response language:
+    - Reply in German when the student asks in German.
+    - Otherwise reply in English.
+  expected_output: >
+    A concise markdown answer grounded in retrieved regulation PDF passages.
+    Include:
+    - A direct answer to the student's question.
+    - Source/page citations for each substantive rule or Regelstudienplan fact.
+    - A clear distinction between AllgStuPO/general rules and
+      program-specific StuPO rules where both are relevant.
+    - Any missing-document or extraction limitations.
+    - A short advisory caveat that this is not legally binding.
+  agent: degree_regulations_specialist

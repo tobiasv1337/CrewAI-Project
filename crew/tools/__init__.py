@@ -36,6 +36,12 @@ from crew.tools.proposal_tools import (
     collect_course_proposals,
     current_course_proposals,
 )
+from crew.tools.degree_regulations_tools import (
+    DEGREE_REGULATIONS_TOOLS,
+    ExtractRegelstudienplanTableTool,
+    ListDegreeRegulationPdfsTool,
+    SearchDegreeRegulationPdfsTool,
+)
 
 COURSE_COMMITMENT_TOOLS = [
     ProposeCourseActionsTool(),
@@ -46,6 +52,7 @@ COURSE_COMMITMENT_TOOLS = [
 __all__ = [
     "CONFIRMATION_TOKEN",
     "COURSE_COMMITMENT_TOOLS",
+    "DEGREE_REGULATIONS_TOOLS",
     "ISIS_READ_ONLY_TOOLS",
     "ISIS_TOOLS",
     "ISIS_WRITE_TOOLS",
@@ -56,7 +63,10 @@ __all__ = [
     "MOSES_MODULE_RESEARCH_TOOLS",
     "STUDY_ADVISOR_TOOLS",
     "STUDY_PLAN_CONFIRMATION_TOKEN",
+    "ExtractRegelstudienplanTableTool",
+    "ListDegreeRegulationPdfsTool",
     "ProposeCourseActionsTool",
+    "SearchDegreeRegulationPdfsTool",
     "collect_course_proposals",
     "current_course_proposals",
     "make_isis_read_only_tools",

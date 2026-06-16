@@ -3,7 +3,12 @@ from __future__ import annotations
 from crewai import LLM, Process
 
 from crew.multi_agent_crew import MultiAgentStudyAssistantCrew
-from crew.tools import COURSE_COMMITMENT_TOOLS, MOSES_MODULE_RESEARCH_TOOLS, STUDY_ADVISOR_TOOLS
+from crew.tools import (
+    COURSE_COMMITMENT_TOOLS,
+    DEGREE_REGULATIONS_TOOLS,
+    MOSES_MODULE_RESEARCH_TOOLS,
+    STUDY_ADVISOR_TOOLS,
+)
 
 
 def _fake_llm() -> LLM:
@@ -25,6 +30,7 @@ def test_multi_agent_crew_loads_yaml_keys(monkeypatch):
     assert "study_advisor" in study_crew.agents_config
     assert "module_researcher" in study_crew.agents_config
     assert "course_info_specialist" in study_crew.agents_config
+    assert "degree_regulations_specialist" in study_crew.agents_config
     assert "course_commitment_specialist" in study_crew.agents_config
     assert "study_assistant_task" in study_crew.tasks_config
 
@@ -44,7 +50,7 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
 
     assert built_crew.process == Process.hierarchical
     assert built_crew.cache is False
-    assert len(built_crew.agents) == 4
+    assert len(built_crew.agents) == 5
     assert len(built_crew.tasks) == 1
     assert built_crew.tasks[0].agent is None
     assert built_crew.manager_agent is not None
@@ -55,6 +61,7 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     study_advisor = _agent_with_role_fragment(built_crew.agents, "Personal Study Advisor")
     module_researcher = _agent_with_role_fragment(built_crew.agents, "MOSES Module Researcher")
     course_info = _agent_with_role_fragment(built_crew.agents, "ISIS Course Information Specialist")
+    regulations = _agent_with_role_fragment(built_crew.agents, "Degree Regulations Specialist")
     commitment = _agent_with_role_fragment(built_crew.agents, "Course Commitment Specialist")
 
     assert [tool.name for tool in study_advisor.tools] == [tool.name for tool in STUDY_ADVISOR_TOOLS]
@@ -74,6 +81,14 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     assert "Permanently Enroll In ISIS Course" not in course_tool_names
     assert "Search TU Berlin MOSES Modules" not in course_tool_names
     assert all(getattr(tool, "allow_temp_enrollment", False) is True for tool in course_info.tools)
+
+    regulation_tool_names = [tool.name for tool in regulations.tools]
+    assert regulation_tool_names == [tool.name for tool in DEGREE_REGULATIONS_TOOLS]
+    assert "Search Degree Regulation PDFs" in regulation_tool_names
+    assert "Extract Regelstudienplan Table" in regulation_tool_names
+    assert "Add Module To Study Plan" not in regulation_tool_names
+    assert "Search TU Berlin MOSES Modules" not in regulation_tool_names
+    assert "List My ISIS Courses" not in regulation_tool_names
 
     commitment_tool_names = [tool.name for tool in commitment.tools]
     assert commitment_tool_names == [tool.name for tool in COURSE_COMMITMENT_TOOLS]

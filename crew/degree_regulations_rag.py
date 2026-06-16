@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from chromadb.config import Settings
 from crewai.rag.chromadb.config import ChromaDBConfig
 from crewai.rag.config.types import RagConfigType
 from crewai.rag.core.base_client import BaseClient
@@ -29,7 +28,7 @@ REGELSTUDIENPLAN_TERMS = (
     "regelstudienplan",
     "studienverlaufsplan",
     "modulplan",
-    "studienplan",
+    "exemplarischer studienplan",
 )
 
 
@@ -149,6 +148,7 @@ def search_regulation_pdfs(
     if not clean_query:
         return "No regulation search query was provided."
 
+    requested_limit = max(1, min(int(limit or DEFAULT_RESULTS_LIMIT), 20))
     entries = build_pdf_manifest(root)
     if not entries:
         return _empty_folder_message(root)
@@ -165,9 +165,10 @@ def search_regulation_pdfs(
     results = _client(client, embedder, storage).search(
         collection_name=collection_name,
         query=clean_query,
-        limit=max(1, min(int(limit or DEFAULT_RESULTS_LIMIT), 20)),
+        limit=_candidate_limit(requested_limit),
         score_threshold=max(0.0, min(float(score_threshold), 1.0)),
     )
+    results = _rerank_search_results(results, clean_query)[:requested_limit]
     if not results:
         return (
             "No relevant regulation PDF passages were found.\n\n"
@@ -328,13 +329,101 @@ def _client(
 def _rag_config(embedder: dict[str, Any], storage_dir: Path) -> RagConfigType:
     chroma_dir = storage_dir / "chromadb"
     chroma_dir.mkdir(parents=True, exist_ok=True)
-    settings = Settings(
-        persist_directory=str(chroma_dir),
-        allow_reset=True,
-        is_persistent=True,
-        anonymized_telemetry=False,
+    _prepare_embedder_storage(embedder, storage_dir)
+    config = ChromaDBConfig(embedding_function=build_embedder(embedder))
+    # Passing a fresh chromadb.Settings instance currently trips validation in
+    # CrewAI 1.14.x. Mutating the default settings keeps the config compatible.
+    config.settings.persist_directory = str(chroma_dir)
+    config.settings.is_persistent = True
+    config.settings.allow_reset = True
+    config.settings.anonymized_telemetry = False
+    return config
+
+
+def _prepare_embedder_storage(embedder: dict[str, Any], storage_dir: Path) -> None:
+    if str(embedder.get("provider", "")).casefold() != "onnx":
+        return
+    try:
+        from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+    except Exception:
+        return
+
+    cache_dir = storage_dir / "onnx_models" / ONNXMiniLM_L6_V2.MODEL_NAME
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    ONNXMiniLM_L6_V2.DOWNLOAD_PATH = cache_dir
+
+
+def _candidate_limit(requested_limit: int) -> int:
+    return max(requested_limit, min(80, max(24, requested_limit * 8)))
+
+
+def _rerank_search_results(results: list[SearchResult], query: str) -> list[SearchResult]:
+    terms = _query_terms(query)
+    if not terms:
+        return results
+
+    ranked = sorted(
+        enumerate(results),
+        key=lambda item: (
+            _lexical_match_score(item[1], terms),
+            float(item[1].get("score") or 0.0),
+            -item[0],
+        ),
+        reverse=True,
     )
-    return ChromaDBConfig(settings=settings, embedding_function=build_embedder(embedder))
+    return [result for _, result in ranked]
+
+
+def _query_terms(query: str) -> list[str]:
+    stop_words = {
+        "about",
+        "and",
+        "der",
+        "die",
+        "das",
+        "den",
+        "des",
+        "for",
+        "mein",
+        "meine",
+        "nach",
+        "sagt",
+        "the",
+        "und",
+        "was",
+        "zur",
+        "zu",
+    }
+    terms: list[str] = []
+    for token in re.findall(r"[\wäöüÄÖÜß]+", query.casefold()):
+        if token in stop_words:
+            continue
+        if token.isdigit() or len(token) >= 3 or token in {"lp", "cp"}:
+            terms.append(token)
+    return terms
+
+
+def _lexical_match_score(result: SearchResult, terms: list[str]) -> float:
+    content = str(result.get("content") or "").casefold()
+    score = 0.0
+    for term in terms:
+        variants = _term_variants(term)
+        if any(re.search(rf"\b{re.escape(variant)}\b", content) for variant in variants):
+            score += 2.0
+        elif any(variant in content for variant in variants):
+            score += 1.0
+    for left, right in zip(terms, terms[1:]):
+        if re.search(rf"\b{re.escape(left)}\W+{re.escape(right)}\b", content):
+            score += 1.5
+    return score
+
+
+def _term_variants(term: str) -> set[str]:
+    variants = {term}
+    for suffix in ("ungen", "ung", "enden", "ende", "en", "er", "es", "e", "s", "n"):
+        if term.endswith(suffix) and len(term) > len(suffix) + 3:
+            variants.add(term[: -len(suffix)])
+    return variants
 
 
 def resolve_embedder_config() -> dict[str, Any]:
@@ -471,7 +560,15 @@ def _truncate(text: str, limit: int) -> str:
 
 def _looks_like_regelstudienplan(text: str) -> bool:
     lowered = text.casefold()
-    return any(term in lowered for term in REGELSTUDIENPLAN_TERMS)
+    if any(term in lowered for term in REGELSTUDIENPLAN_TERMS):
+        return _has_study_plan_shape(lowered)
+    if "studienplan" not in lowered:
+        return False
+    return _has_study_plan_shape(lowered)
+
+
+def _has_study_plan_shape(lowered_text: str) -> bool:
+    return "lp" in lowered_text and "sem." in lowered_text
 
 
 def _extract_page_tables(page: Any) -> list[str]:

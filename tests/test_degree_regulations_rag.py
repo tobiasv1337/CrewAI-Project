@@ -12,6 +12,8 @@ from crew.degree_regulations_rag import (
     index_regulation_pdfs,
     load_pdf_chunks,
     manifest_hash,
+    _prepare_embedder_storage,
+    _rerank_search_results,
     search_regulation_pdfs,
 )
 
@@ -134,13 +136,50 @@ def test_index_refreshes_when_pdf_manifest_changes(tmp_path: Path) -> None:
     assert client.add_count == 2
 
 
+def test_onnx_embedder_cache_uses_rag_storage(tmp_path: Path) -> None:
+    from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+
+    original_path = ONNXMiniLM_L6_V2.DOWNLOAD_PATH
+    try:
+        _prepare_embedder_storage({"provider": "onnx", "config": {}}, tmp_path / "storage")
+
+        assert ONNXMiniLM_L6_V2.DOWNLOAD_PATH == (
+            tmp_path / "storage" / "onnx_models" / ONNXMiniLM_L6_V2.MODEL_NAME
+        )
+        assert ONNXMiniLM_L6_V2.DOWNLOAD_PATH.parent.exists()
+    finally:
+        ONNXMiniLM_L6_V2.DOWNLOAD_PATH = original_path
+
+
+def test_rerank_prefers_passages_with_exact_regulation_terms() -> None:
+    results = [
+        {
+            "content": "Source: ComputerScience_M.Sc._2015.pdf\nComputer Science Master front page.",
+            "metadata": {"source": "ComputerScience_M.Sc._2015.pdf", "page": 1},
+            "score": 0.91,
+        },
+        {
+            "content": (
+                "Source: ComputerScience_M.Sc._2015.pdf\n"
+                "Wahlbereich 24-30 LP. Masterarbeit 30 LP. Gesamtnote."
+            ),
+            "metadata": {"source": "ComputerScience_M.Sc._2015.pdf", "page": 12},
+            "score": 0.72,
+        },
+    ]
+
+    reranked = _rerank_search_results(results, "Computer Science Master Wahlbereich Gesamtnote 30 LP")
+
+    assert reranked[0]["metadata"]["page"] == 12
+
+
 def test_extract_regelstudienplan_text_from_pdf(tmp_path: Path) -> None:
     root = tmp_path / "knowledge" / "degree_regulations"
     _write_text_pdf(
         root / "informatik/stupo.pdf",
         [
             "Studienordnung Informatik",
-            "Regelstudienplan Informatik\nSemester 1: Mathematik 1, Programmierung 1\nSemester 2: Algorithmen und Datenstrukturen",
+            "Regelstudienplan Informatik\n1. Sem. Mathematik 1 6 LP, Programmierung 1 6 LP\n2. Sem. Algorithmen und Datenstrukturen 6 LP",
         ],
     )
 
@@ -148,7 +187,7 @@ def test_extract_regelstudienplan_text_from_pdf(tmp_path: Path) -> None:
 
     assert "informatik/stupo.pdf, page 2" in result
     assert "Regelstudienplan Informatik" in result
-    assert "Semester 1" in result
+    assert "1. Sem." in result
 
 
 def _write_text_pdf(path: Path, pages: list[str]) -> None:

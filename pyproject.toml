@@ -17,6 +17,7 @@ dependencies = [
     "playwright",
     "requests",
     "python-dotenv",
+    "markdown-it-py>=4.2.0",
 ]
 
 [tool.pytest.ini_options]

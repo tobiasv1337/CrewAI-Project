@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 import streamlit as st
+from markdown_it import MarkdownIt
 
 from core.manager import DegreeManager
 from core.models import Module
@@ -256,13 +257,65 @@ def _render_empty_state(profile_slug: str) -> None:
             if st.button(label, key=f"example_btn_{idx}_{profile_slug}", use_container_width=True):
                 st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": prompt}
                 st.rerun()
+def _highlight_json(json_str: str) -> str:
+    # We will use temporary tokens that do not contain HTML special characters
+    # so they are unaffected by html.escape()
+    
+    # 1. Protect keys
+    def repl_key(match):
+        return f'__K_START__"{match.group(1)}"__K_END__:'
+    
+    key_re = r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:'
+    temp = re.sub(key_re, repl_key, json_str)
+    
+    # 2. Protect string values
+    def repl_str(match):
+        return f': __S_START__"{match.group(1)}"__S_END__'
+    
+    str_re = r':\s*"([^"\\]*(?:\\.[^"\\]*)*)"'
+    temp = re.sub(str_re, repl_str, temp)
+    
+    # 3. Protect numeric/boolean/null values
+    def repl_val(match):
+        return f': __V_START__{match.group(1)}__V_END__'
+    
+    val_re = r':\s*(true|false|null|-?\d+(?:\.\d+)?)'
+    temp = re.sub(val_re, repl_val, temp)
+    
+    # 4. HTML escape the entire text
+    escaped = html.escape(temp)
+    
+    # 5. Replace placeholders with actual styled HTML tags
+    escaped = escaped.replace('__K_START__', '<span style="color: #60a5fa; font-weight: 600;">')
+    escaped = escaped.replace('__K_END__', '</span>')
+    escaped = escaped.replace('__S_START__', '<span style="color: #10b981;">')
+    escaped = escaped.replace('__S_END__', '</span>')
+    escaped = escaped.replace('__V_START__', '<span style="color: #f43f5e; font-weight: 600;">')
+    escaped = escaped.replace('__V_END__', '</span>')
+    
+    return escaped
+
+
+def _safe_int(val: Any) -> int:
+    if isinstance(val, int):
+        return val
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        if isinstance(val, str):
+            digits = "".join(ch for ch in val if ch.isdigit())
+            if digits:
+                return int(digits)
+        return 0
+
+
 
 
 def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
     with st.chat_message(message.get("role", "assistant")):
         if message.get("role") == "assistant":
             workbench = message.get("workbench")
-            if workbench and is_latest_assistant and not run_active:
+            if workbench and not run_active:
                 _render_trace_panel(workbench, expanded=True)
         st.markdown(str(message.get("content") or ""))
         if message.get("role") == "assistant":
@@ -838,6 +891,10 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
             for call in (group.get("tool_calls") or [])
         ]
         if calls:
+            # Sort calls by call_id in ascending execution order
+            calls = sorted(calls, key=lambda c: _safe_int(c.get("call_id")))
+
+            md = MarkdownIt()
             tool_items_html = ""
             for call in calls:
                 call_id = call.get("call_id") or 0
@@ -853,6 +910,9 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
                 except Exception:
                     input_json = str(tool_input)
 
+                highlighted_input = _highlight_json(input_json)
+                output_html = md.render(output_preview)
+
                 tool_items_html += f"""
                 <details class="tool-log-item {status}">
                   <summary class="tool-log-summary">
@@ -866,11 +926,11 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
                     <div class="tool-log-meta">Source: {html.escape(source_system)}</div>
                     <div class="tool-log-section">
                       <div class="tool-log-section-title">Input</div>
-                      <pre class="tool-log-code">{html.escape(input_json)}</pre>
+                      <pre class="tool-log-code">{highlighted_input}</pre>
                     </div>
                     <div class="tool-log-section">
                       <div class="tool-log-section-title">Output Preview</div>
-                      <pre class="tool-log-code">{html.escape(output_preview)}</pre>
+                      <div class="tool-log-output-markdown">{output_html}</div>
                     </div>
                   </div>
                 </details>
@@ -972,7 +1032,7 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         if event_name not in {"heartbeat"}:
             latest_events.append(event)
         if event.get("event") == "tool_start":
-            call_id = int(event.get("call_id") or 0)
+            call_id = _safe_int(event.get("call_id"))
             calls_by_id[call_id] = {
                 "call_id": call_id,
                 "tool_name": event.get("tool_name"),
@@ -990,9 +1050,9 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif event.get("event") == "tool_finish":
             call = dict(event.get("tool_call") or {})
             if call:
-                calls_by_id[int(call.get("call_id") or 0)] = call
+                calls_by_id[_safe_int(call.get("call_id"))] = call
 
-    for call in sorted(calls_by_id.values(), key=lambda item: int(item.get("call_id") or 0)):
+    for call in sorted(calls_by_id.values(), key=lambda item: _safe_int(item.get("call_id"))):
         label = str(call.get("agent_label") or "Unknown Agent")
         group = groups.setdefault(
             label,
@@ -2114,6 +2174,105 @@ def inject_chat_css() -> None:
         }
         [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) div {
             text-align: right;
+        }
+
+        /* Decrease heading sizes inside chat messages */
+        [data-testid="stChatMessage"] h1 {
+            font-size: 1.25rem !important;
+            margin-top: 0.85rem !important;
+            margin-bottom: 0.45rem !important;
+            font-weight: 700 !important;
+        }
+        [data-testid="stChatMessage"] h2 {
+            font-size: 1.1rem !important;
+            margin-top: 0.75rem !important;
+            margin-bottom: 0.35rem !important;
+            font-weight: 700 !important;
+        }
+        [data-testid="stChatMessage"] h3 {
+            font-size: 1.0rem !important;
+            margin-top: 0.65rem !important;
+            margin-bottom: 0.3rem !important;
+            font-weight: 700 !important;
+        }
+
+        /* Styling for Markdown Output within Tool logs */
+        .tool-log-output-markdown {
+            margin: 0;
+            padding: 0.75rem;
+            background-color: #f8fafc;
+            color: #334155;
+            border-radius: 6px;
+            border: 1px solid #e2e8f0;
+            font-size: 0.78rem;
+            line-height: 1.45;
+            overflow-x: auto;
+        }
+        .tool-log-output-markdown p {
+            margin: 0 0 0.5rem 0;
+        }
+        .tool-log-output-markdown p:last-child {
+            margin-bottom: 0;
+        }
+        .tool-log-output-markdown h1, 
+        .tool-log-output-markdown h2, 
+        .tool-log-output-markdown h3 {
+            font-size: 0.9rem !important;
+            font-weight: 700 !important;
+            margin: 0.65rem 0 0.3rem 0 !important;
+            color: #1e293b !important;
+        }
+        .tool-log-output-markdown h1:first-child, 
+        .tool-log-output-markdown h2:first-child, 
+        .tool-log-output-markdown h3:first-child {
+            margin-top: 0 !important;
+        }
+        .tool-log-output-markdown ul, 
+        .tool-log-output-markdown ol {
+            margin: 0 0 0.5rem 0;
+            padding-left: 1.2rem;
+        }
+        .tool-log-output-markdown li {
+            margin-bottom: 0.15rem;
+        }
+        .tool-log-output-markdown pre {
+            background-color: #0f172a;
+            color: #e2e8f0;
+            padding: 0.5rem;
+            border-radius: 4px;
+            font-size: 0.72rem;
+            overflow-x: auto;
+            margin: 0.5rem 0;
+        }
+        .tool-log-output-markdown code {
+            font-family: monospace;
+            background-color: #f1f5f9;
+            padding: 0.1rem 0.25rem;
+            border-radius: 3px;
+            font-size: 0.72rem;
+            color: #0f172a;
+        }
+        .tool-log-output-markdown pre code {
+            background-color: transparent;
+            padding: 0;
+            color: inherit;
+            font-size: inherit;
+        }
+        .tool-log-output-markdown table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 0.5rem 0;
+            font-size: 0.72rem;
+        }
+        .tool-log-output-markdown th, 
+        .tool-log-output-markdown td {
+            border: 1px solid #e2e8f0;
+            padding: 0.25rem 0.4rem;
+            text-align: left;
+        }
+        .tool-log-output-markdown th {
+            background-color: #f1f5f9;
+            font-weight: 700;
         }
         </style>
         """,

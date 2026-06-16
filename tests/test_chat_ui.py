@@ -196,3 +196,22 @@ def test_append_heartbeat_event_chooses_correct_running_agent():
     chat._append_heartbeat_event(events)
     assert events[-1]["event"] == "heartbeat"
     assert events[-1]["agent_label"] == "ISIS Course Info Specialist"
+
+
+def test_highlight_json_colors_keys_and_values():
+    input_str = '{\n  "module_query": "40967 & ML",\n  "allow_temp": true,\n  "count": 42\n}'
+    highlighted = chat._highlight_json(input_str)
+    assert 'color: #60a5fa' in highlighted  # key blue
+    assert 'color: #10b981' in highlighted  # string green
+    assert 'color: #f43f5e' in highlighted  # bool/number pink
+    assert '&quot;module_query&quot;' in highlighted
+    assert '&amp;' in highlighted  # html escape check
+
+
+def test_safe_int():
+    assert chat._safe_int(42) == 42
+    assert chat._safe_int("123") == 123
+    assert chat._safe_int("llm-1") == 1
+    assert chat._safe_int(None) == 0
+    assert chat._safe_int("abc") == 0
+

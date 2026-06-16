@@ -18,6 +18,8 @@ from core.manager import DegreeManager
 from core.models import Module
 from core.persistence import load_modules
 from core.registry import create_program, list_relevant_programs, list_selectable_programs
+from crew.chat_models import ActionDecision, ChatMessage, CourseProposal
+from crew.chat_persistence import clear_chat_thread, load_chat_thread, reset_chat_thread, save_chat_thread
 from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL
 from crew.isis_client import IsisCredentials, MoodleRestClient, login_via_playwright_sync
 from crew.tracing import TraceWorkbench, load_trace_workbench
@@ -34,6 +36,7 @@ AGENT_LANES = [
     "Study Advisor",
     "MOSES Module Researcher",
     "ISIS Course Info Specialist",
+    "Course Commitment Specialist",
 ]
 
 
@@ -57,6 +60,7 @@ def render_chat_page() -> None:
     profile_name = _active_profile_display_name(profile_slug)
 
     settings = _render_chat_config_panel(profile_slug)
+    thread = load_chat_thread(profile_slug)
     messages = get_profile_messages(profile_slug)
 
     st.markdown(
@@ -91,13 +95,20 @@ def render_chat_page() -> None:
     if isinstance(pending_prompt, dict) and pending_prompt.get("profile_slug") == profile_slug:
         prompt_text = str(pending_prompt.get("prompt") or "").strip()
         if prompt_text:
-            _run_and_render_assistant_turn(profile_slug, prompt_text, settings)
+            _run_and_render_assistant_turn(
+                profile_slug,
+                prompt_text,
+                settings,
+                approved_actions=pending_prompt.get("approved_actions") or [],
+            )
+
+    if thread.active_proposals and not run_active:
+        _render_proposals_panel(profile_slug, thread.active_proposals)
 
     prompt = st.chat_input("Ask the TU Study Assistant...")
     if prompt:
         run_prompt = prompt.strip()
         if run_prompt:
-            _append_message(profile_slug, {"role": "user", "content": run_prompt, "created_at": _now_iso()})
             st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": run_prompt}
             st.rerun()
 
@@ -160,16 +171,21 @@ def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
                 verbose = st.toggle("CrewAI verbose logs", value=False, key=f"chat_verbose_{profile_slug}")
             with col_toggles2:
                 cache = st.toggle("CrewAI cache", value=True, key=f"chat_cache_{profile_slug}")
-                st.toggle(
+                planning_enabled = st.toggle(
                     "CrewAI Planning",
                     value=False,
-                    disabled=True,
-                    help="Reserved for the later Flow/Planning iteration.",
-                    key=f"chat_planning_disabled_{profile_slug}",
+                    help="Enable CrewAI planning for complex/deep multi-agent runs.",
+                    key=f"chat_planning_{profile_slug}",
                 )
 
         st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
-        if st.button("🗑️ Clear this profile's chat history", type="secondary", key=f"chat_clear_{profile_slug}"):
+        col_new, col_clear = st.columns(2)
+        if col_new.button("New chat", type="secondary", key=f"chat_new_{profile_slug}", use_container_width=True):
+            reset_chat_thread(profile_slug)
+            _set_profile_messages(profile_slug, [])
+            st.rerun()
+        if col_clear.button("Clear persisted chat", type="secondary", key=f"chat_clear_{profile_slug}", use_container_width=True):
+            clear_chat_thread(profile_slug)
             _set_profile_messages(profile_slug, [])
             st.rerun()
 
@@ -184,6 +200,7 @@ def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
         verbose=verbose,
         cache=cache,
         allow_temp_enrollment=allow_temp_enrollment,
+        planning_enabled=planning_enabled,
     )
 
 
@@ -317,6 +334,8 @@ def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = Fa
             workbench = message.get("workbench")
             if workbench and not run_active:
                 _render_trace_panel(workbench, expanded=True)
+            elif message.get("trace_dir") and not run_active:
+                st.caption(f"Trace artifacts: {message.get('trace_dir')}")
         st.markdown(str(message.get("content") or ""))
         if message.get("role") == "assistant":
             proposals = message.get("proposals")
@@ -339,11 +358,20 @@ def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = Fa
                     _render_proposals_panel(str(message.get("profile_slug") or ""), legacy_prop)
 
 
-def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: ChatRuntimeSettings) -> None:
+def _run_and_render_assistant_turn(
+    profile_slug: str,
+    prompt: str,
+    settings: ChatRuntimeSettings,
+    *,
+    approved_actions: list[dict[str, Any]] | list[ActionDecision] | None = None,
+) -> None:
     events = initial_live_trace_events(prompt, settings)
     event_queue: Queue[dict[str, Any]] = Queue()
     student_context = build_student_context(profile_slug)
     isis_client = get_profile_isis_client(profile_slug)
+
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
     with st.chat_message("assistant"):
         trace_placeholder = st.empty()
@@ -364,6 +392,7 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
                     student_context=student_context,
                     isis_client=isis_client,
                     on_trace_event=on_trace_event if settings.trace_enabled else None,
+                    approved_actions=approved_actions or [],
                 )
                 last_render = 0.0
                 last_heartbeat = 0.0
@@ -395,28 +424,13 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
                     "summary": str(result.trace_dir / "summary.json"),
                 }
 
-            # Extract and display new proposals
-            proposals = extract_all_proposals(result, workbench)
+            proposals = _proposal_dicts(result.proposed_actions)
             if proposals:
                 _render_proposals_panel(profile_slug, proposals)
 
-            if workbench and trace_has_successful_study_plan_write(workbench):
+            if result.executed_actions or (workbench and trace_has_successful_study_plan_write(workbench)):
                 refresh_streamlit_profile_state(profile_slug)
                 st.success("Study plan data was updated and reloaded.")
-            _append_message(
-                profile_slug,
-                {
-                    "role": "assistant",
-                    "content": result.answer,
-                    "created_at": _now_iso(),
-                    "trace_dir": str(result.trace_dir) if result.trace_dir else None,
-                    "state_path": str(result.state_path) if result.state_path else None,
-                    "tool_summary_lines": result.tool_summary_lines,
-                    "workbench": workbench,
-                    "proposals": proposals,
-                    "profile_slug": profile_slug,
-                },
-            )
             st.rerun()
         except Exception as exc:
             events.append(
@@ -445,16 +459,19 @@ def _run_chat_query(
     student_context: str,
     isis_client: MoodleRestClient | None,
     on_trace_event,
+    approved_actions: list[dict[str, Any]] | list[ActionDecision] | None = None,
 ) -> MultiAgentStudyAssistantRunResult:
     return run_study_assistant_query(
         query=prompt,
         student_context=student_context,
         allow_temp_enrollment=settings.allow_temp_enrollment,
         profile_slug=profile_slug,
+        approved_actions=list(approved_actions or []),
         isis_client=isis_client,
         on_trace_event=on_trace_event,
         model=settings.specialist_model,
         manager_model=settings.manager_model,
+        planning_enabled=settings.planning_enabled,
         temperature=settings.temperature,
         top_p=settings.top_p,
         trace=settings.trace_enabled,
@@ -607,121 +624,145 @@ def extract_all_proposals(result: MultiAgentStudyAssistantRunResult, workbench: 
     return []
 
 
-def _render_proposals_panel(profile_slug: str, proposals: list[dict[str, Any]]) -> None:
+def _proposal_dicts(proposals: list[Any]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for proposal in proposals or []:
+        if isinstance(proposal, CourseProposal):
+            result.append(proposal.model_dump(mode="json"))
+        elif isinstance(proposal, dict):
+            result.append(proposal)
+        elif hasattr(proposal, "model_dump"):
+            result.append(proposal.model_dump(mode="json"))
+    return result
+
+
+def _proposal_model(proposal: Any) -> CourseProposal | None:
+    try:
+        if isinstance(proposal, CourseProposal):
+            return proposal
+        if isinstance(proposal, dict) and "actions" in proposal:
+            return CourseProposal.model_validate(proposal)
+    except Exception:
+        return None
+    return None
+
+
+def _render_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:
     if not profile_slug or not proposals:
         return
 
     st.markdown(
         _clean_html(
             """
-            <div class="pending-write-card">
-              <div class="pending-write-title">📋 Proposed Study Plan & ISIS Actions</div>
-              <div class="pending-write-subtitle">Review the proposed course modifications. You can select actions to approve or decline.</div>
+            <div class="proposal-shell">
+              <div class="proposal-kicker">Awaiting your decision</div>
+              <div class="proposal-title">Recommended course actions</div>
+              <div class="proposal-subtitle">These banners appear only when an agent explicitly calls the confirmation proposal tool.</div>
             </div>
             """
         ),
         unsafe_allow_html=True,
     )
 
-    confirmed_items = []
+    decisions: list[ActionDecision] = []
+    typed_proposals = [_proposal_model(item) for item in proposals]
+    typed_proposals = [item for item in typed_proposals if item is not None]
 
-    for idx, group in enumerate(proposals):
-        title = group["title"]
-        gm = group["grade_manager"]
-        isis = group["isis"]
+    if not typed_proposals:
+        _render_legacy_proposals_panel(profile_slug, proposals)
+        return
 
-        st.markdown(f"**Course: {html.escape(title)}**")
+    for proposal_idx, proposal in enumerate(typed_proposals):
+        action_count = len([action for action in proposal.actions if action.status == "proposed"])
+        st.markdown(
+            _clean_html(
+                f"""
+                <section class="course-proposal-card">
+                  <div class="course-proposal-head">
+                    <div>
+                      <div class="course-proposal-label">{html.escape(proposal.source_agent or "Course Commitment Specialist")}</div>
+                      <h3>{html.escape(proposal.title)}</h3>
+                    </div>
+                    <span>{action_count} open action{'s' if action_count != 1 else ''}</span>
+                  </div>
+                  <p>{html.escape(proposal.summary or "Review the proposed course actions.")}</p>
+                </section>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        if proposal.evidence:
+            st.caption("Evidence: " + " · ".join(proposal.evidence[:4]))
 
-        col_gm, col_isis = st.columns(2)
-
-        gm_checked = False
-        isis_checked = False
-
-        with col_gm:
-            if gm:
-                term = gm["term"]
-                area = gm["area"] or "auto"
-                gm_checked = st.checkbox(
-                    f"Add to Grade Manager ({term}, Area: {area})",
-                    value=True,
-                    key=f"confirm_gm_{idx}_{profile_slug}"
-                )
-            else:
-                st.caption("No Grade Manager write proposed.")
-
-        with col_isis:
-            if isis:
-                course_id = isis["course_id"] or isis["course_query"] or isis["course_url"]
-                isis_checked = st.checkbox(
-                    f"Enroll on ISIS Moodle (ID/Query: {course_id})",
-                    value=True,
-                    key=f"confirm_isis_{idx}_{profile_slug}"
-                )
-            else:
-                st.caption("No ISIS enrollment proposed.")
-
-        confirmed_items.append({
-            "title": title,
-            "grade_manager": gm if gm_checked else None,
-            "isis": isis if isis_checked else None,
-            "gm_refused": gm,
-            "isis_refused": isis
-        })
-        st.markdown("<div class='divider'></div>", unsafe_allow_html=True)
+        for action_idx, action in enumerate(proposal.actions):
+            if action.status != "proposed":
+                st.info(f"{action.course_title}: {action.kind} is already {action.status}.")
+                continue
+            payload = action.grade_manager_payload if action.kind == "grade_manager_add" else action.isis_payload
+            payload = payload or {}
+            action_label = (
+                f"Add {action.course_title} to Grade Manager"
+                if action.kind == "grade_manager_add"
+                else f"Enroll in {action.course_title} on ISIS"
+            )
+            detail = _action_detail_text(action.kind, payload)
+            key_base = f"proposal_{proposal_idx}_{action_idx}_{action.action_id}_{profile_slug}"
+            col_toggle, col_meta = st.columns([0.42, 0.58])
+            with col_toggle:
+                approved = st.toggle(action_label, value=True, key=f"{key_base}_approved")
+            with col_meta:
+                st.markdown(f"<div class='action-detail'>{html.escape(detail)}</div>", unsafe_allow_html=True)
+                if action.evidence:
+                    st.caption(" · ".join(action.evidence[:3]))
+            decisions.append(ActionDecision(action_id=action.action_id, approved=approved))
 
     feedback = st.text_area(
-        "Additional instructions or adjustments (optional)",
-        placeholder="e.g. 'I declined course X because I took it already. Suggest a machine learning course instead.'",
+        "Adjustments or replacement request",
+        placeholder="e.g. Replace the non-ML course with another machine learning option.",
         key=f"proposal_feedback_{profile_slug}"
     )
 
-    if st.button("Submit Decisions", type="primary", key=f"submit_proposals_{profile_slug}", use_container_width=True):
-        approved_lines = []
-        declined_lines = []
-
-        for item in confirmed_items:
-            title = item["title"]
-            gm = item["grade_manager"]
-            isis = item["isis"]
-            gm_refused = item["gm_refused"]
-            isis_refused = item["isis_refused"]
-
-            if gm:
-                area_str = f", Area: {gm['area']}" if gm["area"] else ""
-                prog_str = f", Program: {gm['program_key']}" if gm["program_key"] else ""
-                approved_lines.append(
-                    f"- Grade Manager: Add module '{title}' (query: {gm['module_query']}) for term {gm['term']}{area_str}{prog_str}. "
-                    f"Use confirmation_token {STUDY_PLAN_CONFIRMATION_TOKEN}."
-                )
-            elif gm_refused:
-                declined_lines.append(f"- Grade Manager: Do NOT add module '{title}' (query: {gm_refused['module_query']}).")
-
-            if isis:
-                id_query = isis["course_id"] or isis["course_query"] or isis["course_url"]
-                approved_lines.append(
-                    f"- ISIS Moodle: Permanently enroll in course '{title}' (locator: {id_query}). "
-                    f"Use confirmation_token {CONFIRMATION_TOKEN}."
-                )
-            elif isis_refused:
-                id_query = isis_refused["course_id"] or isis_refused["course_query"] or isis_refused["course_url"]
-                declined_lines.append(f"- ISIS Moodle: Do NOT enroll in course '{title}' (locator: {id_query}).")
-
-        prompt_parts = ["The user reviewed the proposed study plan modifications and ISIS enrollments."]
-        if approved_lines:
-            prompt_parts.append("\n**Approved Actions:**")
-            prompt_parts.extend(approved_lines)
-        if declined_lines:
-            prompt_parts.append("\n**Declined Actions:**")
-            prompt_parts.extend(declined_lines)
-
+    col_submit, col_change = st.columns([0.5, 0.5])
+    if col_submit.button("Apply selected actions", type="primary", key=f"submit_proposals_{profile_slug}", use_container_width=True):
+        finalized = [
+            decision.model_copy(update={"feedback": feedback.strip()})
+            for decision in decisions
+        ]
+        prompt = "The user reviewed the course action proposal and submitted structured action decisions."
         if feedback.strip():
-            prompt_parts.append(f"\n**User feedback / instruction:**\n{feedback.strip()}")
-
-        confirm_prompt = "\n".join(prompt_parts)
-
-        _append_message(profile_slug, {"role": "user", "content": confirm_prompt, "created_at": _now_iso()})
-        st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": confirm_prompt}
+            prompt += f"\n\nUser adjustment note: {feedback.strip()}"
+        st.session_state[PENDING_PROMPT_KEY] = {
+            "profile_slug": profile_slug,
+            "prompt": prompt,
+            "approved_actions": [decision.model_dump(mode="json") for decision in finalized],
+        }
         st.rerun()
+    if col_change.button("Ask for changes", type="secondary", key=f"change_proposals_{profile_slug}", use_container_width=True):
+        change_prompt = feedback.strip() or "Please revise the current course proposal with better alternatives."
+        st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": change_prompt}
+        st.rerun()
+
+
+def _render_legacy_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:
+    st.warning("Legacy proposal format detected. Ask the assistant to regenerate course actions.")
+
+
+def _action_detail_text(kind: str, payload: dict[str, Any]) -> str:
+    if kind == "grade_manager_add":
+        bits = [
+            f"module: {payload.get('module_query') or 'auto'}",
+            f"term: {payload.get('term') or 'missing'}",
+            f"area: {payload.get('area') or 'auto'}",
+        ]
+        if payload.get("program_key"):
+            bits.append(f"program: {payload['program_key']}")
+        return "Grade Manager · " + " · ".join(bits)
+    bits = [
+        f"id: {payload.get('course_id') or 'unresolved'}",
+        f"query: {payload.get('course_query') or payload.get('expected_title') or 'missing'}",
+        f"term: {payload.get('term_hint') or 'any'}",
+    ]
+    return "ISIS · " + " · ".join(bits)
 
 
 def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
@@ -736,6 +777,7 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
         verbose=bool(st.session_state.get(f"chat_verbose_{profile_slug}", False)),
         cache=bool(st.session_state.get(f"chat_cache_{profile_slug}", True)),
         allow_temp_enrollment=bool(st.session_state.get(f"chat_temp_enrollment_{profile_slug}", True)),
+        planning_enabled=bool(st.session_state.get(f"chat_planning_{profile_slug}", False)),
     )
 
 
@@ -1132,6 +1174,16 @@ def initial_live_trace_events(prompt: str, settings: ChatRuntimeSettings) -> lis
             "activity": f"Ready for ISIS read-only inspection; temporary enrollment is {temp_status}.",
             "source_system": "ISIS",
         },
+        {
+            "event": "agent_ready",
+            "event_id": 0,
+            "elapsed_ms": 0,
+            "agent_label": "Course Commitment Specialist",
+            "phase": "ready",
+            "status": "idle",
+            "activity": "Ready to create explicit confirmation proposals or execute approved actions.",
+            "source_system": "Course Commitment",
+        },
     ]
 
 
@@ -1193,6 +1245,8 @@ def _source_for_agent_label(label: str) -> str:
         return "MOSES"
     if label == "ISIS Course Info Specialist":
         return "ISIS"
+    if label == "Course Commitment Specialist":
+        return "Course Commitment"
     return "CrewAI"
 
 
@@ -1202,6 +1256,7 @@ def _default_activity_for_agent(label: str) -> str:
         "Study Advisor": "Waiting for Grade Manager work.",
         "MOSES Module Researcher": "Waiting for MOSES work.",
         "ISIS Course Info Specialist": "Waiting for ISIS work.",
+        "Course Commitment Specialist": "Waiting for confirmation proposal or execution work.",
     }.get(label, "Waiting for activity.")
 
 
@@ -1216,6 +1271,8 @@ def _event_agent_label(event: dict[str, Any]) -> str:
         return "MOSES Module Researcher"
     if "isis" in role or "course information specialist" in role:
         return "ISIS Course Info Specialist"
+    if "commitment" in role:
+        return "Course Commitment Specialist"
     if event.get("event") in {"crew_started", "crew_completed", "crew_failed", "ui_run_started"}:
         return "Orchestrator"
     tool_name = str(event.get("tool_name") or "").casefold()
@@ -1413,13 +1470,19 @@ def refresh_streamlit_profile_state(profile_slug: str) -> None:
 
 
 def get_profile_messages(profile_slug: str) -> list[dict[str, Any]]:
-    return list(_chat_store().get(profile_slug, []))
+    thread = load_chat_thread(profile_slug)
+    messages = [message.model_dump(mode="json") for message in thread.messages]
+    store = _chat_store()
+    store[profile_slug] = messages
+    st.session_state[CHAT_HISTORY_KEY] = store
+    return messages
 
 
 def _append_message(profile_slug: str, message: dict[str, Any]) -> None:
-    messages = get_profile_messages(profile_slug)
-    messages.append(message)
-    _set_profile_messages(profile_slug, messages)
+    thread = load_chat_thread(profile_slug)
+    thread.messages.append(ChatMessage.model_validate(message))
+    save_chat_thread(thread)
+    _set_profile_messages(profile_slug, [item.model_dump(mode="json") for item in thread.messages])
 
 
 def _set_profile_messages(profile_slug: str, messages: list[dict[str, Any]]) -> None:
@@ -1462,6 +1525,7 @@ def _default_source_flow(*, active_sources: set[str] | None = None, active: bool
         {"source": "Grade Manager", "agent": "Study Advisor", "target": "Orchestrator", "active": "Grade Manager" in active_sources},
         {"source": "MOSES", "agent": "MOSES Module Researcher", "target": "Orchestrator", "active": "MOSES" in active_sources},
         {"source": "ISIS", "agent": "ISIS Course Info Specialist", "target": "Orchestrator", "active": "ISIS" in active_sources},
+        {"source": "Course Commitment", "agent": "Course Commitment Specialist", "target": "Student", "active": "Course Commitment" in active_sources},
         {"source": "Orchestrator", "agent": "Final Answer", "target": "Student", "active": active},
     ]
 
@@ -1531,6 +1595,84 @@ def inject_chat_css() -> None:
             padding: 0.85rem;
             color: #2d3748;
             min-height: 4.25rem;
+        }
+        .proposal-shell {
+            border: 1px solid #d8e0ea;
+            border-left: 4px solid #00843d;
+            background: linear-gradient(135deg, #ffffff 0%, #f7fbff 100%);
+            border-radius: 10px;
+            padding: 1rem 1.1rem;
+            margin: 1rem 0 0.75rem 0;
+            box-shadow: 0 10px 24px rgba(15, 23, 42, 0.07);
+        }
+        .proposal-kicker {
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: #5d6b7c;
+            font-size: 0.72rem;
+            font-weight: 700;
+            margin-bottom: 0.2rem;
+        }
+        .proposal-title {
+            color: #121826;
+            font-size: 1.2rem;
+            font-weight: 760;
+            line-height: 1.2;
+        }
+        .proposal-subtitle {
+            color: #536070;
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+        }
+        .course-proposal-card {
+            border: 1px solid #e1e7ef;
+            border-radius: 10px;
+            background: #ffffff;
+            padding: 1rem;
+            margin: 0.8rem 0 0.4rem 0;
+        }
+        .course-proposal-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+        .course-proposal-head h3 {
+            margin: 0;
+            color: #151922;
+            font-size: 1.05rem;
+            letter-spacing: 0;
+        }
+        .course-proposal-head span {
+            border: 1px solid #cbd5e1;
+            background: #f8fafc;
+            color: #334155;
+            border-radius: 999px;
+            padding: 0.18rem 0.55rem;
+            font-size: 0.78rem;
+            white-space: nowrap;
+        }
+        .course-proposal-label {
+            color: #68768a;
+            font-size: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 0.15rem;
+        }
+        .course-proposal-card p {
+            color: #475569;
+            margin: 0.5rem 0 0 0;
+            font-size: 0.92rem;
+        }
+        .action-detail {
+            border: 1px solid #edf1f6;
+            background: #f8fafc;
+            border-radius: 8px;
+            padding: 0.58rem 0.7rem;
+            color: #334155;
+            font-size: 0.86rem;
+            line-height: 1.35;
         }
         /* Workbench Container */
         .workbench-container {

@@ -770,6 +770,7 @@ def build_trace_workbench(
         "Study Advisor",
         "MOSES Module Researcher",
         "ISIS Course Info Specialist",
+        "Course Commitment Specialist",
         "Unknown Agent",
     ]
     groups = sorted(
@@ -840,6 +841,8 @@ def agent_label_for_role(role: object | None) -> str:
         return "MOSES Module Researcher"
     if "isis" in text or "course information specialist" in text:
         return "ISIS Course Info Specialist"
+    if "commitment" in text or "course commitment" in text:
+        return "Course Commitment Specialist"
     return "Unknown Agent"
 
 
@@ -847,6 +850,8 @@ def source_system_for_tool(tool_name: str) -> str:
     text = tool_name.casefold()
     if "study plan" in text or "degree requirement" in text:
         return "Grade Manager"
+    if "propose course actions" in text or "confirmation" in text:
+        return "Course Commitment"
     if "moses" in text:
         return "MOSES"
     if "isis" in text:
@@ -894,6 +899,8 @@ def badges_for_tool_output(tool_name: str, output_preview: str) -> list[str]:
         badges.append("write refused")
     if "add module to study plan" in tool_name.casefold() and "added `" in text:
         badges.append("study-plan write")
+    if "propose course actions" in tool_name.casefold():
+        badges.append("ui proposal")
     return _dedupe_strings(badges)
 
 
@@ -917,6 +924,12 @@ def source_flow_for_calls(tool_calls: list[ToolCallSummary]) -> list[dict[str, A
             "agent": "ISIS Course Info Specialist",
             "target": "Orchestrator",
             "active": "ISIS" in active_sources,
+        },
+        {
+            "source": "Course Commitment",
+            "agent": "Course Commitment Specialist",
+            "target": "Student",
+            "active": "Course Commitment" in active_sources,
         },
         {
             "source": "Orchestrator",

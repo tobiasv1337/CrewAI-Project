@@ -20,7 +20,8 @@ study_assistant_task:
 
     Before delegating to anyone, explicitly think through:
     1. Which specialists are needed for this request? (Study Advisor / MOSES
-       Researcher / ISIS Specialist — only the ones actually required)
+       Researcher / ISIS Specialist / Course Commitment Specialist — only
+       the ones actually required)
     2. What order must they run in? Identify data dependencies:
        - If ISIS or MOSES need to know which courses the student is currently
          taking, the Study Advisor MUST go first.
@@ -35,15 +36,16 @@ study_assistant_task:
 
     Delegation rules:
     - Delegate Grade Manager progress, completed/planned modules, open
-      requirements, module-fit checks, and any study-plan write request to
-      the Study Advisor.
+      requirements, and read-only module-fit checks to the Study Advisor.
     - Delegate broad module discovery, module details, MOSES degree structure,
       catalog assignments, teaching terms, prerequisites, and exam information
       to the MOSES Module Researcher.
     - Delegate ISIS/Moodle questions about enrolled courses, assignments,
       deadlines, announcements, forums, grades, materials, assessments, or
-      calendar dates, as well as permanently enrolling in courses, to the
-      ISIS Course Information Specialist.
+      calendar dates to the ISIS Course Information Specialist.
+    - Delegate explicit UI course proposals and confirmed Grade Manager/ISIS
+      write actions to the Course Commitment Specialist. No other specialist
+      creates confirmation banners or permanently changes data.
 
     Hard sequencing rules:
     - RULE A — ISIS needs Grade Manager course list first.
@@ -61,15 +63,22 @@ study_assistant_task:
       fit for courses the student is taking, include the MOSES module numbers
       from the Study Advisor's output so MOSES can look up real catalog data
       instead of estimating from LP alone.
-    - RULE C — Study Advisor FIRST for any write.
-      Never confirm or execute a Grade Manager write without Study Advisor
-      explicitly reporting success.
+    - RULE C — Course Commitment Specialist owns proposal/write actions.
+      If a student should be asked to approve adding/enrolling in specific
+      courses, delegate to the Course Commitment Specialist to call
+      `Propose Course Actions For Confirmation`. Do NOT create proposal
+      banners by asking another specialist to call a write tool without a
+      token. If the student has already approved actions and supplied the
+      exact confirmation tokens, delegate execution and verification to the
+      Course Commitment Specialist.
 
     Specialist boundaries:
     - For pure MOSES catalog questions: only MOSES Researcher.
     - For pure ISIS operational questions with known course IDs: only ISIS
       Specialist.
     - For pure progress/degree questions: only Study Advisor.
+    - For recommendation banners, study-plan writes, and permanent ISIS
+      enrollment: only Course Commitment Specialist.
     - Keep source boundaries explicit. MOSES facts ≠ ISIS facts ≠ Grade
       Manager facts. Do not let one source substitute for another.
 
@@ -77,6 +86,8 @@ study_assistant_task:
     === PHASE 3 — REFLECT (mandatory review before answering) ===
 
     After receiving specialist results, audit them:
+    - Did any UI proposal come from `Propose Course Actions For Confirmation`?
+      If not, do not claim that the UI will show a confirmation banner.
     - Did the ISIS Specialist work on the correct set of courses (the ones
       from the Grade Manager, not raw ISIS enrollment)? If it investigated
       courses not mentioned by the Study Advisor, those results are

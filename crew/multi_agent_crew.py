@@ -6,7 +6,7 @@ from crewai.project import CrewBase, agent, crew, task
 
 from crew.config.llm import get_default_llm
 from crew.runtime import ensure_crewai_storage_writable
-from crew.tools import MOSES_MODULE_RESEARCH_TOOLS, STUDY_ADVISOR_TOOLS, make_isis_read_only_tools, ISIS_WRITE_TOOLS
+from crew.tools import COURSE_COMMITMENT_TOOLS, MOSES_MODULE_RESEARCH_TOOLS, STUDY_ADVISOR_TOOLS, make_isis_read_only_tools
 
 
 @CrewBase
@@ -29,6 +29,8 @@ class MultiAgentStudyAssistantCrew:
         allow_temp_enrollment: bool = False,
         verbose: bool = False,
         cache: bool = True,
+        planning_enabled: bool = False,
+        planning_llm_model: str | None = None,
     ) -> None:
         self.model = model
         self.manager_model = manager_model or model
@@ -37,6 +39,8 @@ class MultiAgentStudyAssistantCrew:
         self.allow_temp_enrollment = allow_temp_enrollment
         self.verbose = verbose
         self.cache = cache
+        self.planning_enabled = planning_enabled
+        self.planning_llm_model = planning_llm_model or self.manager_model
 
     def _llm(self, *, manager: bool = False):
         return get_default_llm(
@@ -83,10 +87,21 @@ class MultiAgentStudyAssistantCrew:
     @agent
     def course_info_specialist(self) -> Agent:
         tools = make_isis_read_only_tools(allow_temp_enrollment=self.allow_temp_enrollment)
-        tools.extend(ISIS_WRITE_TOOLS)
         return Agent(
             config=self.agents_config["course_info_specialist"],  # type: ignore[index]
             tools=tools,
+            llm=self._llm(),
+            verbose=self.verbose,
+            cache=self.cache,
+            inject_date=True,
+            date_format="%Y-%m-%d",
+        )
+
+    @agent
+    def course_commitment_specialist(self) -> Agent:
+        return Agent(
+            config=self.agents_config["course_commitment_specialist"],  # type: ignore[index]
+            tools=list(COURSE_COMMITMENT_TOOLS),
             llm=self._llm(),
             verbose=self.verbose,
             cache=self.cache,
@@ -111,4 +126,14 @@ class MultiAgentStudyAssistantCrew:
             manager_agent=self._orchestrator(),
             verbose=self.verbose,
             cache=self.cache,
+            planning=self.planning_enabled,
+            planning_llm=(
+                get_default_llm(
+                    model=self.planning_llm_model,
+                    temperature=self.temperature,
+                    top_p=self.top_p,
+                )
+                if self.planning_enabled
+                else None
+            ),
         )

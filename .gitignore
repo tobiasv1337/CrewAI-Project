@@ -12,6 +12,7 @@ env/
 # Environment / Secret files
 .env
 .crewai_home/
+.streamlit_home/
 
 # Testing
 .pytest_cache/

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import json
 import os
 from pathlib import Path
@@ -65,6 +65,9 @@ class MultiAgentStudyAssistantRunResult:
     trace_dir: Path | None
     state_path: Path | None = None
     raw_result: Any = None
+    proposed_actions: list[Any] = field(default_factory=list)
+    executed_actions: list[Any] = field(default_factory=list)
+    intent: Any = None
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -277,6 +280,8 @@ def build_parser() -> argparse.ArgumentParser:
     ask_multi_parser.add_argument("--isis-context-json", default="{}", help="Optional structured IsisLookupContext JSON.")
     ask_multi_parser.add_argument("--allow-temp-enrollment", action="store_true", help="Allow temporary ISIS self-enrollment for read-only course inspection during this run.")
     ask_multi_parser.add_argument("--manager-model", help="Override the LLM model used by the orchestrator/manager agent.")
+    ask_multi_parser.add_argument("--planning", action="store_true", help="Enable CrewAI planning for the hierarchical deep route.")
+    ask_multi_parser.add_argument("--planning-llm-model", help="Optional model override for CrewAI planning.")
     _add_agent_runtime_arguments(ask_multi_parser)
     _set_runner(ask_multi_parser, _run_ask_study_assistant)
 
@@ -647,6 +652,8 @@ def _run_ask_study_assistant(args: argparse.Namespace) -> str:
         allow_temp_enrollment=args.allow_temp_enrollment,
         model=args.model,
         manager_model=args.manager_model,
+        planning_enabled=args.planning,
+        planning_llm_model=args.planning_llm_model,
         temperature=args.temperature,
         top_p=args.top_p,
         trace=args.trace,
@@ -859,10 +866,16 @@ def run_study_assistant_query(
     isis_context_json: str = "{}",
     allow_temp_enrollment: bool = False,
     profile_slug: str | None = None,
+    thread_id: str = "default",
+    reset_thread: bool = False,
+    approved_actions: list[Any] | None = None,
+    conversation_context: str = "",
     isis_client: Any | None = None,
     on_trace_event: Callable[[dict[str, Any]], None] | None = None,
     model: str | None = None,
     manager_model: str | None = None,
+    planning_enabled: bool = False,
+    planning_llm_model: str | None = None,
     temperature: float | None = None,
     top_p: float | None = None,
     trace: bool = True,
@@ -872,31 +885,47 @@ def run_study_assistant_query(
     logs_root: Path | str = Path("logs/crew_runs"),
     run_id: str | None = None,
 ) -> MultiAgentStudyAssistantRunResult:
+    from crew.chat_models import ActionDecision, StudyChatFlowState
+    from crew.chat_persistence import add_trace_artifact
     from crew.isis_client import use_default_isis_client
-    from crew.multi_agent_crew import MultiAgentStudyAssistantCrew
     from crew.profile_context import use_grade_manager_profile
-    from crew.state import build_multi_agent_study_assistant_state, collect_moses_state_artifacts
+    from crew.state import collect_moses_state_artifacts
+    from crew.study_chat_flow import StudyChatFlow, StudyChatFlowRuntime
+    from crew.tools.proposal_tools import collect_course_proposals
     from crew.tracing import capture_tool_traces
 
     load_dotenv()
     trace_model = manager_model or model or os.getenv("STUDY_ASSISTANT_MODEL", DEFAULT_AGENT_MODEL)
     validated_context = _validate_json_text(isis_context_json)
-    parsed_isis_context = json.loads(validated_context)
-    crew_instance = MultiAgentStudyAssistantCrew(
-        model=model,
-        manager_model=manager_model,
-        temperature=temperature,
-        top_p=top_p,
-        allow_temp_enrollment=allow_temp_enrollment,
-        verbose=verbose,
-        cache=cache,
-    ).crew()
-    inputs = {
-        "query": query,
-        "student_context": student_context or "No student context supplied.",
-        "isis_context": validated_context,
-    }
-    with use_grade_manager_profile(profile_slug), use_default_isis_client(isis_client), collect_moses_state_artifacts() as moses_artifacts, capture_tool_traces(
+    decisions = [
+        item if isinstance(item, ActionDecision) else ActionDecision.model_validate(item)
+        for item in (approved_actions or [])
+    ]
+    flow = StudyChatFlow(
+        runtime=StudyChatFlowRuntime(
+            model=model,
+            manager_model=manager_model,
+            temperature=temperature,
+            top_p=top_p,
+            allow_temp_enrollment=allow_temp_enrollment,
+            verbose=verbose,
+            cache=cache,
+            planning_enabled=planning_enabled,
+            planning_llm_model=planning_llm_model,
+        )
+    )
+    inputs = StudyChatFlowState(
+        query=query,
+        student_context=student_context or "No student context supplied.",
+        isis_context_json=validated_context,
+        profile_slug=profile_slug or "primary",
+        thread_id=thread_id,
+        reset_thread=reset_thread,
+        conversation_context=conversation_context,
+        approved_actions=decisions,
+        isis_session_mode="session" if isis_client is not None else "env",
+    ).model_dump(mode="json")
+    with use_grade_manager_profile(profile_slug), use_default_isis_client(isis_client), collect_moses_state_artifacts(), collect_course_proposals(), capture_tool_traces(
         enabled=trace,
         query=query,
         student_context=student_context or "No student context supplied.",
@@ -906,26 +935,29 @@ def run_study_assistant_query(
         logs_root=logs_root,
         trace_full=trace_full,
         run_id=run_id,
-        run_label="Multi-Agent Study Assistant Run Report",
+        run_label="Study Chat Flow Run Report",
         on_event=on_trace_event,
     ) as recorder:
-        raw_result = crew_instance.kickoff(inputs=inputs)
-        answer = str(getattr(raw_result, "raw", raw_result))
+        raw_result = flow.kickoff(inputs=inputs)
+        state = flow.state
+        answer = state.answer_markdown
         usage_metrics = getattr(raw_result, "usage_metrics", None) or getattr(raw_result, "token_usage", None)
-        state = build_multi_agent_study_assistant_state(
-            query=query,
-            student_context=student_context or "",
-            answer_markdown=answer,
-            artifacts=moses_artifacts,
-            supplied_isis_context=parsed_isis_context,
-        )
         recorder.write_answer(answer, usage_metrics=usage_metrics, state=state)
+        add_trace_artifact(
+            profile_slug or "primary",
+            trace_dir=str(recorder.run_dir) if recorder.run_dir else None,
+            state_path=str(getattr(recorder, "state_path", None)) if getattr(recorder, "state_path", None) else None,
+            thread_id=thread_id,
+        )
         return MultiAgentStudyAssistantRunResult(
             answer=answer,
             tool_summary_lines=recorder.compact_summary_lines(),
             trace_dir=recorder.run_dir,
             state_path=getattr(recorder, "state_path", None),
             raw_result=raw_result,
+            proposed_actions=state.proposed_actions,
+            executed_actions=state.executed_actions,
+            intent=state.intent,
         )
 
 

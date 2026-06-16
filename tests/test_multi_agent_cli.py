@@ -58,6 +58,8 @@ def test_ask_study_assistant_dispatches_runner_with_multi_agent_options(monkeypa
             "allow_temp_enrollment": True,
             "model": "qwen-specialists",
             "manager_model": "qwen-manager",
+            "planning_enabled": False,
+            "planning_llm_model": None,
             "temperature": 0.4,
             "top_p": 0.8,
             "trace": True,

@@ -31,9 +31,21 @@ from crew.tools.grademanager_tools import (
     get_study_plan_snapshot,
     list_study_plan_modules,
 )
+from crew.tools.proposal_tools import (
+    ProposeCourseActionsTool,
+    collect_course_proposals,
+    current_course_proposals,
+)
+
+COURSE_COMMITMENT_TOOLS = [
+    ProposeCourseActionsTool(),
+    *GRADE_MANAGER_WRITE_TOOLS,
+    *ISIS_WRITE_TOOLS,
+]
 
 __all__ = [
     "CONFIRMATION_TOKEN",
+    "COURSE_COMMITMENT_TOOLS",
     "ISIS_READ_ONLY_TOOLS",
     "ISIS_TOOLS",
     "ISIS_WRITE_TOOLS",
@@ -44,6 +56,9 @@ __all__ = [
     "MOSES_MODULE_RESEARCH_TOOLS",
     "STUDY_ADVISOR_TOOLS",
     "STUDY_PLAN_CONFIRMATION_TOKEN",
+    "ProposeCourseActionsTool",
+    "collect_course_proposals",
+    "current_course_proposals",
     "make_isis_read_only_tools",
     "build_student_plan_context",
     "search_modules",

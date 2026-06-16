@@ -13,6 +13,23 @@ def setup_function():
     st.session_state.clear()
 
 
+def _setup_chat_profiles(monkeypatch, tmp_path):
+    from core import persistence
+
+    data_dir = tmp_path / "data"
+    profiles_dir = data_dir / "profiles"
+    monkeypatch.setattr(persistence, "DATA_DIR", data_dir)
+    monkeypatch.setattr(persistence, "PROFILES_DIR", profiles_dir)
+    monkeypatch.setattr(persistence, "PROFILES_FILE", profiles_dir / "profiles.json")
+    monkeypatch.setattr(persistence, "_LEGACY_MODULES_FILE", data_dir / "modules.json")
+    persistence.save_profiles(
+        [
+            persistence.ProfileRecord(slug="alice", display_name="Alice", is_primary=True),
+            persistence.ProfileRecord(slug="bob", display_name="Bob", is_primary=False),
+        ]
+    )
+
+
 def test_live_workbench_from_events_tracks_running_and_finished_calls():
     events = [
         {
@@ -58,7 +75,7 @@ def test_live_workbench_from_events_tracks_running_and_finished_calls():
     groups = {group["agent_label"]: group for group in workbench["groups"]}
     assert groups["Study Advisor"]["tool_calls"][0]["status"] == "ok"
     assert groups["ISIS Course Info Specialist"]["tool_calls"][0]["status"] == "running"
-    assert [item["active"] for item in workbench["source_flow"]] == [True, False, True, True]
+    assert [item["active"] for item in workbench["source_flow"]] == [True, False, True, False, True]
 
 
 def test_live_workbench_shows_lifecycle_activity_before_tool_calls():
@@ -166,7 +183,8 @@ def test_trace_has_successful_study_plan_write_detects_badge():
     )
 
 
-def test_profile_chat_history_and_isis_session_are_scoped():
+def test_profile_chat_history_and_isis_session_are_scoped(monkeypatch, tmp_path):
+    _setup_chat_profiles(monkeypatch, tmp_path)
     chat._append_message("alice", {"role": "user", "content": "Alice question"})
     chat._append_message("bob", {"role": "user", "content": "Bob question"})
     client = MoodleRestClient(wstoken="alice-token")
@@ -214,4 +232,3 @@ def test_safe_int():
     assert chat._safe_int("llm-1") == 1
     assert chat._safe_int(None) == 0
     assert chat._safe_int("abc") == 0
-

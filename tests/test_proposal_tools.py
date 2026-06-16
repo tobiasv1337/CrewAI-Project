@@ -1,0 +1,53 @@
+from __future__ import annotations
+
+from crew.tools.proposal_tools import ProposeCourseActionsTool, collect_course_proposals
+
+
+def test_proposal_tool_records_explicit_ui_actions_only_inside_collection_context():
+    tool = ProposeCourseActionsTool()
+
+    with collect_course_proposals() as proposals:
+        output = tool._run(
+            proposal_title="Next semester ML plan",
+            proposal_summary="Two ML-focused courses fit the student's open elective credits.",
+            courses=[
+                {
+                    "course_title": "Reinforcement Learning",
+                    "rationale": "Matches the ML preference and counts for electives.",
+                    "evidence": ["MOSES: 6 LP", "Grade Manager: elective credits open"],
+                    "module_query": "40967",
+                    "term": "WS 26/27",
+                    "area": "Elective",
+                    "include_grade_manager": True,
+                    "include_isis": True,
+                    "isis_course_id": 48000,
+                }
+            ],
+        )
+
+    assert "Prepared UI confirmation proposal" in output
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.title == "Next semester ML plan"
+    assert [action.kind for action in proposal.actions] == ["grade_manager_add", "isis_enroll"]
+    assert proposal.actions[0].grade_manager_payload["module_query"] == "40967"
+    assert proposal.actions[1].isis_payload["course_id"] == 48000
+    assert proposal.actions[0].action_id == proposal.actions[0].action_id
+
+
+def test_proposal_tool_does_not_record_without_context():
+    tool = ProposeCourseActionsTool()
+    output = tool._run(
+        proposal_title="No collector",
+        proposal_summary="No collector is active.",
+        courses=[
+            {
+                "course_title": "Machine Learning 2",
+                "rationale": "Useful course.",
+                "module_query": "40968",
+                "term": "WS 26/27",
+            }
+        ],
+    )
+
+    assert "Prepared UI confirmation proposal" in output

@@ -184,7 +184,7 @@ def test_trace_workbench_groups_calls_by_agent_and_source(tmp_path):
     workbench = build_trace_workbench(calls, run_id="grouped", run_dir=tmp_path / "grouped")
 
     assert [group.agent_label for group in workbench.groups] == ["Study Advisor", "MOSES Module Researcher"]
-    assert [item["active"] for item in workbench.source_flow] == [True, True, False, True]
+    assert [item["active"] for item in workbench.source_flow] == [True, True, False, False, True]
 
     run_dir = tmp_path / "grouped"
     run_dir.mkdir()

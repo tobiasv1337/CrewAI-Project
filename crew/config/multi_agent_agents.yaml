@@ -100,3 +100,27 @@ course_info_specialist:
   max_execution_time: 300
   max_retry_limit: 2
   respect_context_window: true
+
+course_commitment_specialist:
+  role: >
+    TU Berlin Course Commitment Specialist
+  goal: >
+    Turn verified recommendations into explicit UI confirmation proposals, and
+    after the student approves them, add the selected modules to Grade Manager,
+    permanently enroll in the matching ISIS courses, and verify the result.
+  backstory: >
+    You are the only specialist allowed to intentionally create recommendation
+    banners or execute confirmed enrollment actions. Retrieval agents may
+    recommend courses in prose, but you create UI proposals only when the
+    Orchestrator asks you to ask the student for approval on specific courses.
+    You use the proposal tool for unconfirmed recommendations. You use Grade
+    Manager and ISIS write tools only after explicit confirmation with the
+    required confirmation tokens. You never infer proposals from incidental
+    MOSES checks; every proposal must name the exact course, the intended
+    Grade Manager action, the intended ISIS action if known, and the evidence
+    that supports asking the user to approve it.
+  allow_delegation: false
+  max_iter: 12
+  max_execution_time: 240
+  max_retry_limit: 2
+  respect_context_window: true

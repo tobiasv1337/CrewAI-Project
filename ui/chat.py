@@ -22,6 +22,7 @@ from crew.chat_models import ActionDecision, ChatMessage, CourseProposal
 from crew.chat_persistence import clear_chat_thread, load_chat_thread, reset_chat_thread, save_chat_thread
 from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL
 from crew.isis_client import IsisCredentials, MoodleRestClient, login_via_playwright_sync
+from crew.tools.proposal_tools import ProposalCourseInput, build_course_proposal
 from crew.tracing import TraceWorkbench, load_trace_workbench
 from main import MultiAgentStudyAssistantRunResult, run_study_assistant_query
 
@@ -416,9 +417,10 @@ def _run_and_render_assistant_turn(
                 "trace_dir": str(result.trace_dir) if result.trace_dir else None,
                 "metadata": {"workbench": workbench} if workbench else {},
             }
-            _update_or_append_assistant_message(profile_slug, assistant_message)
+            course_proposals = resolve_course_proposals(result, workbench)
+            _update_or_append_assistant_message(profile_slug, assistant_message, proposals=course_proposals)
 
-            proposals = _proposal_dicts(result.proposed_actions)
+            proposals = _proposal_dicts(course_proposals)
             if proposals:
                 _render_proposals_panel(profile_slug, proposals)
 
@@ -616,6 +618,66 @@ def extract_all_proposals(result: MultiAgentStudyAssistantRunResult, workbench: 
             "isis": None
         }]
     return []
+
+
+def resolve_course_proposals(
+    result: MultiAgentStudyAssistantRunResult,
+    workbench: dict[str, Any] | None,
+) -> list[CourseProposal]:
+    proposals: list[CourseProposal] = []
+    seen: set[str] = set()
+
+    for item in result.proposed_actions or []:
+        proposal = _proposal_model(item)
+        if proposal and proposal.proposal_id not in seen:
+            proposals.append(proposal)
+            seen.add(proposal.proposal_id)
+
+    for proposal in extract_explicit_course_proposals(workbench):
+        if proposal.proposal_id not in seen:
+            proposals.append(proposal)
+            seen.add(proposal.proposal_id)
+
+    return proposals
+
+
+def extract_explicit_course_proposals(workbench: dict[str, Any] | None) -> list[CourseProposal]:
+    if not workbench:
+        return []
+
+    proposals: list[CourseProposal] = []
+    seen: set[str] = set()
+    for call in _all_tool_calls(workbench):
+        if not _is_explicit_course_proposal_tool(call.get("tool_name")):
+            continue
+        tool_input = call.get("tool_input") or {}
+        proposal_title = str(tool_input.get("proposal_title") or "").strip()
+        proposal_summary = str(tool_input.get("proposal_summary") or "").strip()
+        raw_courses = tool_input.get("courses") or []
+        if not proposal_title or not isinstance(raw_courses, list) or not raw_courses:
+            continue
+        try:
+            courses = [
+                course if isinstance(course, ProposalCourseInput) else ProposalCourseInput.model_validate(course)
+                for course in raw_courses
+            ]
+            proposal = build_course_proposal(
+                proposal_title=proposal_title,
+                proposal_summary=proposal_summary,
+                courses=courses,
+                source_agent=str(call.get("agent_label") or "Course Commitment Specialist"),
+            )
+        except Exception:
+            continue
+        if proposal.actions and proposal.proposal_id not in seen:
+            proposals.append(proposal)
+            seen.add(proposal.proposal_id)
+    return proposals
+
+
+def _is_explicit_course_proposal_tool(tool_name: Any) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(tool_name or "").casefold()).strip("_")
+    return normalized == "propose_course_actions_for_confirmation"
 
 
 def _proposal_dicts(proposals: list[Any]) -> list[dict[str, Any]]:
@@ -1555,7 +1617,11 @@ def _append_message(profile_slug: str, message: dict[str, Any]) -> None:
     _set_profile_messages(profile_slug, [item.model_dump(mode="json") for item in thread.messages])
 
 
-def _update_or_append_assistant_message(profile_slug: str, assistant_message: dict[str, Any]) -> None:
+def _update_or_append_assistant_message(
+    profile_slug: str,
+    assistant_message: dict[str, Any],
+    proposals: list[CourseProposal] | None = None,
+) -> None:
     thread = load_chat_thread(profile_slug)
     updated = False
     for msg in reversed(thread.messages):
@@ -1570,6 +1636,8 @@ def _update_or_append_assistant_message(profile_slug: str, assistant_message: di
                 break
     if not updated:
         thread.messages.append(ChatMessage.model_validate(assistant_message))
+    if proposals is not None:
+        thread.active_proposals = proposals
     save_chat_thread(thread)
     _set_profile_messages(profile_slug, [item.model_dump(mode="json") for item in thread.messages])
 

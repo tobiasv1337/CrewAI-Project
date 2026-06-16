@@ -184,6 +184,62 @@ def test_trace_has_successful_study_plan_write_detects_badge():
     )
 
 
+def test_resolve_course_proposals_rebuilds_explicit_proposal_tool_call():
+    result = MultiAgentStudyAssistantRunResult(
+        answer="The proposal has been prepared.",
+        tool_summary_lines=[],
+        trace_dir=None,
+        proposed_actions=[],
+    )
+    workbench = {
+        "groups": [
+            {
+                "agent_label": "Course Commitment Specialist",
+                "tool_calls": [
+                    {
+                        "tool_name": "propose_course_actions_for_confirmation",
+                        "agent_label": "Course Commitment Specialist",
+                        "tool_input": {
+                            "proposal_title": "Software Security Lab Enrollment Confirmation",
+                            "proposal_summary": "Confirm enrollment and study-plan sync.",
+                            "courses": [
+                                {
+                                    "course_title": "Software Security Lab",
+                                    "rationale": "Grade Manager and ISIS are out of sync.",
+                                    "evidence": [
+                                        "Grade Manager status: In Progress",
+                                        "ISIS course ID: 48474",
+                                    ],
+                                    "module_query": "41240",
+                                    "version": 3,
+                                    "term": "SS 26",
+                                    "area": "Elective",
+                                    "isis_course_id": 48474,
+                                    "isis_course_query": "Software Security Lab",
+                                    "isis_course_url": "https://isis.tu-berlin.de/course/view.php?id=48474",
+                                    "isis_term_hint": "SS 26",
+                                    "include_grade_manager": True,
+                                    "include_isis": True,
+                                }
+                            ],
+                        },
+                    }
+                ],
+            }
+        ]
+    }
+
+    proposals = chat.resolve_course_proposals(result, workbench)
+
+    assert len(proposals) == 1
+    proposal = proposals[0]
+    assert proposal.title == "Software Security Lab Enrollment Confirmation"
+    assert proposal.source_agent == "Course Commitment Specialist"
+    assert [action.kind for action in proposal.actions] == ["grade_manager_add", "isis_enroll"]
+    assert proposal.actions[0].grade_manager_payload["module_query"] == "41240"
+    assert proposal.actions[1].isis_payload["course_id"] == 48474
+
+
 def test_profile_chat_history_and_isis_session_are_scoped(monkeypatch, tmp_path):
     _setup_chat_profiles(monkeypatch, tmp_path)
     chat._append_message("alice", {"role": "user", "content": "Alice question"})

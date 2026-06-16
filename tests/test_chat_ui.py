@@ -80,6 +80,64 @@ def test_live_workbench_from_events_tracks_running_and_finished_calls():
     assert [item["active"] for item in workbench["source_flow"]] == [False, True]
 
 
+def test_agent_interaction_extraction_pairs_coworker_tool_events():
+    events = [
+        {
+            "event": "tool_start",
+            "run_id": "run-dialogue",
+            "call_id": 9,
+            "tool_name": "Delegate work to coworker",
+            "tool_input": {
+                "coworker": "TU Berlin MOSES Module Researcher",
+                "task": "Find Machine Learning modules that fit the student's elective area.",
+                "context": "The student already completed ML1.",
+            },
+            "agent_label": "Orchestrator",
+            "status": "running",
+            "elapsed_ms": 140,
+        },
+        {
+            "event": "tool_finish",
+            "run_id": "run-dialogue",
+            "tool_call": {
+                "call_id": 9,
+                "tool_name": "Delegate work to coworker",
+                "tool_input": {
+                    "coworker": "TU Berlin MOSES Module Researcher",
+                    "task": "Find Machine Learning modules that fit the student's elective area.",
+                    "context": "The student already completed ML1.",
+                },
+                "agent_label": "Orchestrator",
+                "status": "ok",
+                "duration_ms": 832,
+                "output_preview": "Found Reinforcement Learning and Machine Learning 2.",
+            },
+        },
+    ]
+
+    interactions = chat.extract_agent_interactions(events)
+
+    assert len(interactions) == 1
+    interaction = interactions[0]
+    assert interaction["sender"] == "Orchestrator"
+    assert interaction["receiver"] == "MOSES Module Researcher"
+    assert interaction["status"] == "completed"
+    assert interaction["duration_ms"] == 832
+    assert "already completed ML1" in interaction["question"]
+    assert "Reinforcement Learning" in interaction["response"]
+
+    workbench = chat.live_workbench_from_events(events, completed=True)
+    assert workbench["agent_dialogue"][0]["receiver"] == "MOSES Module Researcher"
+
+
+def test_current_settings_includes_agent_chat_toggle():
+    st.session_state["chat_show_agent_chat_alice"] = True
+
+    settings = chat._current_settings_from_state("alice")
+
+    assert settings.show_agent_chat is True
+
+
 def test_live_workbench_shows_lifecycle_activity_before_tool_calls():
     settings = chat.ChatRuntimeSettings(
         specialist_model=None,

@@ -54,6 +54,7 @@ class ChatRuntimeSettings:
     cache: bool
     allow_temp_enrollment: bool
     planning_enabled: bool = False
+    show_agent_chat: bool = False
 
 
 def render_chat_page() -> None:
@@ -91,6 +92,8 @@ def render_chat_page() -> None:
 
     for idx, message in enumerate(messages):
         is_latest_assistant = (idx == last_assistant_idx)
+        if message.get("role") == "assistant" and settings.show_agent_chat:
+            _render_agent_interactions_inline(get_interactions_for_message(message), live=False)
         _render_chat_message(message, is_latest_assistant=is_latest_assistant, run_active=run_active)
 
     pending_prompt = st.session_state.pop(PENDING_PROMPT_KEY, None)
@@ -196,6 +199,12 @@ def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
                     help="Enable CrewAI planning for complex/deep multi-agent runs.",
                     key=f"chat_planning_{profile_slug}",
                 )
+                show_agent_chat = st.toggle(
+                    "Show bot-to-bot chat",
+                    value=False,
+                    help="Render observable Orchestrator-to-specialist delegation above the final chat answer.",
+                    key=f"chat_show_agent_chat_{profile_slug}",
+                )
 
         st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
         col_new, col_clear = st.columns(2)
@@ -220,6 +229,7 @@ def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
         cache=cache,
         allow_temp_enrollment=allow_temp_enrollment,
         planning_enabled=planning_enabled,
+        show_agent_chat=show_agent_chat,
     )
 
 
@@ -379,6 +389,11 @@ def _run_and_render_assistant_turn(
     with st.chat_message("user"):
         st.markdown(display_prompt or prompt)
 
+    dialogue_placeholder = st.empty() if settings.show_agent_chat else None
+    if dialogue_placeholder is not None:
+        with dialogue_placeholder.container():
+            _render_agent_interactions_inline(extract_agent_interactions(events), live=True)
+
     with st.chat_message("assistant"):
         trace_placeholder = st.empty()
         answer_placeholder = st.empty()
@@ -410,11 +425,17 @@ def _run_and_render_assistant_turn(
                         updated = True
                         last_heartbeat = now
                     if updated or now - last_render >= 1.0:
+                        if dialogue_placeholder is not None:
+                            with dialogue_placeholder.container():
+                                _render_agent_interactions_inline(extract_agent_interactions(events), live=True)
                         with trace_placeholder.container():
                             _render_live_trace(events)
                         last_render = now
                     time.sleep(0.2)
                 _drain_trace_queue(event_queue, events)
+                if dialogue_placeholder is not None:
+                    with dialogue_placeholder.container():
+                        _render_agent_interactions_inline(extract_agent_interactions(events), live=False)
                 with trace_placeholder.container():
                     _render_live_trace(events, completed=True)
                 result = future.result()
@@ -431,6 +452,9 @@ def _run_and_render_assistant_turn(
                     "state": str(result.trace_dir / "state.json"),
                     "summary": str(result.trace_dir / "summary.json"),
                 }
+            agent_dialogue = extract_agent_interactions(events)
+            if agent_dialogue:
+                workbench["agent_dialogue"] = agent_dialogue
 
             # Persist the assistant message with workbench and trace info
             assistant_message = {
@@ -438,7 +462,7 @@ def _run_and_render_assistant_turn(
                 "content": result.answer.rstrip(),
                 "created_at": _now_iso(),
                 "trace_dir": str(result.trace_dir) if result.trace_dir else None,
-                "metadata": {"workbench": workbench} if workbench else {},
+                "metadata": {"workbench": workbench, "agent_dialogue": agent_dialogue} if workbench else {},
             }
             course_proposals = resolve_course_proposals(result, workbench)
             _update_or_append_assistant_message(profile_slug, assistant_message, proposals=course_proposals)
@@ -1037,7 +1061,403 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
         cache=bool(st.session_state.get(f"chat_cache_{profile_slug}", True)),
         allow_temp_enrollment=bool(st.session_state.get(f"chat_temp_enrollment_{profile_slug}", True)),
         planning_enabled=bool(st.session_state.get(f"chat_planning_{profile_slug}", False)),
+        show_agent_chat=bool(st.session_state.get(f"chat_show_agent_chat_{profile_slug}", False)),
     )
+
+
+def extract_agent_interactions(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Extract observable manager-to-specialist delegation from trace events."""
+    interactions: dict[str, dict[str, Any]] = {}
+    order: list[str] = []
+
+    for index, event in enumerate(events or []):
+        event_name = str(event.get("event") or "")
+        if event_name == "tool_start" and _is_coworker_tool(event.get("tool_name")):
+            call_id = str(_safe_int(event.get("call_id")) or f"start-{index}")
+            interaction = _interaction_from_tool_payload(
+                tool_name=event.get("tool_name"),
+                tool_input=event.get("tool_input"),
+                sender=_event_agent_label(event),
+                call_id=call_id,
+                status="running",
+                elapsed_ms=event.get("elapsed_ms"),
+                started_at=event.get("started_at") or event.get("emitted_at"),
+            )
+            interactions[call_id] = interaction
+            order.append(call_id)
+        elif event_name == "tool_finish":
+            call = dict(event.get("tool_call") or {})
+            if not _is_coworker_tool(call.get("tool_name")):
+                continue
+            call_id = str(_safe_int(call.get("call_id")) or f"finish-{index}")
+            existing = interactions.get(call_id)
+            interaction = _interaction_from_tool_payload(
+                tool_name=call.get("tool_name"),
+                tool_input=call.get("tool_input"),
+                sender=call.get("agent_label") or _event_agent_label(event),
+                call_id=call_id,
+                status=str(call.get("status") or "completed"),
+                elapsed_ms=event.get("elapsed_ms"),
+                started_at=call.get("started_at"),
+                finished_at=event.get("finished_at") or event.get("emitted_at"),
+                duration_ms=call.get("duration_ms"),
+                response=call.get("output_preview") or call.get("output"),
+            )
+            if existing:
+                existing.update(
+                    {
+                        key: value
+                        for key, value in interaction.items()
+                        if value is not None and value != "" and value != []
+                    }
+                )
+                existing["status"] = "completed" if existing.get("status") in {"ok", "running"} else existing.get("status")
+            else:
+                interactions[call_id] = interaction
+                order.append(call_id)
+        elif event_name == "tool_call" and _is_coworker_tool(event.get("tool_name")):
+            call_id = str(_safe_int(event.get("call_id")) or f"call-{index}")
+            interaction = _interaction_from_tool_payload(
+                tool_name=event.get("tool_name"),
+                tool_input=event.get("tool_input"),
+                sender=event.get("agent_label") or _event_agent_label(event),
+                call_id=call_id,
+                status=str(event.get("status") or "completed"),
+                elapsed_ms=event.get("elapsed_ms"),
+                started_at=event.get("started_at"),
+                finished_at=event.get("finished_at"),
+                duration_ms=event.get("duration_ms"),
+                response=event.get("output_preview") or event.get("output"),
+            )
+            interactions[call_id] = interaction
+            order.append(call_id)
+
+    ordered_keys = list(dict.fromkeys(order))
+    return [_normalize_interaction_status(interactions[key]) for key in ordered_keys if key in interactions]
+
+
+def get_interactions_for_message(
+    message: dict[str, Any],
+    events: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    if events:
+        return extract_agent_interactions(events)
+
+    metadata = message.get("metadata") if isinstance(message.get("metadata"), dict) else {}
+    stored = metadata.get("agent_dialogue") or message.get("agent_dialogue")
+    if isinstance(stored, list):
+        return [_normalize_interaction_status(item) for item in stored if isinstance(item, dict)]
+
+    workbench = metadata.get("workbench") or message.get("workbench")
+    if isinstance(workbench, dict):
+        stored = workbench.get("agent_dialogue")
+        if isinstance(stored, list):
+            return [_normalize_interaction_status(item) for item in stored if isinstance(item, dict)]
+        interactions = extract_agent_interactions_from_workbench(workbench)
+        if interactions:
+            return interactions
+
+    return extract_agent_interactions(_load_events_from_trace_dir(message.get("trace_dir")))
+
+
+def extract_agent_interactions_from_workbench(workbench: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not workbench:
+        return []
+    stored = workbench.get("agent_dialogue")
+    if isinstance(stored, list):
+        return [_normalize_interaction_status(item) for item in stored if isinstance(item, dict)]
+    events: list[dict[str, Any]] = []
+    for call in _all_tool_calls(workbench):
+        if _is_coworker_tool(call.get("tool_name")):
+            event = dict(call)
+            event.setdefault("event", "tool_call")
+            events.append(event)
+    return extract_agent_interactions(events)
+
+
+def _load_events_from_trace_dir(trace_dir: str | Path | None) -> list[dict[str, Any]]:
+    if not trace_dir:
+        return []
+    trace_path = Path(trace_dir) / "trace.jsonl"
+    if not trace_path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    for line in trace_path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events
+
+
+def _interaction_from_tool_payload(
+    *,
+    tool_name: Any,
+    tool_input: Any,
+    sender: Any,
+    call_id: str,
+    status: str,
+    elapsed_ms: Any = None,
+    started_at: Any = None,
+    finished_at: Any = None,
+    duration_ms: Any = None,
+    response: Any = None,
+) -> dict[str, Any]:
+    input_data = _coerce_mapping(tool_input)
+    sender_label, sender_avatar, sender_class = _clean_agent_label(str(sender or "Orchestrator"))
+    receiver_label, receiver_avatar, receiver_class = _clean_agent_label(_receiver_from_tool_input(input_data))
+    return {
+        "call_id": call_id,
+        "tool_name": str(tool_name or ""),
+        "sender": sender_label,
+        "sender_avatar": sender_avatar,
+        "sender_class": sender_class,
+        "receiver": receiver_label,
+        "receiver_avatar": receiver_avatar,
+        "receiver_class": receiver_class,
+        "question": _delegation_request_from_tool_input(input_data),
+        "response": _preview_dialogue_text(response, limit=1800),
+        "status": status,
+        "elapsed_ms": _optional_int(elapsed_ms),
+        "duration_ms": _optional_int(duration_ms),
+        "started_at": str(started_at) if started_at else None,
+        "finished_at": str(finished_at) if finished_at else None,
+    }
+
+
+def _is_coworker_tool(tool_name: Any) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(tool_name or "").casefold()).strip("_")
+    return "coworker" in normalized or normalized in {
+        "delegate_work",
+        "delegate_work_to_coworker",
+        "ask_question_to_coworker",
+    }
+
+
+def _coerce_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {"raw": value}
+        return parsed if isinstance(parsed, dict) else {"raw": parsed}
+    return {}
+
+
+def _receiver_from_tool_input(tool_input: dict[str, Any]) -> str:
+    for key in ("coworker", "coworker_name", "coworker_role", "recipient", "agent", "role"):
+        value = str(tool_input.get(key) or "").strip()
+        if value:
+            return value
+    raw = json.dumps(tool_input, ensure_ascii=False, sort_keys=True)
+    for label in AGENT_LANES:
+        if label != "Orchestrator" and label.casefold() in raw.casefold():
+            return label
+    return "Specialist Agent"
+
+
+def _delegation_request_from_tool_input(tool_input: dict[str, Any]) -> str:
+    request_parts: list[str] = []
+    for key in ("question", "task", "request", "assignment", "message"):
+        value = str(tool_input.get(key) or "").strip()
+        if value and value not in request_parts:
+            request_parts.append(value)
+    if not request_parts:
+        raw = str(tool_input.get("raw") or "").strip()
+        if raw:
+            request_parts.append(raw)
+    context = str(tool_input.get("context") or "").strip()
+    if context and not any(context in part for part in request_parts):
+        request_parts.append(f"Context: {context}")
+    return _preview_dialogue_text("\n\n".join(request_parts) or "Delegation request captured without readable text.", limit=1400)
+
+
+def _clean_agent_label(role_or_label: str) -> tuple[str, str, str]:
+    text = str(role_or_label or "").strip()
+    lowered = text.casefold()
+    if "orchestrator" in lowered or "manager" in lowered:
+        return "Orchestrator", "🧭", "orchestrator"
+    if "study advisor" in lowered or "personal study advisor" in lowered:
+        return "Study Advisor", "🎓", "study-advisor"
+    if "moses" in lowered or "module researcher" in lowered:
+        return "MOSES Module Researcher", "🔎", "moses"
+    if "isis" in lowered or "course information specialist" in lowered:
+        return "ISIS Course Info Specialist", "📚", "isis"
+    if "commitment" in lowered:
+        return "Course Commitment Specialist", "✅", "commitment"
+    return text or "Specialist Agent", "🤖", "specialist"
+
+
+def _normalize_interaction_status(interaction: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(interaction)
+    status = str(normalized.get("status") or "").casefold()
+    if status in {"ok", "complete", "completed", "success"}:
+        normalized["status"] = "completed"
+    elif status in {"error", "failed"}:
+        normalized["status"] = "error"
+    elif status == "warning":
+        normalized["status"] = "warning"
+    else:
+        normalized["status"] = "running"
+    normalized.setdefault("sender", "Orchestrator")
+    normalized.setdefault("receiver", "Specialist Agent")
+    normalized.setdefault("question", "")
+    normalized.setdefault("response", "")
+    if not normalized.get("sender_avatar"):
+        sender, avatar, css_class = _clean_agent_label(str(normalized.get("sender") or "Orchestrator"))
+        normalized["sender"] = sender
+        normalized["sender_avatar"] = avatar
+        normalized["sender_class"] = css_class
+    if not normalized.get("receiver_avatar"):
+        receiver, avatar, css_class = _clean_agent_label(str(normalized.get("receiver") or "Specialist Agent"))
+        normalized["receiver"] = receiver
+        normalized["receiver_avatar"] = avatar
+        normalized["receiver_class"] = css_class
+    return normalized
+
+
+def _preview_dialogue_text(value: Any, *, limit: int) -> str:
+    text = "" if value is None else str(value).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + f"\n...[truncated {len(text) - limit} chars]"
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return _safe_int(value)
+
+
+def _render_agent_interactions_inline(interactions: list[dict[str, Any]], *, live: bool = False) -> None:
+    if not interactions:
+        if live:
+            with st.container(border=True):
+                st.markdown("**Agent Team Collaboration**")
+                st.caption("Waiting for the orchestrator to delegate work to a specialist agent.")
+        return
+
+    with st.container(border=True):
+        title_suffix = " · live" if live else ""
+        st.markdown(f"**Agent Team Collaboration{title_suffix}**")
+        for interaction in interactions:
+            item = _normalize_interaction_status(interaction)
+            sender = str(item.get("sender") or "Orchestrator")
+            receiver = str(item.get("receiver") or "Specialist Agent")
+            duration = item.get("duration_ms")
+            duration_label = f" · {duration} ms" if duration is not None else ""
+
+            with st.chat_message(sender, avatar=str(item.get("sender_avatar") or "🧭")):
+                st.caption(f"Delegation to {receiver}{duration_label}")
+                st.markdown(str(item.get("question") or "Delegation request captured without readable text."))
+
+            with st.chat_message(receiver, avatar=str(item.get("receiver_avatar") or "🤖")):
+                status = str(item.get("status") or "running")
+                if status == "completed":
+                    st.caption(f"Response to {sender}")
+                    st.markdown(str(item.get("response") or "Completed without a response preview."))
+                elif status == "error":
+                    st.caption(f"Response to {sender}")
+                    st.error(str(item.get("response") or "The delegated work failed."))
+                elif status == "warning":
+                    st.caption(f"Response to {sender}")
+                    st.warning(str(item.get("response") or "The delegated work completed with warnings."))
+                else:
+                    st.caption(f"Working for {sender}")
+                    st.info("Thinking and gathering information...")
+
+
+def _render_agent_interactions_panel(interactions: list[dict[str, Any]], *, live: bool = False) -> None:
+    st.markdown(_compile_agent_dialogue_html(interactions, live=live), unsafe_allow_html=True)
+
+
+def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bool = False) -> str:
+    if not interactions:
+        message = (
+            "Waiting for the orchestrator to delegate work to a specialist agent."
+            if live
+            else "No agent-to-agent delegation was captured for this turn."
+        )
+        return _clean_html(
+            f"""
+            <div class="agent-dialogue-panel">
+              <div class="agent-dialogue-header">
+                <div class="agent-dialogue-title">Agent Dialogue</div>
+                <div class="agent-dialogue-count">0 exchanges</div>
+              </div>
+              <div class="agent-dialogue-empty">{html.escape(message)}</div>
+            </div>
+            """
+        )
+
+    exchange_html = ""
+    for interaction in interactions:
+        item = _normalize_interaction_status(interaction)
+        sender = str(item.get("sender") or "Orchestrator")
+        receiver = str(item.get("receiver") or "Specialist Agent")
+        sender_class = str(item.get("sender_class") or "orchestrator")
+        receiver_class = str(item.get("receiver_class") or "specialist")
+        sender_avatar = str(item.get("sender_avatar") or "🧭")
+        receiver_avatar = str(item.get("receiver_avatar") or "🤖")
+        question_html = _dialogue_text_html(str(item.get("question") or "Delegation request captured without readable text."))
+        response = str(item.get("response") or "")
+        status = str(item.get("status") or "running")
+        duration = item.get("duration_ms")
+        duration_html = f'<span>{html.escape(str(duration))} ms</span>' if duration is not None else ""
+        status_label = "working" if status == "running" else status
+        response_html = (
+            _dialogue_text_html(response or "Completed without a response preview.")
+            if status in {"completed", "warning", "error"}
+            else '<em>Thinking and gathering information...</em>'
+        )
+        exchange_html += f"""
+        <div class="agent-dialogue-pair">
+          <div class="agent-dialogue-message request {html.escape(sender_class)}">
+            <div class="agent-dialogue-avatar">{html.escape(sender_avatar)}</div>
+            <div class="agent-dialogue-bubble">
+              <div class="agent-dialogue-meta">
+                <strong>{html.escape(sender)}</strong>
+                <span>to {html.escape(receiver)}</span>
+                {duration_html}
+              </div>
+              <div class="agent-dialogue-body">{question_html}</div>
+            </div>
+          </div>
+          <div class="agent-dialogue-message response {html.escape(receiver_class)} {html.escape(status)}">
+            <div class="agent-dialogue-avatar">{html.escape(receiver_avatar)}</div>
+            <div class="agent-dialogue-bubble">
+              <div class="agent-dialogue-meta">
+                <strong>{html.escape(receiver)}</strong>
+                <span>{html.escape(status_label)}</span>
+              </div>
+              <div class="agent-dialogue-body">{response_html}</div>
+            </div>
+          </div>
+        </div>
+        """
+
+    live_badge = '<span class="agent-dialogue-live">LIVE</span>' if live else ""
+    return _clean_html(
+        f"""
+        <div class="agent-dialogue-panel">
+          <div class="agent-dialogue-header">
+            <div class="agent-dialogue-title">Agent Dialogue {live_badge}</div>
+            <div class="agent-dialogue-count">{len(interactions)} exchange{'s' if len(interactions) != 1 else ''}</div>
+          </div>
+          <div class="agent-dialogue-list">{exchange_html}</div>
+        </div>
+        """
+    )
+
+
+def _dialogue_text_html(text: str) -> str:
+    return "<br>".join(html.escape(str(text or "")).splitlines())
 
 
 def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
@@ -1047,12 +1467,12 @@ def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False)
 
 def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool, live: bool = False) -> None:
     title = "Agent Coordination Workbench & Trace" if not live else "Live Agent Coordination Workbench & Trace"
-    if expanded:
-        with st.expander(title, expanded=True):
+    with st.expander(title, expanded=expanded):
+        dashboard_tab, dialogue_tab = st.tabs(["Orchestration Dashboard", "Agent Dialogue"])
+        with dashboard_tab:
             st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
-    else:
-        with st.expander(title, expanded=False):
-            st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
+        with dialogue_tab:
+            _render_agent_interactions_panel(extract_agent_interactions_from_workbench(workbench), live=live)
 
 
 def _clean_html(html_str: str) -> str:
@@ -1461,6 +1881,7 @@ def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = F
         "latest_events": latest_events[-12:],
         "artifacts": {},
         "intent": intent,
+        "agent_dialogue": extract_agent_interactions(events),
     }
 
 
@@ -2771,6 +3192,142 @@ def inject_chat_css() -> None:
             white-space: pre-wrap;
             word-break: break-all;
             border: 1px solid #1e293b;
+        }
+
+        /* Agent dialogue panel */
+        .agent-dialogue-panel {
+            border: 1px solid #dfe7f1;
+            border-radius: 8px;
+            background: #ffffff;
+            overflow: hidden;
+            margin: 0.7rem 0 1rem 0;
+        }
+        .agent-dialogue-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 0.9rem;
+            border-bottom: 1px solid #e7edf5;
+            background: #f8fafc;
+        }
+        .agent-dialogue-title {
+            color: #172033;
+            font-weight: 760;
+            font-size: 0.95rem;
+            line-height: 1.2;
+        }
+        .agent-dialogue-count,
+        .agent-dialogue-live {
+            border: 1px solid #cbd5e1;
+            border-radius: 999px;
+            color: #526072;
+            background: #ffffff;
+            font-size: 0.68rem;
+            font-weight: 760;
+            padding: 0.18rem 0.5rem;
+            white-space: nowrap;
+        }
+        .agent-dialogue-live {
+            border-color: #86efac;
+            color: #047857;
+            margin-left: 0.35rem;
+        }
+        .agent-dialogue-empty {
+            padding: 1rem;
+            color: #64748b;
+            font-size: 0.86rem;
+        }
+        .agent-dialogue-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.85rem;
+            padding: 0.9rem;
+        }
+        .agent-dialogue-pair {
+            display: flex;
+            flex-direction: column;
+            gap: 0.48rem;
+        }
+        .agent-dialogue-message {
+            display: grid;
+            grid-template-columns: 2rem minmax(0, 1fr);
+            gap: 0.55rem;
+            align-items: start;
+            max-width: 96%;
+        }
+        .agent-dialogue-message.response {
+            margin-left: 1.75rem;
+        }
+        .agent-dialogue-avatar {
+            width: 2rem;
+            height: 2rem;
+            border-radius: 999px;
+            border: 1px solid #d8e0eb;
+            background: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            line-height: 1;
+            flex: 0 0 auto;
+        }
+        .agent-dialogue-bubble {
+            border: 1px solid #dce4ee;
+            border-radius: 8px;
+            background: #ffffff;
+            padding: 0.62rem 0.72rem;
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        .agent-dialogue-message.request .agent-dialogue-bubble {
+            background: #f8fafc;
+        }
+        .agent-dialogue-message.response.completed .agent-dialogue-bubble {
+            border-color: #bbf7d0;
+            background: #f7fef9;
+        }
+        .agent-dialogue-message.response.running .agent-dialogue-bubble {
+            border-color: #bfdbfe;
+            background: #f7fbff;
+        }
+        .agent-dialogue-message.response.warning .agent-dialogue-bubble {
+            border-color: #fde68a;
+            background: #fffdf3;
+        }
+        .agent-dialogue-message.response.error .agent-dialogue-bubble {
+            border-color: #fecaca;
+            background: #fff7f7;
+        }
+        .agent-dialogue-meta {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 0.35rem;
+            color: #64748b;
+            font-size: 0.72rem;
+            line-height: 1.25;
+            margin-bottom: 0.35rem;
+        }
+        .agent-dialogue-meta strong {
+            color: #1f2937;
+            font-size: 0.78rem;
+        }
+        .agent-dialogue-meta span {
+            color: #64748b;
+        }
+        .agent-dialogue-body {
+            color: #273244;
+            font-size: 0.82rem;
+            line-height: 1.46;
+        }
+        @media (max-width: 760px) {
+            .agent-dialogue-message {
+                max-width: 100%;
+            }
+            .agent-dialogue-message.response {
+                margin-left: 0;
+            }
         }
 
         /* Proposals panel styling */

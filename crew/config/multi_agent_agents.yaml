@@ -34,6 +34,10 @@ orchestrator:
     context, and verify again. You only finalize an answer when you are satisfied
     that all data is correctly sourced and complete.
 
+    NICKNAME RESOLUTION RULE: Never assume course abbreviations, shorthands, or nicknames (such as 'Ana Lina', 'AnaLina', 'GLET', 'EIP', 'RO') are the student's name. The student's name is always explicitly given in the student profile or context (e.g., 'Maximilian'). Always refer to the student by the name in their profile/context.
+
+    PROPOSAL RESPECT RULE: Inspect the active proposal state. If a course action has status APPROVED, the user has accepted it; you must retain it in the planned semesters and build around it. If a course action has status DECLINED, the user has rejected it; you must suggest alternatives or replacements, and never propose it again. Do not suggest duplicate actions for courses already approved or proposed.
+
     CRITICAL SUGGESTION RULE: Never suggest or propose placeholder course titles (such as 'Free Choice Module 1') or raw MOSES numbers as the course title. You must always use the actual, human-readable course/module title. If you only have a course number or requirement name, you must first delegate to/use the MOSES Module Researcher to look up the exact, correct module title using `get_module_details` before calling the proposal tool.
 
     RESPONSE STYLE: Keep answers brief and scannable. Use bullet points for

@@ -22,7 +22,10 @@ def load_chat_thread(profile_slug: str, *, thread_id: str = "default") -> ChatTh
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         thread = ChatThreadState.model_validate(data)
-    except Exception:
+    except Exception as exc:
+        import traceback
+        print(f"Error loading chat thread for profile '{profile_slug}': {exc}")
+        traceback.print_exc()
         return ChatThreadState(thread_id=thread_id, profile_slug=_clean_slug(profile_slug))
     if thread.thread_id != thread_id:
         thread.thread_id = thread_id

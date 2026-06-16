@@ -75,7 +75,8 @@ def test_live_workbench_from_events_tracks_running_and_finished_calls():
     groups = {group["agent_label"]: group for group in workbench["groups"]}
     assert groups["Study Advisor"]["tool_calls"][0]["status"] == "ok"
     assert groups["ISIS Course Info Specialist"]["tool_calls"][0]["status"] == "running"
-    assert [item["active"] for item in workbench["source_flow"]] == [True, False, True, False, True]
+    assert [item["agent"] for item in workbench["source_flow"]] == ["Study Advisor", "ISIS Course Info Specialist"]
+    assert [item["active"] for item in workbench["source_flow"]] == [False, True]
 
 
 def test_live_workbench_shows_lifecycle_activity_before_tool_calls():

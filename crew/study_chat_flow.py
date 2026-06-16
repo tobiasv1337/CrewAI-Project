@@ -53,6 +53,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     _runtime: StudyChatFlowRuntime = PrivateAttr(default_factory=StudyChatFlowRuntime)
     _classifier: Classifier | None = PrivateAttr(default=None)
     _runner_overrides: dict[str, FlowRunner] = PrivateAttr(default_factory=dict)
+    _on_trace_event: Callable[[dict[str, Any]], None] | None = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -60,6 +61,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         runtime: StudyChatFlowRuntime | None = None,
         classifier: Classifier | None = None,
         runner_overrides: dict[str, FlowRunner] | None = None,
+        on_trace_event: Callable[[dict[str, Any]], None] | None = None,
         **data: Any,
     ) -> None:
         ensure_crewai_storage_writable()
@@ -67,6 +69,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         self._runtime = runtime or StudyChatFlowRuntime()
         self._classifier = classifier
         self._runner_overrides = dict(runner_overrides or {})
+        self._on_trace_event = on_trace_event
 
     @start()
     def ingest_turn(self) -> None:
@@ -80,20 +83,33 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     @router(ingest_turn)
     def classify_intent(self) -> str:
         if self.state.approved_actions:
-            self.state.intent = IntentClassification(
+            intent = IntentClassification(
                 route="execute_confirmed_actions",
                 complexity="scoped",
                 required_sources=["grade_manager", "isis"],
                 write_intent=True,
                 rationale="User submitted explicit UI action decisions.",
             )
+            self.state.intent = intent
             self.state.route = "execute_confirmed_actions"
+            if self._on_trace_event:
+                self._on_trace_event({
+                    "event": "intent_classified",
+                    "intent": intent.model_dump(mode="json"),
+                    "status": "ok",
+                })
             return "execute_confirmed_actions"
 
         classifier = self._classifier or self._classify_with_llm_or_heuristics
         intent = classifier(self.state)
         self.state.intent = intent
         self.state.route = intent.route
+        if self._on_trace_event:
+            self._on_trace_event({
+                "event": "intent_classified",
+                "intent": intent.model_dump(mode="json"),
+                "status": "ok",
+            })
         return intent.route
 
     @listen("simple_grade_manager")
@@ -242,6 +258,9 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         (the expensive but robust multi-source route) to ensure quality responses.
         Heuristic classification is deprecated in favor of this approach.
         """
+        if not self._runtime.use_llm_classifier:
+            return classify_intent_heuristically(state.query, state.thread)
+
         # Check if LLM API is available
         if not os.getenv("GWDG_API_KEY"):
             if self._runtime.verbose:

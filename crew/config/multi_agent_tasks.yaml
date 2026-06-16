@@ -133,3 +133,16 @@ study_assistant_task:
     MOSES / ISIS). Concrete next steps with dates where available.
     Any remaining open questions or required confirmations are listed
     explicitly at the end.
+
+    CONCISENESS GUIDELINES:
+    - Keep each section to 2-3 sentences when possible.
+    - Avoid redundant explanations or verbose background context.
+    - Use bullet points for lists instead of prose paragraphs.
+    - Do not repeat information from multiple sections.
+    - Cut unnecessary qualifiers and hedging language.
+
+    EMOJI GUIDELINES:
+    - Use emojis ONLY where they meaningfully enhance clarity (e.g., ✓ for confirmation, ⚠️ for warnings).
+    - Do NOT use emojis for section headings (use **Bold text** instead).
+    - Avoid emoji-heavy formatting that clutters the response.
+    - One emoji maximum per section.

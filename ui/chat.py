@@ -114,7 +114,7 @@ def render_chat_page() -> None:
 
 
 def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
-    with st.expander("🛠️ Configuration & Connections", expanded=False):
+    with st.expander("Configuration & Connections", expanded=False):
         col_isis, col_agent = st.columns(2)
 
         with col_isis:
@@ -330,32 +330,14 @@ def _safe_int(val: Any) -> int:
 
 def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
     with st.chat_message(message.get("role", "assistant")):
-        if message.get("role") == "assistant":
-            workbench = message.get("workbench")
-            if workbench and not run_active:
-                _render_trace_panel(workbench, expanded=True)
-            elif message.get("trace_dir") and not run_active:
-                st.caption(f"Trace artifacts: {message.get('trace_dir')}")
+        if message.get("role") == "assistant" and not run_active:
+            # Extract workbench from metadata or direct field
+            workbench = message.get("workbench") or (message.get("metadata") or {}).get("workbench")
+            if workbench:
+                _render_trace_panel(workbench, expanded=False)
+            elif message.get("trace_dir"):
+                st.caption(f"📊 Trace artifacts: `{message.get('trace_dir')}`")
         st.markdown(str(message.get("content") or ""))
-        if message.get("role") == "assistant":
-            proposals = message.get("proposals")
-            if proposals:
-                _render_proposals_panel(str(message.get("profile_slug") or ""), proposals)
-            else:
-                pending_write = message.get("pending_write")
-                if pending_write:
-                    legacy_prop = [{
-                        "title": f"Module {pending_write.get('module_query')}",
-                        "grade_manager": {
-                            "type": "grade_manager",
-                            "module_query": pending_write.get("module_query"),
-                            "term": pending_write.get("term"),
-                            "area": pending_write.get("area"),
-                            "program_key": pending_write.get("program_key")
-                        },
-                        "isis": None
-                    }]
-                    _render_proposals_panel(str(message.get("profile_slug") or ""), legacy_prop)
 
 
 def _run_and_render_assistant_turn(
@@ -416,6 +398,8 @@ def _run_and_render_assistant_turn(
             answer_placeholder.markdown(result.answer.rstrip())
             # Build the completed workbench directly from live events to keep all rich details
             workbench = live_workbench_from_events(events)
+            if result.intent:
+                workbench["intent"] = result.intent.model_dump(mode="json")
             if result.trace_dir:
                 workbench["artifacts"] = {
                     "report": str(result.trace_dir / "report.md"),
@@ -423,6 +407,16 @@ def _run_and_render_assistant_turn(
                     "state": str(result.trace_dir / "state.json"),
                     "summary": str(result.trace_dir / "summary.json"),
                 }
+
+            # Persist the assistant message with workbench and trace info
+            assistant_message = {
+                "role": "assistant",
+                "content": result.answer.rstrip(),
+                "created_at": _now_iso(),
+                "trace_dir": str(result.trace_dir) if result.trace_dir else None,
+                "metadata": {"workbench": workbench} if workbench else {},
+            }
+            _update_or_append_assistant_message(profile_slug, assistant_message)
 
             proposals = _proposal_dicts(result.proposed_actions)
             if proposals:
@@ -783,14 +777,16 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
 
 def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
     workbench = live_workbench_from_events(events)
-    _render_trace_panel(workbench, expanded=True, live=not completed)
+    _render_trace_panel(workbench, expanded=not completed, live=not completed)
 
 
 def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool, live: bool = False) -> None:
+    title = "Agent Coordination Workbench & Trace" if not live else "Live Agent Coordination Workbench & Trace"
     if expanded:
-        st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
+        with st.expander(title, expanded=True):
+            st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
     else:
-        with st.expander("🔍 View Agent Workbench & Tool Trace", expanded=False):
+        with st.expander(title, expanded=False):
             st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
 
 
@@ -818,14 +814,13 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
 
     flows = workbench.get("source_flow") or []
     flow_html = ""
-    for item in flows:
+    for idx, item in enumerate(flows):
         active_cls = "active" if item.get("active") else ""
-        source = str(item.get("source") or "")
         agent = str(item.get("agent") or "")
+        connector_html = '<span class="flow-connector" style="margin: 0 0.45rem; color: #94a3b8; font-weight: bold; font-size: 0.9rem;">➔</span>' if idx > 0 else ""
         flow_html += f"""
+        {connector_html}
         <div class="flow-card {active_cls}">
-          <span class="flow-src">{html.escape(source)}</span>
-          <span class="flow-connector">➔</span>
           <span class="flow-agt">{html.escape(agent)}</span>
         </div>
         """
@@ -907,22 +902,16 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
     if not live:
         artifacts = {key: value for key, value in (workbench.get("artifacts") or {}).items() if value}
         if artifacts:
-            artifact_items_html = ""
-            for label, path in artifacts.items():
-                artifact_items_html += f"""
-                <div class="artifact-item">
-                  <span class="artifact-label">{html.escape(label)}</span>
-                  <span class="artifact-path">{html.escape(str(path))}</span>
+            # Create single-line artifact hint
+            artifact_path = next(iter(artifacts.values())) if artifacts else ""
+            if artifact_path:
+                import os
+                artifact_dir = os.path.dirname(str(artifact_path))
+                artifacts_html = f"""
+                <div class="artifacts-container" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #cbd5e1; font-size: 0.85rem; color: #475569;">
+                  <strong>Trace Artifacts:</strong> <code style="font-size: 0.85rem; background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px;">{html.escape(str(artifact_dir))}</code>
                 </div>
                 """
-            artifacts_html = f"""
-            <div class="artifacts-container">
-              <div class="section-title">Trace Artifacts</div>
-              <div class="artifacts-list">
-                {artifact_items_html}
-              </div>
-            </div>
-            """
 
     # Compile tool execution logs inside the workbench container if not live
     tool_logs_html = ""
@@ -955,6 +944,8 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
                 highlighted_input = _highlight_json(input_json)
                 output_html = md.render(output_preview)
 
+                duration = call.get("duration_ms")
+                dur_html = f'<span class="tool-log-duration" style="margin-left: auto; font-size: 0.75rem; color: #64748b; margin-right: 0.75rem; font-family: monospace;">{duration}ms</span>' if duration is not None else ''
                 tool_items_html += f"""
                 <details class="tool-log-item {status}">
                   <summary class="tool-log-summary">
@@ -962,6 +953,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
                     <span class="tool-log-agent">{html.escape(agent_label)}</span>
                     <span class="tool-log-arrow">➔</span>
                     <span class="tool-log-name">{html.escape(tool_name)}</span>
+                    {dur_html}
                     <span class="tool-log-status-badge {status}">{html.escape(status)}</span>
                   </summary>
                   <div class="tool-log-details">
@@ -993,12 +985,32 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
             </div>
             """
 
+    intent_html = ""
+    intent = workbench.get("intent")
+    if intent:
+        route = intent.get("route") or "Unknown"
+        complexity = intent.get("complexity") or "Unknown"
+        rationale = intent.get("rationale") or ""
+        sources = ", ".join(intent.get("required_sources") or [])
+        intent_html = f"""
+        <div class="intent-banner" style="margin: 0.75rem 0 1rem 0; padding: 0.85rem 1rem; background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #0f766e; border-radius: 8px; font-size: 0.88rem; color: #334155;">
+          <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; color: #0f172a; margin-bottom: 0.25rem;">
+            <span>Detected Intent: <code style="color: #0f766e; font-size: 0.9rem; font-weight: 700; background: #f1f5f9; padding: 0.1rem 0.35rem; border-radius: 4px;">{html.escape(route)}</code></span>
+            <span style="font-size: 0.75rem; text-transform: uppercase; color: #64748b; background: #e2e8f0; padding: 0.15rem 0.45rem; border-radius: 9999px;">{html.escape(complexity)} complexity</span>
+          </div>
+          {f'<div style="font-size: 0.8rem; color: #64748b; margin-top: 0.2rem;"><strong>Required sources:</strong> {html.escape(sources)}</div>' if sources else ''}
+          {f'<div style="font-size: 0.8rem; color: #475569; margin-top: 0.35rem; font-style: italic;">Rationale: {html.escape(rationale)}</div>' if rationale else ''}
+        </div>
+        """
+
     html_content = f"""
     <div class="workbench-container" style="color: #0f172a;">
       <div class="workbench-header">
         <div class="workbench-title">{pulse_dot}{title_label}</div>
         <div class="workbench-summary">{total_calls} Total Tool Calls | {len(events)} Events</div>
       </div>
+
+      {intent_html}
 
       <!-- Run Phases -->
       <div class="phases-timeline-container">
@@ -1010,7 +1022,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
 
       <!-- Data Pipeline -->
       <div class="flow-pipeline-container">
-        <div class="flow-pipeline-title">Active Data Pipeline</div>
+        <div class="flow-pipeline-title">Agent Execution Flow</div>
         <div class="flow-pipeline">
           {flow_html}
         </div>
@@ -1116,9 +1128,11 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
             group["activity"] = f"Running {call.get('tool_name') or 'tool'}."
         elif call.get("tool_name"):
             group["activity"] = f"Finished {call.get('tool_name')}."
-    active_sources = {str(call.get("source_system") or "Other") for call in calls_by_id.values()}
-    source_flow = _default_source_flow(active_sources=active_sources, active=bool(calls_by_id) or _has_event(events, "crew_started"))
-    _activate_flow_for_lifecycle_events(source_flow, events)
+    source_flow = _dynamic_source_flow(events)
+    intent = None
+    for event in events:
+        if event.get("event") == "intent_classified":
+            intent = event.get("intent")
     return {
         "run_id": run_id,
         "run_dir": None,
@@ -1128,6 +1142,7 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         "phases": _trace_phases_from_events(events, calls_by_id),
         "latest_events": latest_events[-12:],
         "artifacts": {},
+        "intent": intent,
     }
 
 
@@ -1485,6 +1500,25 @@ def _append_message(profile_slug: str, message: dict[str, Any]) -> None:
     _set_profile_messages(profile_slug, [item.model_dump(mode="json") for item in thread.messages])
 
 
+def _update_or_append_assistant_message(profile_slug: str, assistant_message: dict[str, Any]) -> None:
+    thread = load_chat_thread(profile_slug)
+    updated = False
+    for msg in reversed(thread.messages):
+        if msg.role == "assistant":
+            if msg.content.strip() == assistant_message["content"].strip():
+                msg.trace_dir = assistant_message.get("trace_dir")
+                if not msg.metadata:
+                    msg.metadata = {}
+                if assistant_message.get("metadata"):
+                    msg.metadata.update(assistant_message["metadata"])
+                updated = True
+                break
+    if not updated:
+        thread.messages.append(ChatMessage.model_validate(assistant_message))
+    save_chat_thread(thread)
+    _set_profile_messages(profile_slug, [item.model_dump(mode="json") for item in thread.messages])
+
+
 def _set_profile_messages(profile_slug: str, messages: list[dict[str, Any]]) -> None:
     store = _chat_store()
     store[profile_slug] = messages
@@ -1528,6 +1562,56 @@ def _default_source_flow(*, active_sources: set[str] | None = None, active: bool
         {"source": "Course Commitment", "agent": "Course Commitment Specialist", "target": "Student", "active": "Course Commitment" in active_sources},
         {"source": "Orchestrator", "agent": "Final Answer", "target": "Student", "active": active},
     ]
+
+
+def _dynamic_source_flow(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    sequence = []
+    last_agent = None
+    
+    # 1. Determine currently active agent
+    current_active_agent = None
+    for event in reversed(events):
+        event_name = event.get("event")
+        status = event.get("status")
+        agent_lbl = event.get("agent_label")
+        if agent_lbl and agent_lbl not in {"Crew", "System", "User"}:
+            if status == "running" or event_name in {"llm_started", "tool_start", "task_started"}:
+                current_active_agent = agent_lbl
+                break
+                
+    # 2. Reconstruct chronological sequence of agent invocations
+    for event in events:
+        agent = event.get("agent_label")
+        if not agent or agent in {"Crew", "System", "User"}:
+            continue
+        event_name = event.get("event")
+        if event_name in {"llm_started", "tool_start", "task_started", "agent_ready"}:
+            if agent != last_agent:
+                sequence.append({
+                    "agent": agent,
+                    "active": False
+                })
+                last_agent = agent
+                
+    # If empty, but kickoff started
+    if not sequence:
+        for event in events:
+            if event.get("event") == "crew_started":
+                sequence.append({"agent": "Orchestrator", "active": True})
+                break
+                
+    # Mark the latest occurrence of active agent as active
+    if current_active_agent:
+        found_active = False
+        for item in reversed(sequence):
+            if item["agent"] == current_active_agent:
+                item["active"] = True
+                found_active = True
+                break
+        if not found_active:
+            sequence.append({"agent": current_active_agent, "active": True})
+            
+    return sequence
 
 
 def _combine_status(left: str, right: str) -> str:

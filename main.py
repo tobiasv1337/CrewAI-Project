@@ -912,7 +912,8 @@ def run_study_assistant_query(
             cache=cache,
             planning_enabled=planning_enabled,
             planning_llm_model=planning_llm_model,
-        )
+        ),
+        on_trace_event=on_trace_event,
     )
     inputs = StudyChatFlowState(
         query=query,

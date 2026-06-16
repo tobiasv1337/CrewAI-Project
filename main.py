@@ -871,6 +871,7 @@ def run_study_assistant_query(
     thread_id: str = "default",
     reset_thread: bool = False,
     approved_actions: list[Any] | None = None,
+    ui_decisions: list[Any] | None = None,
     conversation_context: str = "",
     isis_client: Any | None = None,
     on_trace_event: Callable[[dict[str, Any]], None] | None = None,
@@ -903,6 +904,10 @@ def run_study_assistant_query(
         item if isinstance(item, ActionDecision) else ActionDecision.model_validate(item)
         for item in (approved_actions or [])
     ]
+    ui_decisions_list = [
+        item if isinstance(item, ActionDecision) else ActionDecision.model_validate(item)
+        for item in (ui_decisions or [])
+    ]
     flow = StudyChatFlow(
         runtime=StudyChatFlowRuntime(
             model=model,
@@ -926,6 +931,7 @@ def run_study_assistant_query(
         reset_thread=reset_thread,
         conversation_context=conversation_context,
         approved_actions=decisions,
+        ui_decisions=ui_decisions_list,
         isis_session_mode="session" if isis_client is not None else "env",
     ).model_dump(mode="json")
     with use_grade_manager_profile(profile_slug), use_default_isis_client(isis_client), collect_moses_state_artifacts(), collect_course_proposals(), capture_tool_traces(

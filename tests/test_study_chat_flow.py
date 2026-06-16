@@ -354,3 +354,79 @@ def test_confirmed_grade_manager_action_passes_exact_confirmation_token(monkeypa
 
     assert seen["confirmation_token"] == STUDY_PLAN_CONFIRMATION_TOKEN
     assert flow.state.executed_actions[0].status == "executed"
+
+
+def test_ui_decisions_update_action_status_and_merge_proposals(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    proposal = build_course_proposal(
+        proposal_title="Recommendations",
+        proposal_summary="Suggesting courses.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Course A",
+                rationale="Fits elective.",
+                module_query="11111",
+                term="WS 26/27",
+            ),
+            ProposalCourseInput(
+                course_title="Course B",
+                rationale="Fits elective.",
+                module_query="22222",
+                term="WS 26/27",
+            ),
+        ],
+    )
+    append_turn(
+        "primary",
+        user_content="Give me course options.",
+        assistant_content="Here you go.",
+        proposals=[proposal],
+        rolling_summary="Planning.",
+    )
+    
+    ui_decisions = [
+        ActionDecision(action_id=proposal.actions[0].action_id, approved=True),
+        ActionDecision(action_id=proposal.actions[1].action_id, approved=False),
+    ]
+    
+    flow = _flow(
+        classifier=_classifier_for("recommendation", required_sources=["grade_manager"]),
+        runner_overrides={"recommendation": lambda flow: "Answer"}
+    )
+    
+    new_proposal = build_course_proposal(
+        proposal_title="Recommendations",
+        proposal_summary="New suggestion.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Course C",
+                rationale="Replacement for Course B.",
+                module_query="33333",
+                term="WS 26/27",
+            )
+        ]
+    )
+    
+    import crew.study_chat_flow as flow_module
+    monkeypatch.setattr(flow_module, "current_course_proposals", lambda: [new_proposal])
+    
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Replace Course B.",
+            profile_slug="primary",
+            ui_decisions=ui_decisions,
+        ).model_dump(mode="json")
+    )
+    
+    thread = load_chat_thread("primary")
+    assert len(thread.active_proposals) == 1
+    actions = thread.active_proposals[0].actions
+    
+    action_titles = {a.course_title for a in actions}
+    assert "Course A" in action_titles
+    assert "Course C" in action_titles
+    assert "Course B" not in action_titles
+    
+    action_by_title = {a.course_title: a for a in actions}
+    assert action_by_title["Course A"].status == "approved"
+    assert action_by_title["Course C"].status == "proposed"

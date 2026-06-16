@@ -102,6 +102,7 @@ class StudyChatFlowState(BaseModel):
     isis_session_mode: str = "env"
     conversation_context: str = ""
     approved_actions: list[ActionDecision] = Field(default_factory=list)
+    ui_decisions: list[ActionDecision] = Field(default_factory=list)
     thread: ChatThreadState | None = None
     intent: IntentClassification | None = None
     route: IntentRoute = "deep_dive"

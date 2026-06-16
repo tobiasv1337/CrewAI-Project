@@ -107,6 +107,7 @@ def append_turn(
     rolling_summary: str,
     thread_id: str = "default",
 ) -> ChatThreadState:
+    proposals_list = list(proposals) if proposals is not None else []
     thread = load_chat_thread(profile_slug, thread_id=thread_id)
     if not _last_user_message_matches(thread, user_content):
         thread.messages.append(ChatMessage(role="user", content=user_content))
@@ -114,10 +115,10 @@ def append_turn(
         ChatMessage(
             role="assistant",
             content=assistant_content,
-            metadata={"proposal_count": len(proposals)},
+            metadata={"proposal_count": len(proposals_list)},
         )
     )
-    thread.active_proposals = proposals
+    thread.active_proposals = proposals_list
     thread.rolling_summary = rolling_summary
     save_chat_thread(thread)
     return thread

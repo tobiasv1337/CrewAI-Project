@@ -77,6 +77,21 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             thread = reset_chat_thread(self.state.profile_slug, thread_id=self.state.thread_id)
         else:
             thread = load_chat_thread(self.state.profile_slug, thread_id=self.state.thread_id)
+        
+        if self.state.ui_decisions:
+            decision_by_action = {d.action_id: d for d in self.state.ui_decisions}
+            updated_any = False
+            for proposal in thread.active_proposals:
+                for action in proposal.actions:
+                    if action.action_id in decision_by_action:
+                        decision = decision_by_action[action.action_id]
+                        new_status = "approved" if decision.approved else "declined"
+                        if action.status != new_status:
+                            action.status = new_status
+                            updated_any = True
+            if updated_any:
+                save_chat_thread(thread)
+
         self.state.thread = thread
         self.state.conversation_context = _conversation_context(thread)
 
@@ -343,9 +358,10 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         )
 
     def _adopt_recorded_or_existing_proposals(self) -> None:
-        proposals = current_course_proposals()
-        if proposals:
-            self.state.proposed_actions = proposals
+        new_proposals = current_course_proposals()
+        existing_proposals = list(self.state.thread.active_proposals if self.state.thread else [])
+        if new_proposals:
+            self.state.proposed_actions = _merge_proposals(existing_proposals, new_proposals)
             return
         self._carry_forward_existing_proposals()
 
@@ -390,7 +406,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         thread.active_proposals = [
             proposal
             for proposal in thread.active_proposals
-            if any(action.status == "proposed" for action in proposal.actions)
+            if any(action.status in {"proposed", "approved", "needs_clarification"} for action in proposal.actions)
         ]
         save_chat_thread(thread)
         self.state.thread = thread
@@ -399,6 +415,38 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     def _remaining_proposals(self) -> list[CourseProposal]:
         thread = self.state.thread
         return list(thread.active_proposals if thread else [])
+
+
+def _merge_proposals(existing_proposals: list[CourseProposal], new_proposals: list[CourseProposal]) -> list[CourseProposal]:
+    merged_proposals: list[CourseProposal] = []
+    seen_action_keys: set[tuple[str, str]] = set()
+
+    for prop in existing_proposals:
+        kept_actions = []
+        for action in prop.actions:
+            if action.status in {"approved", "proposed", "needs_clarification"}:
+                key = (action.kind, action.course_title)
+                if key not in seen_action_keys:
+                    kept_actions.append(action)
+                    seen_action_keys.add(key)
+        if kept_actions:
+            merged_proposals.append(prop.model_copy(update={"actions": kept_actions}))
+
+    for prop in new_proposals:
+        new_actions = []
+        for action in prop.actions:
+            key = (action.kind, action.course_title)
+            if key not in seen_action_keys:
+                new_actions.append(action)
+                seen_action_keys.add(key)
+        if new_actions:
+            existing_prop = next((p for p in merged_proposals if p.title == prop.title), None)
+            if existing_prop:
+                existing_prop.actions.extend(new_actions)
+            else:
+                merged_proposals.append(prop.model_copy(update={"actions": new_actions}))
+
+    return merged_proposals
 
 
 def _normalize_commitment_route(intent: IntentClassification, query: str) -> IntentClassification:

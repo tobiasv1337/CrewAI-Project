@@ -69,6 +69,6 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     course_tool_names = [tool.name for tool in course_info.tools]
     assert "List My ISIS Courses" in course_tool_names
     assert "Inspect ISIS Candidate Course With Temporary Access" in course_tool_names
-    assert "Permanently Enroll In ISIS Course" not in course_tool_names
+    assert "Permanently Enroll In ISIS Course" in course_tool_names
     assert "Search TU Berlin MOSES Modules" not in course_tool_names
-    assert all(getattr(tool, "allow_temp_enrollment", False) is True for tool in course_info.tools)
+    assert all(getattr(tool, "allow_temp_enrollment", False) is True for tool in course_info.tools if tool.name != "Permanently Enroll In ISIS Course")

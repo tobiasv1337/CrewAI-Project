@@ -6,7 +6,7 @@ from crewai.project import CrewBase, agent, crew, task
 
 from crew.config.llm import get_default_llm
 from crew.runtime import ensure_crewai_storage_writable
-from crew.tools import MOSES_MODULE_RESEARCH_TOOLS, STUDY_ADVISOR_TOOLS, make_isis_read_only_tools
+from crew.tools import MOSES_MODULE_RESEARCH_TOOLS, STUDY_ADVISOR_TOOLS, make_isis_read_only_tools, ISIS_WRITE_TOOLS
 
 
 @CrewBase
@@ -82,9 +82,11 @@ class MultiAgentStudyAssistantCrew:
 
     @agent
     def course_info_specialist(self) -> Agent:
+        tools = make_isis_read_only_tools(allow_temp_enrollment=self.allow_temp_enrollment)
+        tools.extend(ISIS_WRITE_TOOLS)
         return Agent(
             config=self.agents_config["course_info_specialist"],  # type: ignore[index]
-            tools=make_isis_read_only_tools(allow_temp_enrollment=self.allow_temp_enrollment),
+            tools=tools,
             llm=self._llm(),
             verbose=self.verbose,
             cache=self.cache,

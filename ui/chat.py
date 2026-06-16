@@ -260,11 +260,12 @@ def _render_empty_state(profile_slug: str) -> None:
 
 def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
     with st.chat_message(message.get("role", "assistant")):
-        st.markdown(str(message.get("content") or ""))
         if message.get("role") == "assistant":
             workbench = message.get("workbench")
             if workbench and is_latest_assistant and not run_active:
                 _render_trace_panel(workbench, expanded=True)
+        st.markdown(str(message.get("content") or ""))
+        if message.get("role") == "assistant":
             proposals = message.get("proposals")
             if proposals:
                 _render_proposals_panel(str(message.get("profile_slug") or ""), proposals)
@@ -292,8 +293,8 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
     isis_client = get_profile_isis_client(profile_slug)
 
     with st.chat_message("assistant"):
-        answer_placeholder = st.empty()
         trace_placeholder = st.empty()
+        answer_placeholder = st.empty()
 
         def on_trace_event(event: dict[str, Any]) -> None:
             event_queue.put(event)
@@ -331,7 +332,15 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
                 result = future.result()
 
             answer_placeholder.markdown(result.answer.rstrip())
-            workbench = _workbench_from_result(result)
+            # Build the completed workbench directly from live events to keep all rich details
+            workbench = live_workbench_from_events(events)
+            if result.trace_dir:
+                workbench["artifacts"] = {
+                    "report": str(result.trace_dir / "report.md"),
+                    "trace": str(result.trace_dir / "trace.jsonl"),
+                    "state": str(result.trace_dir / "state.json"),
+                    "summary": str(result.trace_dir / "summary.json"),
+                }
 
             # Extract and display new proposals
             proposals = extract_all_proposals(result, workbench)

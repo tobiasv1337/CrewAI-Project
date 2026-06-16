@@ -858,6 +858,9 @@ def run_study_assistant_query(
     student_context: str = "",
     isis_context_json: str = "{}",
     allow_temp_enrollment: bool = False,
+    profile_slug: str | None = None,
+    isis_client: Any | None = None,
+    on_trace_event: Callable[[dict[str, Any]], None] | None = None,
     model: str | None = None,
     manager_model: str | None = None,
     temperature: float | None = None,
@@ -869,7 +872,9 @@ def run_study_assistant_query(
     logs_root: Path | str = Path("logs/crew_runs"),
     run_id: str | None = None,
 ) -> MultiAgentStudyAssistantRunResult:
+    from crew.isis_client import use_default_isis_client
     from crew.multi_agent_crew import MultiAgentStudyAssistantCrew
+    from crew.profile_context import use_grade_manager_profile
     from crew.state import build_multi_agent_study_assistant_state, collect_moses_state_artifacts
     from crew.tracing import capture_tool_traces
 
@@ -891,7 +896,7 @@ def run_study_assistant_query(
         "student_context": student_context or "No student context supplied.",
         "isis_context": validated_context,
     }
-    with collect_moses_state_artifacts() as moses_artifacts, capture_tool_traces(
+    with use_grade_manager_profile(profile_slug), use_default_isis_client(isis_client), collect_moses_state_artifacts() as moses_artifacts, capture_tool_traces(
         enabled=trace,
         query=query,
         student_context=student_context or "No student context supplied.",
@@ -902,6 +907,7 @@ def run_study_assistant_query(
         trace_full=trace_full,
         run_id=run_id,
         run_label="Multi-Agent Study Assistant Run Report",
+        on_event=on_trace_event,
     ) as recorder:
         raw_result = crew_instance.kickoff(inputs=inputs)
         answer = str(getattr(raw_result, "raw", raw_result))

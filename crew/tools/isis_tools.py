@@ -1016,13 +1016,19 @@ def _format_enrolment_key_required(result: IsisReadResult) -> str:
 
 
 def _format_access_required(result: IsisReadResult) -> str:
+    temporary_allowed = result.access.temporary_enrollment_allowed
     lines = [
         f"# ISIS course access required: {result.course.title}",
         "",
         f"- ISIS course ID: `{result.course.id}`",
         "- ISIS denied direct read access for this course.",
-        "- Temporary enrollment is disabled for this tool/run, so no enrollment was attempted.",
     ]
+    if temporary_allowed:
+        lines.append(
+            "- Temporary enrollment was enabled for this tool/run, but access still could not be obtained."
+        )
+    else:
+        lines.append("- Temporary enrollment is disabled for this tool/run, so no enrollment was attempted.")
     error = result.data.get("error") if isinstance(result.data, dict) else None
     if error:
         lines.append(f"- Moodle error: {error}")

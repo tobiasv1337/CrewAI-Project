@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -34,6 +35,8 @@ def safe_jsonable(value: Any) -> Any:
     """Convert arbitrary hook payloads into JSON-serializable data."""
     if value is None or isinstance(value, str | int | float | bool):
         return value
+    if is_dataclass(value):
+        return safe_jsonable(asdict(value))
     if isinstance(value, dict):
         return {str(key): safe_jsonable(item) for key, item in value.items()}
     if isinstance(value, list | tuple | set):
@@ -58,6 +61,37 @@ class ToolCallSummary:
     output_preview: str
     output_chars: int
     output_truncated: bool
+    agent_role: str | None = None
+    agent_label: str = "Unknown Agent"
+    task_name: str | None = None
+    duration_ms: int | None = None
+    source_system: str = "Other"
+    status: str = "ok"
+    badges: list[str] = field(default_factory=list)
+
+
+@dataclass
+class AgentTraceGroup:
+    agent_label: str
+    agent_role: str | None
+    source_system: str
+    tool_calls: list[ToolCallSummary] = field(default_factory=list)
+    duration_ms: int = 0
+    status: str = "ok"
+
+
+@dataclass
+class TraceWorkbench:
+    run_id: str | None
+    run_dir: str | None
+    groups: list[AgentTraceGroup]
+    total_tool_calls: int
+    source_flow: list[dict[str, Any]]
+    artifacts: dict[str, str | None]
+    disabled: bool = False
+
+    def model_dump(self) -> dict[str, Any]:
+        return safe_jsonable(self)
 
 
 class ToolTraceRecorder:
@@ -76,6 +110,7 @@ class ToolTraceRecorder:
         trace_full: bool = False,
         preview_chars: int = DEFAULT_PREVIEW_CHARS,
         run_label: str = "Moses Agent Run Report",
+        on_event: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.query = query
         self.student_context = student_context or ""
@@ -87,6 +122,7 @@ class ToolTraceRecorder:
         self.trace_full = trace_full
         self.preview_chars = preview_chars
         self.run_label = run_label
+        self.on_event = on_event
         self.tool_calls: list[ToolCallSummary] = []
         self._pending: list[dict[str, Any]] = []
         self._next_call_id = 1
@@ -143,6 +179,22 @@ class ToolTraceRecorder:
         }
         self._next_call_id += 1
         self._pending.append(call)
+        self._emit_event(
+            {
+                "event": "tool_start",
+                "run_id": self.run_id,
+                "call_id": call["call_id"],
+                "tool_name": call["tool_name"],
+                "tool_input": call["tool_input"],
+                "agent_role": call["agent_role"],
+                "agent_label": agent_label_for_role(call["agent_role"]),
+                "task_name": call["task_name"],
+                "source_system": source_system_for_tool(str(call["tool_name"])),
+                "status": "running",
+                "badges": [source_system_for_tool(str(call["tool_name"]))],
+                "started_at": call["started_at"],
+            }
+        )
         return None
 
     def after_tool_call(self, context: ToolCallHookContext) -> str | None:
@@ -170,15 +222,30 @@ class ToolTraceRecorder:
             "duration_ms": self._duration_ms(pending),
         }
         self._append_jsonl(record)
-        self.tool_calls.append(
-            ToolCallSummary(
-                call_id=int(record["call_id"]),
-                tool_name=str(record["tool_name"]),
-                tool_input=dict(record["tool_input"] or {}),
-                output_preview=output_preview,
-                output_chars=len(result_text),
-                output_truncated=output_truncated,
-            )
+        summary = ToolCallSummary(
+            call_id=int(record["call_id"]),
+            tool_name=str(record["tool_name"]),
+            tool_input=dict(record["tool_input"] or {}),
+            output_preview=output_preview,
+            output_chars=len(result_text),
+            output_truncated=output_truncated,
+            agent_role=record.get("agent_role"),
+            agent_label=agent_label_for_role(record.get("agent_role")),
+            task_name=record.get("task_name"),
+            duration_ms=record.get("duration_ms"),
+            source_system=source_system_for_tool(str(record["tool_name"])),
+            status=status_for_tool_output(str(record["tool_name"]), output_preview),
+            badges=badges_for_tool_output(str(record["tool_name"]), output_preview),
+        )
+        self.tool_calls.append(summary)
+        self._emit_event(
+            {
+                "event": "tool_finish",
+                "run_id": self.run_id,
+                "tool_call": safe_jsonable(summary),
+                "workbench": self.workbench().model_dump(),
+                "finished_at": finished_at,
+            }
         )
         return None
 
@@ -210,9 +277,17 @@ class ToolTraceRecorder:
                     "tool_input": call.tool_input,
                     "output_chars": call.output_chars,
                     "output_truncated": call.output_truncated,
+                    "agent_role": call.agent_role,
+                    "agent_label": call.agent_label,
+                    "task_name": call.task_name,
+                    "duration_ms": call.duration_ms,
+                    "source_system": call.source_system,
+                    "status": call.status,
+                    "badges": call.badges,
                 }
                 for call in self.ordered_tool_calls
             ],
+            "workbench": self.workbench().model_dump(),
             "usage_metrics": safe_jsonable(usage_metrics),
             "created_at": utc_now(),
         }
@@ -292,11 +367,18 @@ class ToolTraceRecorder:
         for call in self.ordered_tool_calls:
             args = json.dumps(call.tool_input, ensure_ascii=False, sort_keys=True)
             lines.append(
-                f"{call.call_id}. {call.tool_name} args={args} -> "
+                f"{call.call_id}. {call.agent_label} / {call.tool_name} [{call.status}] args={args} -> "
                 f"{call.output_chars} chars"
                 + (" (truncated in trace)" if call.output_truncated and not self.trace_full else "")
             )
         return lines
+
+    def workbench(self) -> TraceWorkbench:
+        return build_trace_workbench(
+            self.ordered_tool_calls,
+            run_id=self.run_id,
+            run_dir=self.run_dir,
+        )
 
     def _pop_pending(self, tool_name: str) -> dict[str, Any]:
         for index in range(len(self._pending) - 1, -1, -1):
@@ -315,6 +397,15 @@ class ToolTraceRecorder:
         with self.trace_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(safe_jsonable(record), ensure_ascii=False) + "\n")
 
+    def _emit_event(self, event: dict[str, Any]) -> None:
+        if self.on_event is None:
+            return
+        try:
+            self.on_event(safe_jsonable(event))
+        except Exception:
+            # UI callbacks must never break a CrewAI run.
+            return
+
 
 class NullToolTraceRecorder:
     run_dir: Path | None = None
@@ -326,6 +417,17 @@ class NullToolTraceRecorder:
 
     def compact_summary_lines(self) -> list[str]:
         return ["Tool tracing disabled."]
+
+    def workbench(self) -> TraceWorkbench:
+        return TraceWorkbench(
+            run_id=None,
+            run_dir=None,
+            groups=[],
+            total_tool_calls=0,
+            source_flow=source_flow_for_calls([]),
+            artifacts={},
+            disabled=True,
+        )
 
 
 @contextmanager
@@ -341,6 +443,7 @@ def capture_tool_traces(
     trace_full: bool = False,
     run_id: str | None = None,
     run_label: str = "Moses Agent Run Report",
+    on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> Iterator[ToolTraceRecorder | NullToolTraceRecorder]:
     if not enabled:
         yield NullToolTraceRecorder()
@@ -356,9 +459,209 @@ def capture_tool_traces(
         run_id=run_id,
         trace_full=trace_full,
         run_label=run_label,
+        on_event=on_event,
     )
     recorder.install()
     try:
         yield recorder
     finally:
         recorder.uninstall()
+
+
+def build_trace_workbench(
+    tool_calls: list[ToolCallSummary],
+    *,
+    run_id: str | None = None,
+    run_dir: Path | str | None = None,
+) -> TraceWorkbench:
+    groups_by_label: dict[str, AgentTraceGroup] = {}
+    for call in tool_calls:
+        group = groups_by_label.get(call.agent_label)
+        if group is None:
+            group = AgentTraceGroup(
+                agent_label=call.agent_label,
+                agent_role=call.agent_role,
+                source_system=call.source_system,
+            )
+            groups_by_label[call.agent_label] = group
+        group.tool_calls.append(call)
+        if call.duration_ms:
+            group.duration_ms += call.duration_ms
+        group.status = combine_status(group.status, call.status)
+
+    ordered_labels = [
+        "Orchestrator",
+        "Study Advisor",
+        "MOSES Module Researcher",
+        "ISIS Course Info Specialist",
+        "Unknown Agent",
+    ]
+    groups = sorted(
+        groups_by_label.values(),
+        key=lambda item: (
+            ordered_labels.index(item.agent_label) if item.agent_label in ordered_labels else len(ordered_labels),
+            item.agent_label,
+        ),
+    )
+    run_dir_text = str(run_dir) if run_dir is not None else None
+    artifacts = {
+        "report": str(Path(run_dir) / "report.md") if run_dir is not None else None,
+        "trace": str(Path(run_dir) / "trace.jsonl") if run_dir is not None else None,
+        "state": str(Path(run_dir) / "state.json") if run_dir is not None else None,
+        "summary": str(Path(run_dir) / "summary.json") if run_dir is not None else None,
+    }
+    return TraceWorkbench(
+        run_id=run_id,
+        run_dir=run_dir_text,
+        groups=groups,
+        total_tool_calls=len(tool_calls),
+        source_flow=source_flow_for_calls(tool_calls),
+        artifacts=artifacts,
+    )
+
+
+def load_trace_workbench(run_dir: Path | str) -> TraceWorkbench:
+    path = Path(run_dir)
+    trace_path = path / "trace.jsonl"
+    calls: list[ToolCallSummary] = []
+    if trace_path.exists():
+        for line in trace_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            event = json.loads(line)
+            calls.append(tool_call_summary_from_event(event))
+    return build_trace_workbench(calls, run_id=path.name, run_dir=path)
+
+
+def tool_call_summary_from_event(event: dict[str, Any]) -> ToolCallSummary:
+    tool_name = str(event.get("tool_name") or "Unknown Tool")
+    output_preview = str(event.get("output_preview") or event.get("output") or "")
+    agent_role = event.get("agent_role")
+    return ToolCallSummary(
+        call_id=int(event.get("call_id") or 0),
+        tool_name=tool_name,
+        tool_input=dict(event.get("tool_input") or {}),
+        output_preview=output_preview,
+        output_chars=int(event.get("output_chars") or len(output_preview)),
+        output_truncated=bool(event.get("output_truncated")),
+        agent_role=str(agent_role) if agent_role else None,
+        agent_label=agent_label_for_role(agent_role),
+        task_name=event.get("task_name"),
+        duration_ms=event.get("duration_ms"),
+        source_system=source_system_for_tool(tool_name),
+        status=status_for_tool_output(tool_name, output_preview),
+        badges=badges_for_tool_output(tool_name, output_preview),
+    )
+
+
+def agent_label_for_role(role: object | None) -> str:
+    text = str(role or "").casefold()
+    if "orchestrator" in text:
+        return "Orchestrator"
+    if "study advisor" in text or "personal study advisor" in text:
+        return "Study Advisor"
+    if "moses" in text or "module researcher" in text:
+        return "MOSES Module Researcher"
+    if "isis" in text or "course information specialist" in text:
+        return "ISIS Course Info Specialist"
+    return "Unknown Agent"
+
+
+def source_system_for_tool(tool_name: str) -> str:
+    text = tool_name.casefold()
+    if "study plan" in text or "degree requirement" in text:
+        return "Grade Manager"
+    if "moses" in text:
+        return "MOSES"
+    if "isis" in text:
+        return "ISIS"
+    return "Other"
+
+
+def status_for_tool_output(tool_name: str, output_preview: str) -> str:
+    text = f"{tool_name}\n{output_preview}".casefold()
+    error_markers = (
+        "failed",
+        "error",
+        "could not",
+        "write refused",
+        "invalid",
+    )
+    warning_markers = (
+        "access required",
+        "requires enrollment key",
+        "ambiguous",
+        "not found",
+        "no modules",
+        "no matching",
+        "denied access",
+    )
+    if any(marker in text for marker in error_markers):
+        return "error"
+    if any(marker in text for marker in warning_markers):
+        return "warning"
+    return "ok"
+
+
+def badges_for_tool_output(tool_name: str, output_preview: str) -> list[str]:
+    text = f"{tool_name}\n{output_preview}".casefold()
+    badges: list[str] = [source_system_for_tool(tool_name)]
+    if "temporarily enrolled by this tool call: yes" in text:
+        badges.append("temporary enrollment")
+    if "cleanup attempted: yes; succeeded: yes" in text:
+        badges.append("cleanup succeeded")
+    if "cleanup attempted: yes; succeeded: no" in text or "cleanup error" in text:
+        badges.append("cleanup failed")
+    if "requires enrollment key" in text or "enrollment key required" in text:
+        badges.append("key required")
+    if "write refused" in text:
+        badges.append("write refused")
+    if "add module to study plan" in tool_name.casefold() and "added `" in text:
+        badges.append("study-plan write")
+    return _dedupe_strings(badges)
+
+
+def source_flow_for_calls(tool_calls: list[ToolCallSummary]) -> list[dict[str, Any]]:
+    active_sources = {call.source_system for call in tool_calls}
+    return [
+        {
+            "source": "Grade Manager",
+            "agent": "Study Advisor",
+            "target": "Orchestrator",
+            "active": "Grade Manager" in active_sources,
+        },
+        {
+            "source": "MOSES",
+            "agent": "MOSES Module Researcher",
+            "target": "Orchestrator",
+            "active": "MOSES" in active_sources,
+        },
+        {
+            "source": "ISIS",
+            "agent": "ISIS Course Info Specialist",
+            "target": "Orchestrator",
+            "active": "ISIS" in active_sources,
+        },
+        {
+            "source": "Orchestrator",
+            "agent": "Final Answer",
+            "target": "Student",
+            "active": bool(tool_calls),
+        },
+    ]
+
+
+def combine_status(left: str, right: str) -> str:
+    order = {"ok": 0, "warning": 1, "error": 2}
+    return right if order.get(right, 0) > order.get(left, 0) else left
+
+
+def _dedupe_strings(values: list[str]) -> list[str]:
+    result = []
+    seen: set[str] = set()
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result

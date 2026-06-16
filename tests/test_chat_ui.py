@@ -310,3 +310,8 @@ def test_live_workbench_agent_status_graceful_tool_failures():
     workbench = chat.live_workbench_from_events(events_running)
     groups = {g["agent_label"]: g for g in workbench["groups"]}
     assert groups["MOSES Module Researcher"]["status"] == "running"
+
+    # 4. Test case: tool call fails (status="error") and crew completed successfully but only via completed=True flag (no events)
+    workbench = chat.live_workbench_from_events(events_running, completed=True)
+    groups = {g["agent_label"]: g for g in workbench["groups"]}
+    assert groups["MOSES Module Researcher"]["status"] == "ok"

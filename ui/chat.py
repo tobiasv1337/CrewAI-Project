@@ -397,7 +397,7 @@ def _run_and_render_assistant_turn(
 
             answer_placeholder.markdown(result.answer.rstrip())
             # Build the completed workbench directly from live events to keep all rich details
-            workbench = live_workbench_from_events(events)
+            workbench = live_workbench_from_events(events, completed=True)
             if result.intent:
                 workbench["intent"] = result.intent.model_dump(mode="json")
             if result.trace_dir:
@@ -776,7 +776,7 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
 
 
 def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
-    workbench = live_workbench_from_events(events)
+    workbench = live_workbench_from_events(events, completed=completed)
     _render_trace_panel(workbench, expanded=not completed, live=not completed)
 
 
@@ -1051,7 +1051,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
     return _clean_html(html_content)
 
 
-def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
+def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = False) -> dict[str, Any]:
     calls_by_id: dict[int, dict[str, Any]] = {}
     run_id = None
     groups: dict[str, dict[str, Any]] = {
@@ -1136,7 +1136,7 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif call.get("tool_name"):
             group["activity"] = f"Finished {call.get('tool_name')}."
 
-    has_crew_completed = any(e.get("event") == "crew_completed" for e in events)
+    has_crew_completed = completed or any(e.get("event") == "crew_completed" for e in events)
     has_crew_failed = any(e.get("event") in {"crew_failed", "ui_error"} for e in events)
 
     for label, group in groups.items():

@@ -233,3 +233,80 @@ def test_safe_int():
     assert chat._safe_int("llm-1") == 1
     assert chat._safe_int(None) == 0
     assert chat._safe_int("abc") == 0
+
+
+def test_live_workbench_agent_status_graceful_tool_failures():
+    # 1. Test case: tool call fails (status="error") but task completed successfully (event="task_completed")
+    events_completed = [
+        {"event": "task_started", "agent_label": "MOSES Module Researcher", "status": "running"},
+        {
+            "event": "tool_start",
+            "call_id": 1,
+            "tool_name": "Get Moses Module",
+            "agent_label": "MOSES Module Researcher",
+            "status": "running",
+        },
+        {
+            "event": "tool_finish",
+            "tool_call": {
+                "call_id": 1,
+                "tool_name": "Get Moses Module",
+                "agent_label": "MOSES Module Researcher",
+                "status": "error",
+            },
+        },
+        {"event": "task_completed", "agent_label": "MOSES Module Researcher", "status": "ok"},
+        {"event": "crew_completed", "agent_label": "Orchestrator", "status": "ok"},
+    ]
+    workbench = chat.live_workbench_from_events(events_completed)
+    groups = {g["agent_label"]: g for g in workbench["groups"]}
+    assert groups["MOSES Module Researcher"]["status"] == "ok"
+
+    # 2. Test case: tool call fails (status="error") and task failed (event="task_failed")
+    events_failed = [
+        {"event": "task_started", "agent_label": "MOSES Module Researcher", "status": "running"},
+        {
+            "event": "tool_start",
+            "call_id": 2,
+            "tool_name": "Get Moses Module",
+            "agent_label": "MOSES Module Researcher",
+            "status": "running",
+        },
+        {
+            "event": "tool_finish",
+            "tool_call": {
+                "call_id": 2,
+                "tool_name": "Get Moses Module",
+                "agent_label": "MOSES Module Researcher",
+                "status": "error",
+            },
+        },
+        {"event": "task_failed", "agent_label": "MOSES Module Researcher", "status": "error"},
+    ]
+    workbench = chat.live_workbench_from_events(events_failed)
+    groups = {g["agent_label"]: g for g in workbench["groups"]}
+    assert groups["MOSES Module Researcher"]["status"] == "error"
+
+    # 3. Test case: tool call fails (status="error") and crew is still running (no task_completed or task_failed yet)
+    events_running = [
+        {"event": "task_started", "agent_label": "MOSES Module Researcher", "status": "running"},
+        {
+            "event": "tool_start",
+            "call_id": 3,
+            "tool_name": "Get Moses Module",
+            "agent_label": "MOSES Module Researcher",
+            "status": "running",
+        },
+        {
+            "event": "tool_finish",
+            "tool_call": {
+                "call_id": 3,
+                "tool_name": "Get Moses Module",
+                "agent_label": "MOSES Module Researcher",
+                "status": "error",
+            },
+        },
+    ]
+    workbench = chat.live_workbench_from_events(events_running)
+    groups = {g["agent_label"]: g for g in workbench["groups"]}
+    assert groups["MOSES Module Researcher"]["status"] == "running"

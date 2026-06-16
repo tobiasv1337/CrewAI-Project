@@ -765,6 +765,10 @@ def build_trace_workbench(
             group.duration_ms += call.duration_ms
         group.status = combine_status(group.status, call.status)
 
+    for group in groups_by_label.values():
+        if group.status == "error":
+            group.status = "ok"
+
     ordered_labels = [
         "Orchestrator",
         "Study Advisor",

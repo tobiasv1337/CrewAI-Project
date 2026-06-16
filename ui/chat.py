@@ -1135,6 +1135,52 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
             group["activity"] = f"Running {call.get('tool_name') or 'tool'}."
         elif call.get("tool_name"):
             group["activity"] = f"Finished {call.get('tool_name')}."
+
+    has_crew_completed = any(e.get("event") == "crew_completed" for e in events)
+    has_crew_failed = any(e.get("event") in {"crew_failed", "ui_error"} for e in events)
+
+    for label, group in groups.items():
+        agent_events = group.get("events") or []
+        has_task_completed = any(e.get("event") == "task_completed" for e in agent_events)
+        has_task_failed = any(e.get("event") == "task_failed" for e in agent_events)
+
+        if label == "Orchestrator":
+            if has_crew_failed:
+                group["status"] = "error"
+            elif has_crew_completed:
+                group["status"] = "ok"
+            elif any(e.get("status") == "running" for e in agent_events):
+                group["status"] = "running"
+            else:
+                group["status"] = "idle"
+        else:
+            if has_task_failed:
+                group["status"] = "error"
+            elif has_task_completed:
+                group["status"] = "ok"
+            elif has_crew_completed:
+                if group.get("tool_calls"):
+                    group["status"] = "ok"
+                else:
+                    group["status"] = "idle"
+            elif has_crew_failed:
+                has_tool_error = any(c.get("status") == "error" for c in group.get("tool_calls", []))
+                if has_tool_error:
+                    group["status"] = "error"
+                elif group.get("tool_calls"):
+                    group["status"] = "ok"
+                else:
+                    group["status"] = "idle"
+            else:
+                is_running = (
+                    any(e.get("event") in {"task_started", "llm_started", "tool_start"} or e.get("status") == "running" for e in agent_events) or
+                    any(c.get("status") == "running" for c in group.get("tool_calls", []))
+                )
+                if is_running:
+                    group["status"] = "running"
+                else:
+                    group["status"] = "idle"
+
     source_flow = _dynamic_source_flow(events)
     intent = None
     for event in events:

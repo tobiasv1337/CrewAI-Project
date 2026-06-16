@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# Apply context propagation patches early in application lifecycle
+import crew.runtime
 import argparse
 import csv
 from dataclasses import dataclass, field

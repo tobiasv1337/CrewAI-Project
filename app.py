@@ -1,6 +1,8 @@
 import base64
 import html
 
+# Apply context propagation patches early in application lifecycle
+import crew.runtime
 import streamlit as st
 
 

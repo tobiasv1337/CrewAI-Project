@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import crew.runtime
 from crew.tools.proposal_tools import ProposeCourseActionsTool, collect_course_proposals
 
 
@@ -51,3 +52,38 @@ def test_proposal_tool_does_not_record_without_context():
     )
 
     assert "Prepared UI confirmation proposal" in output
+
+
+def test_proposal_tool_propagates_context_to_threads():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    tool = ProposeCourseActionsTool()
+
+    # Test threading.Thread propagation
+    with collect_course_proposals() as proposals:
+        def target():
+            tool._run(
+                proposal_title="Thread Proposal",
+                proposal_summary="Thread summary.",
+                courses=[{"course_title": "Test Course", "rationale": "Test", "term": "SS 26"}],
+            )
+        t = threading.Thread(target=target)
+        t.start()
+        t.join()
+        assert len(proposals) == 1
+        assert proposals[0].title == "Thread Proposal"
+
+    # Test ThreadPoolExecutor propagation
+    with collect_course_proposals() as proposals:
+        def target_executor():
+            tool._run(
+                proposal_title="Executor Proposal",
+                proposal_summary="Executor summary.",
+                courses=[{"course_title": "Test Course", "rationale": "Test", "term": "SS 26"}],
+            )
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(target_executor)
+            future.result()
+        assert len(proposals) == 1
+        assert proposals[0].title == "Executor Proposal"

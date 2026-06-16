@@ -75,8 +75,16 @@ def render_chat_page() -> None:
     if not messages:
         _render_empty_state(profile_slug)
 
-    for message in messages:
-        _render_chat_message(message)
+    run_active = (PENDING_PROMPT_KEY in st.session_state)
+
+    last_assistant_idx = -1
+    for idx, msg in enumerate(messages):
+        if msg.get("role") == "assistant":
+            last_assistant_idx = idx
+
+    for idx, message in enumerate(messages):
+        is_latest_assistant = (idx == last_assistant_idx)
+        _render_chat_message(message, is_latest_assistant=is_latest_assistant, run_active=run_active)
 
     pending_prompt = st.session_state.pop(PENDING_PROMPT_KEY, None)
     if isinstance(pending_prompt, dict) and pending_prompt.get("profile_slug") == profile_slug:
@@ -89,9 +97,8 @@ def render_chat_page() -> None:
         run_prompt = prompt.strip()
         if run_prompt:
             _append_message(profile_slug, {"role": "user", "content": run_prompt, "created_at": _now_iso()})
-            with st.chat_message("user"):
-                st.markdown(run_prompt)
-            _run_and_render_assistant_turn(profile_slug, run_prompt, settings)
+            st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": run_prompt}
+            st.rerun()
 
 
 def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
@@ -251,13 +258,13 @@ def _render_empty_state(profile_slug: str) -> None:
                 st.rerun()
 
 
-def _render_chat_message(message: dict[str, Any]) -> None:
+def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
     with st.chat_message(message.get("role", "assistant")):
         st.markdown(str(message.get("content") or ""))
         if message.get("role") == "assistant":
             workbench = message.get("workbench")
-            if workbench:
-                _render_trace_panel(workbench, expanded=False)
+            if workbench and is_latest_assistant and not run_active:
+                _render_trace_panel(workbench, expanded=True)
             proposals = message.get("proposals")
             if proposals:
                 _render_proposals_panel(str(message.get("profile_slug") or ""), proposals)
@@ -285,49 +292,46 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
     isis_client = get_profile_isis_client(profile_slug)
 
     with st.chat_message("assistant"):
-        status = st.status("Crew is coordinating agents...", expanded=True)
-        live_placeholder = st.empty()
+        answer_placeholder = st.empty()
+        trace_placeholder = st.empty()
 
         def on_trace_event(event: dict[str, Any]) -> None:
             event_queue.put(event)
 
         try:
-            with status:
-                with live_placeholder.container():
-                    _render_live_trace(events)
-                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="study-chat-crew") as executor:
-                    future = executor.submit(
-                        _run_chat_query,
-                        profile_slug=profile_slug,
-                        prompt=prompt,
-                        settings=settings,
-                        student_context=student_context,
-                        isis_client=isis_client,
-                        on_trace_event=on_trace_event if settings.trace_enabled else None,
-                    )
-                    last_render = 0.0
-                    last_heartbeat = 0.0
-                    while not future.done():
-                        updated = _drain_trace_queue(event_queue, events)
-                        now = time.monotonic()
-                        if now - last_heartbeat >= 1.2:
-                            _append_heartbeat_event(events)
-                            updated = True
-                            last_heartbeat = now
-                        if updated or now - last_render >= 1.0:
-                            with live_placeholder.container():
-                                _render_live_trace(events)
-                            last_render = now
-                        time.sleep(0.2)
-                    _drain_trace_queue(event_queue, events)
-                    with live_placeholder.container():
-                        _render_live_trace(events, completed=True)
-                    result = future.result()
-            status.update(label="Crew finished", state="complete", expanded=False)
-            st.markdown(result.answer.rstrip())
+            with trace_placeholder.container():
+                _render_live_trace(events)
+            with ThreadPoolExecutor(max_workers=1, thread_name_prefix="study-chat-crew") as executor:
+                future = executor.submit(
+                    _run_chat_query,
+                    profile_slug=profile_slug,
+                    prompt=prompt,
+                    settings=settings,
+                    student_context=student_context,
+                    isis_client=isis_client,
+                    on_trace_event=on_trace_event if settings.trace_enabled else None,
+                )
+                last_render = 0.0
+                last_heartbeat = 0.0
+                while not future.done():
+                    updated = _drain_trace_queue(event_queue, events)
+                    now = time.monotonic()
+                    if now - last_heartbeat >= 1.2:
+                        _append_heartbeat_event(events)
+                        updated = True
+                        last_heartbeat = now
+                    if updated or now - last_render >= 1.0:
+                        with trace_placeholder.container():
+                            _render_live_trace(events)
+                        last_render = now
+                    time.sleep(0.2)
+                _drain_trace_queue(event_queue, events)
+                with trace_placeholder.container():
+                    _render_live_trace(events, completed=True)
+                result = future.result()
+
+            answer_placeholder.markdown(result.answer.rstrip())
             workbench = _workbench_from_result(result)
-            if workbench:
-                _render_trace_panel(workbench, expanded=True)
 
             # Extract and display new proposals
             proposals = extract_all_proposals(result, workbench)
@@ -351,6 +355,7 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
                     "profile_slug": profile_slug,
                 },
             )
+            st.rerun()
         except Exception as exc:
             events.append(
                 {
@@ -362,12 +367,12 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
                     "elapsed_ms": _elapsed_ms_from_events(events),
                 }
             )
-            with live_placeholder.container():
+            with trace_placeholder.container():
                 _render_live_trace(events, completed=True)
-            status.update(label="Crew failed", state="error", expanded=True)
             content = f"Could not run the Study Assistant: `{exc}`"
             st.error(content)
             _append_message(profile_slug, {"role": "assistant", "content": content, "created_at": _now_iso()})
+            st.rerun()
 
 
 def _run_chat_query(
@@ -674,14 +679,15 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
 
 def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
     workbench = live_workbench_from_events(events)
-    st.markdown(_compile_workbench_html(workbench, live=not completed), unsafe_allow_html=True)
+    _render_trace_panel(workbench, expanded=True, live=not completed)
 
 
-def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool) -> None:
-    with st.expander("🔍 View Agent Workbench & Tool Trace", expanded=expanded):
-        st.markdown(_compile_workbench_html(workbench, live=False), unsafe_allow_html=True)
-        _render_artifact_links(workbench)
-        _render_tool_expanders(workbench)
+def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool, live: bool = False) -> None:
+    if expanded:
+        st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
+    else:
+        with st.expander("🔍 View Agent Workbench & Tool Trace", expanded=False):
+            st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
 
 
 def _clean_html(html_str: str) -> str:
@@ -792,8 +798,92 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
     title_label = "Live Agent Coordination Workbench" if live else "Agent Coordination Workbench & Trace"
     pulse_dot = '<span class="live-dot"></span>' if live else ""
 
+    # Compile artifacts inside the workbench container if not live
+    artifacts_html = ""
+    if not live:
+        artifacts = {key: value for key, value in (workbench.get("artifacts") or {}).items() if value}
+        if artifacts:
+            artifact_items_html = ""
+            for label, path in artifacts.items():
+                artifact_items_html += f"""
+                <div class="artifact-item">
+                  <span class="artifact-label">{html.escape(label)}</span>
+                  <span class="artifact-path">{html.escape(str(path))}</span>
+                </div>
+                """
+            artifacts_html = f"""
+            <div class="artifacts-container">
+              <div class="section-title">Trace Artifacts</div>
+              <div class="artifacts-list">
+                {artifact_items_html}
+              </div>
+            </div>
+            """
+
+    # Compile tool execution logs inside the workbench container if not live
+    tool_logs_html = ""
+    if not live:
+        calls = [
+            call
+            for group in (workbench.get("groups") or [])
+            for call in (group.get("tool_calls") or [])
+        ]
+        if calls:
+            tool_items_html = ""
+            for call in calls:
+                call_id = call.get("call_id") or 0
+                agent_label = str(call.get("agent_label") or "")
+                tool_name = str(call.get("tool_name") or "")
+                status = str(call.get("status") or "ok")
+                source_system = str(call.get("source_system") or "")
+                tool_input = call.get("tool_input") or {}
+                output_preview = str(call.get("output_preview") or "")
+
+                try:
+                    input_json = json.dumps(tool_input, ensure_ascii=False, indent=2)
+                except Exception:
+                    input_json = str(tool_input)
+
+                tool_items_html += f"""
+                <details class="tool-log-item {status}">
+                  <summary class="tool-log-summary">
+                    <span class="tool-log-id">#{call_id}</span>
+                    <span class="tool-log-agent">{html.escape(agent_label)}</span>
+                    <span class="tool-log-arrow">➔</span>
+                    <span class="tool-log-name">{html.escape(tool_name)}</span>
+                    <span class="tool-log-status-badge {status}">{html.escape(status)}</span>
+                  </summary>
+                  <div class="tool-log-details">
+                    <div class="tool-log-meta">Source: {html.escape(source_system)}</div>
+                    <div class="tool-log-section">
+                      <div class="tool-log-section-title">Input</div>
+                      <pre class="tool-log-code">{html.escape(input_json)}</pre>
+                    </div>
+                    <div class="tool-log-section">
+                      <div class="tool-log-section-title">Output Preview</div>
+                      <pre class="tool-log-code">{html.escape(output_preview)}</pre>
+                    </div>
+                  </div>
+                </details>
+                """
+            tool_logs_html = f"""
+            <div class="tool-logs-container">
+              <div class="section-title">Tool Execution Logs</div>
+              <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                {tool_items_html}
+              </div>
+            </div>
+            """
+        else:
+            tool_logs_html = """
+            <div class="tool-logs-container">
+              <div class="section-title">Tool Execution Logs</div>
+              <div class="no-tools" style="padding: 0.5rem 0;">No tool calls captured.</div>
+            </div>
+            """
+
     html_content = f"""
-    <div class="workbench-container">
+    <div class="workbench-container" style="color: #0f172a;">
       <div class="workbench-header">
         <div class="workbench-title">{pulse_dot}{title_label}</div>
         <div class="workbench-summary">{total_calls} Total Tool Calls | {len(events)} Events</div>
@@ -824,41 +914,18 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
       <div class="console-container">
         <div class="console-header">
           <div class="console-title">Live Log Console</div>
-          <div class="console-status">STREAMING</div>
+          <div class="console-status">{"STREAMING" if live else "COMPLETED"}</div>
         </div>
         <div class="console-body">
           {events_html}
         </div>
       </div>
+
+      {artifacts_html}
+      {tool_logs_html}
     </div>
     """
     return _clean_html(html_content)
-
-
-def _render_tool_expanders(workbench: dict[str, Any]) -> None:
-    calls = [
-        call
-        for group in (workbench.get("groups") or [])
-        for call in (group.get("tool_calls") or [])
-    ]
-    if not calls:
-        st.caption("No tool calls captured.")
-        return
-    for call in calls:
-        title = f"{call.get('call_id')}. {call.get('agent_label')} / {call.get('tool_name')}"
-        with st.expander(title, expanded=False):
-            st.caption(f"Status: {call.get('status')} | Source: {call.get('source_system')}")
-            st.code(json.dumps(call.get("tool_input") or {}, ensure_ascii=False, indent=2), language="json")
-            st.text(str(call.get("output_preview") or ""))
-
-
-def _render_artifact_links(workbench: dict[str, Any]) -> None:
-    artifacts = {key: value for key, value in (workbench.get("artifacts") or {}).items() if value}
-    if not artifacts:
-        return
-    st.markdown("Trace artifacts:")
-    for label, path in artifacts.items():
-        st.code(f"{label}: {path}", language="text")
 
 
 def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1011,11 +1078,19 @@ def _drain_trace_queue(event_queue: Queue[dict[str, Any]], events: list[dict[str
 
 def _append_heartbeat_event(events: list[dict[str, Any]]) -> None:
     elapsed_ms = _elapsed_ms_from_events(events)
-    last = next((event for event in reversed(events) if event.get("event") != "heartbeat"), {})
-    label = _event_agent_label(last)
+    # Find the last event that was actually marked running
+    last_running = next(
+        (event for event in reversed(events)
+         if event.get("event") != "heartbeat" and event.get("status") == "running"),
+        {}
+    )
+    label = _event_agent_label(last_running) if last_running else "Orchestrator"
     if label not in AGENT_LANES:
         label = "Orchestrator"
-    activity = _heartbeat_activity(last)
+
+    last_overall = next((event for event in reversed(events) if event.get("event") != "heartbeat"), {})
+    activity = _heartbeat_activity(last_overall)
+
     if events and events[-1].get("event") == "heartbeat":
         events[-1].update({"elapsed_ms": elapsed_ms, "agent_label": label, "activity": activity})
         return
@@ -1832,6 +1907,172 @@ def inject_chat_css() -> None:
             word-break: break-all;
         }
 
+        /* Unified Trace Artifacts Section */
+        .artifacts-container {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid #f1f5f9;
+            border-bottom: 1px solid #f1f5f9;
+            background-color: #f8fafc;
+        }
+        .section-title {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.075em;
+            color: #94a3b8;
+            font-weight: 700;
+            margin-bottom: 0.65rem;
+        }
+        .artifacts-list {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .artifact-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 0.75rem;
+            background-color: #ffffff;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 0.5rem 0.75rem;
+        }
+        .artifact-label {
+            font-weight: 600;
+            color: #334155;
+        }
+        .artifact-path {
+            font-family: monospace;
+            color: #64748b;
+            font-size: 0.7rem;
+            word-break: break-all;
+            user-select: all;
+        }
+
+        /* Unified Trace Tool Logs Section */
+        .tool-logs-container {
+            padding: 1.25rem;
+            background-color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .tool-log-item {
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            overflow: hidden;
+            background-color: #f8fafc;
+            transition: border-color 0.2s ease;
+        }
+        .tool-log-item[open] {
+            border-color: #cbd5e1;
+            box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+        }
+        .tool-log-summary {
+            padding: 0.65rem 1rem;
+            font-size: 0.78rem;
+            font-weight: 600;
+            color: #334155;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            user-select: none;
+            background-color: #f8fafc;
+        }
+        .tool-log-summary::-webkit-details-marker {
+            display: none;
+        }
+        .tool-log-summary::marker {
+            display: none;
+        }
+        .tool-log-summary::before {
+            content: "▶";
+            font-size: 0.65rem;
+            color: #64748b;
+            transition: transform 0.2s ease;
+            display: inline-block;
+        }
+        .tool-log-item[open] > .tool-log-summary::before {
+            transform: rotate(90deg);
+        }
+        .tool-log-id {
+            color: #94a3b8;
+            font-family: monospace;
+            font-weight: bold;
+        }
+        .tool-log-agent {
+            color: #4f46e5;
+        }
+        .tool-log-arrow {
+            color: #94a3b8;
+        }
+        .tool-log-name {
+            color: #0f172a;
+            font-weight: 700;
+        }
+        .tool-log-status-badge {
+            margin-left: auto;
+            font-size: 0.62rem;
+            font-weight: 700;
+            padding: 0.1rem 0.35rem;
+            border-radius: 4px;
+            text-transform: uppercase;
+        }
+        .tool-log-status-badge.ok, .tool-log-status-badge.success {
+            background-color: #d1fae5;
+            color: #065f46;
+            border: 1px solid #a7f3d0;
+        }
+        .tool-log-status-badge.running {
+            background-color: #dbeafe;
+            color: #1e40af;
+            border: 1px solid #bfdbfe;
+        }
+        .tool-log-status-badge.error, .tool-log-status-badge.failed {
+            background-color: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fca5a5;
+        }
+        .tool-log-details {
+            padding: 0.85rem 1rem;
+            border-top: 1px solid #e2e8f0;
+            background-color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            gap: 0.75rem;
+        }
+        .tool-log-meta {
+            font-size: 0.68rem;
+            color: #64748b;
+            font-weight: 500;
+        }
+        .tool-log-section {
+            display: flex;
+            flex-direction: column;
+            gap: 0.35rem;
+        }
+        .tool-log-section-title {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            font-weight: 700;
+            color: #94a3b8;
+            letter-spacing: 0.05em;
+        }
+        .tool-log-code {
+            margin: 0;
+            padding: 0.65rem;
+            background-color: #0f172a;
+            color: #e2e8f0;
+            border-radius: 6px;
+            font-family: Consolas, Monaco, "Lucida Console", monospace;
+            font-size: 0.72rem;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            border: 1px solid #1e293b;
+        }
+
         /* Proposals panel styling */
         .pending-write-card {
             border: 1px solid #cbd5e1;
@@ -1854,6 +2095,16 @@ def inject_chat_css() -> None:
             height: 1px;
             background-color: #e2e8f0;
             margin: 0.85rem 0;
+        }
+
+        /* Align user messages to the right side */
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+            flex-direction: row-reverse;
+            text-align: right;
+            justify-content: flex-start;
+        }
+        [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) div {
+            text-align: right;
         }
         </style>
         """,

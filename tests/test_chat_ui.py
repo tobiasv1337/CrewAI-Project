@@ -179,3 +179,20 @@ def test_profile_chat_history_and_isis_session_are_scoped():
     assert chat.get_profile_messages("bob")[0]["content"] == "Bob question"
     assert chat.get_profile_isis_client("alice") is client
     assert chat.get_profile_isis_client("bob") is None
+
+
+def test_append_heartbeat_event_chooses_correct_running_agent():
+    events = [
+        {"event": "ui_run_started", "agent_label": "Orchestrator", "status": "running"},
+        {"event": "agent_ready", "agent_label": "ISIS Course Info Specialist", "status": "idle"},
+    ]
+    chat._append_heartbeat_event(events)
+    assert events[-1]["event"] == "heartbeat"
+    assert events[-1]["agent_label"] == "Orchestrator"
+
+    # Add a running event for ISIS
+    events.append({"event": "llm_started", "agent_label": "ISIS Course Info Specialist", "status": "running"})
+    # Since the last event is not a heartbeat, _append_heartbeat_event will append a new heartbeat
+    chat._append_heartbeat_event(events)
+    assert events[-1]["event"] == "heartbeat"
+    assert events[-1]["agent_label"] == "ISIS Course Info Specialist"

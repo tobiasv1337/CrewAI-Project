@@ -90,7 +90,8 @@ study_assistant_task:
       from the Study Advisor's output so MOSES can look up real catalog data
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal/write actions.
-      Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Do NOT ask another specialist to call a write tool. If the student has already approved actions and supplied the exact confirmation tokens, delegate execution and verification to the Course Commitment Specialist.
+      Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Do NOT ask another specialist to call a write tool.
+      If the student has already approved actions, accepted course cards, or clearly confirmed an active proposal/plan, delegate execution and verification to the Course Commitment Specialist for the accepted actions only. Accepted UI course-card decisions and APPROVED proposal actions count as explicit confirmation for those exact actions. The Course Commitment Specialist has the Grade Manager and ISIS write tools; the Orchestrator must not answer as if writes/enrollments happened unless that specialist actually executed the tools and returned results. Never execute declined or unsure actions.
     - RULE D — Study Advisor cannot discover new modules in the catalog.
       For any task requiring finding, suggesting, or planning new modules or courses (e.g. semester planning, course planning, or course recommendations), you MUST NEVER delegate to the Study Advisor to search for or suggest new modules. The Study Advisor only knows about modules already in the student's plan and cannot search the catalog. You must first delegate to the Study Advisor to identify missing requirements/handoff search directives, then delegate to the MOSES Module Researcher with those directives to search the MOSES catalog and find matching modules, and finally delegate back to the Study Advisor with specific module numbers/names using `Check Module Against Study Plan` to verify degree area fit before proposing them to the student.
     - RULE E — Program Switch / Explore Rule.
@@ -103,6 +104,17 @@ study_assistant_task:
       When planning courses, always align the suggested semesters with the student's requested start term (or the current term if they ask to plan for the upcoming/current term). Make sure to only recommend modules in the semesters where they are actually offered (e.g. check their offered cycle in MOSES). If the student starts in the Summer Semester, recommend core modules, electives, or free-choice modules that are offered in the summer.
     - RULE I — Course Category Prioritization.
       When recommending or planning new courses, always prioritize suggesting Pflicht (mandatory) courses first, then Wahlpflicht (elective) courses or other specific degree requirements (like Seminar and Projects), and only then suggest Free Choice (freie Wahl) courses, unless the user explicitly asks otherwise.
+    - RULE J — Degree Regulations Recovery Loop.
+      The Degree Regulations Specialist is not a one-shot source. If a plan
+      derived from the StuPO, AllgStuPO, Regelstudienplan, or degree-rule
+      lookup fails, conflicts with MOSES/Study Advisor/ISIS evidence, lacks a
+      viable course in the requested semester, or leaves you unsure about
+      permissible alternatives, you MUST delegate a focused follow-up to the
+      Degree Regulations Specialist before finalizing a workaround or proposal.
+      Ask them to look for relevant StuPO, AllgStuPO, Regelstudienplan,
+      prerequisite/order, Wahlpflicht/free-choice, registration, or other
+      degree-specific rules and quirks that constrain or enable the revised
+      plan.
 
     Specialist boundaries:
     - For pure AllgStuPO/StuPO/Regelstudienplan questions: only Degree
@@ -125,7 +137,17 @@ study_assistant_task:
       get source/page-cited evidence from the Degree Regulations Specialist?
       If not, re-delegate or clearly state that the required PDFs/passages were
       missing.
+    - If your initial regulation-informed plan did not fully work out after
+      MOSES, Study Advisor, ISIS, or student feedback, did you ask the Degree
+      Regulations Specialist a focused follow-up about permissible alternatives
+      and relevant StuPO/AllgStuPO/Regelstudienplan constraints? If not,
+      re-delegate before proposing a revised plan.
     - If you recommended or suggested new courses/modules to the student, did you delegate to the Course Commitment Specialist to create a UI proposal via `Propose Course Actions For Confirmation`? If you recommended courses but no proposal was created, you MUST delegate to the Course Commitment Specialist to create the proposal before producing the final answer. If no proposal was created, do not claim that the UI will show a confirmation banner.
+    - If the context contains accepted UI course-card decisions, APPROVED
+      proposal actions, or the student clearly confirmed an active proposal,
+      did you delegate the accepted actions to the Course Commitment Specialist
+      to execute Grade Manager additions and/or ISIS enrollments? If not, do
+      that before answering. Do not claim automatic future execution.
     - Did the ISIS Specialist work on the correct set of courses (the ones
       from the Grade Manager, not raw ISIS enrollment)? If it investigated
       courses not mentioned by the Study Advisor, those results are
@@ -148,6 +170,13 @@ study_assistant_task:
     - Re-delegate to MOSES with the real module IDs.
     - Ask Study Advisor follow-up questions if the initial output was
       incomplete.
+    - Re-delegate to Degree Regulations Specialist whenever degree-rule,
+      Regelstudienplan, StuPO/AllgStuPO, prerequisite/order, area, or
+      permissible-alternative uncertainty remains after other specialists
+      return their evidence.
+    - Delegate to Course Commitment Specialist with the exact accepted action
+      list when the user has accepted or approved a proposal. Include only
+      accepted actions; exclude declined and unsure actions.
     Then loop back to Phase 3 for another review pass.
 
 

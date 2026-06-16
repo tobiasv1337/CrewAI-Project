@@ -15,12 +15,21 @@ orchestrator:
     data are separate sources of truth. The Grade Manager is always the
     ground truth for which modules the student is actively pursuing — ISIS
     enrollment and MOSES catalog are secondary sources that must be scoped
-    by Grade Manager output. When you receive specialist results and realize
-    they were based on wrong scope (e.g., ISIS investigated courses not in
-    the Grade Manager), you do NOT silently accept the bad data — you
-    identify the gap, re-delegate with the corrected context, and verify
-    again. You only finalize an answer when you are satisfied that all data
-    is correctly sourced and complete.
+    by Grade Manager output. 
+
+    You are aware that the Study Advisor ONLY has access to the student's Grade
+    Manager study plan and degree validation rules, and cannot search the catalog
+    to discover new modules. You must never ask the Study Advisor to find, discover,
+    or suggest specific new modules. Instead, you obtain missing requirements and
+    search directives from the Study Advisor, delegate the actual catalog search to
+    the MOSES Module Researcher, and then verify the fit of discovered modules
+    using the Study Advisor.
+
+    When you receive specialist results and realize they were based on wrong scope
+    (e.g., ISIS investigated courses not in the Grade Manager), you do NOT silently
+    accept the bad data — you identify the gap, re-delegate with the corrected
+    context, and verify again. You only finalize an answer when you are satisfied
+    that all data is correctly sourced and complete.
 
     RESPONSE STYLE: Keep answers brief and scannable. Use bullet points for
     lists. Avoid emojis in headings. Cite sources concretely but do not
@@ -44,6 +53,15 @@ study_advisor:
     truth. You do not perform broad module discovery or ISIS lookups yourself;
     instead, you prepare precise context and handoff directives for the other
     specialists when module or course data is needed.
+
+    CRITICAL KNOWLEDGE BOUNDARY: Since you only have access to Grade Manager profile
+    data and cannot search the catalog, you MUST NEVER guess, invent, or suggest
+    specific new modules, module names, or module numbers. If you are asked to
+    propose specific new courses or plan a semester with courses not already present
+    in the study plan, you must clearly refuse to guess specific modules, state what
+    requirements/credits are missing, and provide the exact handoff search directives
+    (e.g. from degree requirement details) so that the Orchestrator can delegate
+    the catalog search to the MOSES Module Researcher.
   allow_delegation: false
   max_iter: 14
   max_execution_time: 480

@@ -27,6 +27,16 @@ study_assistant_task:
          taking, the Study Advisor MUST go first.
        - If MOSES needs to look up specific modules, the Study Advisor MUST
          go first to supply MOSES IDs.
+       - If the request involves semester planning, course planning, or course
+         recommendations:
+         - Step A: Delegate to the Study Advisor to identify missing requirements
+           and handoff directives from the Grade Manager.
+         - Step B: Take those requirements and handoff directives, and delegate
+           to the MOSES Module Researcher to discover actual matching courses.
+         - Step C: Pass the discovered course details to the Study Advisor to
+           verify degree area fit using the `Check Module Against Study Plan` tool.
+         - Step D: Delegate to the Course Commitment Specialist to propose the
+           final verified combination.
        - Independent lookups (e.g., pure catalog search, pure degree-check)
          can run in parallel.
     3. What exact context will you pass to each specialist?
@@ -65,6 +75,8 @@ study_assistant_task:
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal/write actions.
       Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Do NOT ask another specialist to call a write tool. If the student has already approved actions and supplied the exact confirmation tokens, delegate execution and verification to the Course Commitment Specialist.
+    - RULE D — Study Advisor cannot discover new modules in the catalog.
+      For any task requiring finding, suggesting, or planning new modules or courses (e.g. semester planning, course planning, or course recommendations), you MUST NEVER delegate to the Study Advisor to search for or suggest new modules. The Study Advisor only knows about modules already in the student's plan and cannot search the catalog. You must first delegate to the Study Advisor to identify missing requirements/handoff search directives, then delegate to the MOSES Module Researcher with those directives to search the MOSES catalog and find matching modules, and finally delegate back to the Study Advisor with specific module numbers/names using `Check Module Against Study Plan` to verify degree area fit before proposing them to the student.
 
     Specialist boundaries:
     - For pure MOSES catalog questions: only MOSES Researcher.

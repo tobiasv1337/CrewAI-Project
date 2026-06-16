@@ -101,6 +101,8 @@ study_assistant_task:
       You must read the active proposal state to see which courses the user has already accepted (APPROVED) or declined (DECLINED). You must retain all APPROVED courses in your planned semesters and only recommend alternatives for DECLINED courses. Do not reschedule or switch semesters for already approved courses unless the user explicitly requests a change for them.
     - RULE H — First-Semester planning.
       When planning courses, always align the suggested semesters with the student's requested start term (or the current term if they ask to plan for the upcoming/current term). Make sure to only recommend modules in the semesters where they are actually offered (e.g. check their offered cycle in MOSES). If the student starts in the Summer Semester, recommend core modules, electives, or free-choice modules that are offered in the summer.
+    - RULE I — Course Category Prioritization.
+      When recommending or planning new courses, always prioritize suggesting Pflicht (mandatory) courses first, then Wahlpflicht (elective) courses or other specific degree requirements (like Seminar and Projects), and only then suggest Free Choice (freie Wahl) courses, unless the user explicitly asks otherwise.
 
     Specialist boundaries:
     - For pure AllgStuPO/StuPO/Regelstudienplan questions: only Degree

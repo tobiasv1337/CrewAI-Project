@@ -235,40 +235,69 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         return "\n\n".join(parts)
 
     def _classify_with_llm_or_heuristics(self, state: StudyChatFlowState) -> IntentClassification:
-        if self._runtime.use_llm_classifier and os.getenv("GWDG_API_KEY"):
-            try:
-                llm = get_default_llm(
-                    model=self._runtime.manager_model or self._runtime.model,
-                    temperature=0.0,
-                    top_p=self._runtime.top_p,
-                )
-                result = llm.call(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "Classify a TU Berlin study assistant chat turn. "
-                                "Use simple routes only when one source is clearly enough. "
-                                "Use recommendation for semester/course planning and follow-up changes. "
-                                "Use deep_dive when the request is broad, unclear, or multi-source."
-                            ),
-                        },
-                        {
-                            "role": "user",
-                            "content": (
-                                f"Message: {state.query}\n\n"
-                                f"Conversation:\n{state.conversation_context}\n\n"
-                                f"Student context:\n{state.student_context}"
-                            ),
-                        },
-                    ],
-                    response_format=IntentClassification,
-                )
-                if isinstance(result, IntentClassification):
-                    return result
-            except Exception:
-                pass
-        return classify_intent_heuristically(state.query, state.thread)
+        """
+        Classify intent using LLM (preferred) or fall back to safe deep_dive.
+        
+        If GWDG_API_KEY is not set or LLM classification fails, we always use deep_dive
+        (the expensive but robust multi-source route) to ensure quality responses.
+        Heuristic classification is deprecated in favor of this approach.
+        """
+        # Check if LLM API is available
+        if not os.getenv("GWDG_API_KEY"):
+            if self._runtime.verbose:
+                print("⚠️  WARNING: GWDG_API_KEY not set. Using fallback deep_dive route for robust handling.")
+            return IntentClassification(
+                route="deep_dive",
+                complexity="deep",
+                required_sources=["grade_manager", "moses", "isis"],
+                rationale="LLM classifier unavailable (GWDG_API_KEY not set); using safe deep_dive fallback.",
+            )
+        
+        try:
+            llm = get_default_llm(
+                model=self._runtime.manager_model or self._runtime.model,
+                temperature=0.0,
+                top_p=self._runtime.top_p,
+            )
+            result = llm.call(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "Classify a TU Berlin study assistant chat turn into the most efficient route. "
+                            "Available routes:\n"
+                            "- simple_grade_manager: Single questions about current grades, credits, GPA, degree requirements\n"
+                            "- simple_moses: Single questions about module catalog, prerequisites, workload\n"
+                            "- simple_isis: Specific questions about deadlines/assignments in a known ISIS course\n"
+                            "- recommendation: Semester/course planning, follow-ups to active proposals, course selection\n"
+                            "- deep_dive: Broad/multi-source queries, unclear intent, or when combining multiple sources makes sense\n"
+                            "Prefer simple routes for single-source efficiency. Use deep_dive for ambiguous or complex requests."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Current message:\n{state.query}\n\n"
+                            f"Conversation history:\n{state.conversation_context}\n\n"
+                            f"Student profile:\n{state.student_context or '(No student context)'}"
+                        ),
+                    },
+                ],
+                response_format=IntentClassification,
+            )
+            if isinstance(result, IntentClassification):
+                return result
+        except Exception as e:
+            if self._runtime.verbose:
+                print(f"⚠️  WARNING: LLM classifier failed ({type(e).__name__}). Using fallback deep_dive route.")
+        
+        # Fallback to deep_dive on any classification failure
+        return IntentClassification(
+            route="deep_dive",
+            complexity="deep",
+            required_sources=["grade_manager", "moses", "isis"],
+            rationale="LLM classifier unavailable or failed; using safe deep_dive fallback for robustness.",
+        )
 
     def _adopt_recorded_or_existing_proposals(self) -> None:
         proposals = current_course_proposals()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from core import persistence
-from crew.chat_models import ActionDecision, StudyChatFlowState
+from crew.chat_models import ActionDecision, IntentClassification, StudyChatFlowState
 from crew.chat_persistence import append_turn, load_chat_thread
 from crew.study_chat_flow import StudyChatFlow, StudyChatFlowRuntime
 from crew.tools.grademanager_tools import STUDY_PLAN_CONFIRMATION_TOKEN
@@ -25,6 +25,25 @@ def _flow(**kwargs):
     return StudyChatFlow(runtime=runtime, **kwargs)
 
 
+def _classifier_for(
+    route: str,
+    *,
+    required_sources: list[str] | None = None,
+    complexity: str = "simple",
+    write_intent: bool = False,
+):
+    def classify(state):
+        return IntentClassification(
+            route=route,
+            complexity=complexity,
+            required_sources=required_sources or [],
+            write_intent=write_intent,
+            rationale=f"Test classifier for {route}.",
+        )
+
+    return classify
+
+
 def test_simple_progress_question_routes_only_to_study_advisor(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     calls = []
@@ -37,6 +56,7 @@ def test_simple_progress_question_routes_only_to_study_advisor(monkeypatch, tmp_
         raise AssertionError("wrong route")
 
     flow = _flow(
+        classifier=_classifier_for("simple_grade_manager", required_sources=["grade_manager"]),
         runner_overrides={
             "simple_grade_manager": grade_runner,
             "simple_moses": forbidden,
@@ -57,7 +77,7 @@ def test_simple_progress_question_routes_only_to_study_advisor(monkeypatch, tmp_
     assert load_chat_thread("primary").messages[-1].content == "You have 60 LP completed."
 
 
-def test_current_week_deadline_question_routes_to_deep_dive_for_grade_manager_scoping(monkeypatch, tmp_path):
+def test_non_llm_classifier_routes_to_deep_dive_with_warning(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     calls = []
 
@@ -76,7 +96,72 @@ def test_current_week_deadline_question_routes_to_deep_dive_for_grade_manager_sc
 
     assert calls == ["deep"]
     assert flow.state.intent.route == "deep_dive"
-    assert flow.state.intent.required_sources == ["grade_manager", "isis"]
+    assert flow.state.intent.required_sources == ["grade_manager", "moses", "isis"]
+    assert "WARNING" in flow.state.intent.rationale
+
+
+def test_isis_enrollment_classifier_result_never_uses_simple_isis(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    calls = []
+
+    def bad_classifier(state):
+        return IntentClassification(
+            route="simple_isis",
+            complexity="simple",
+            required_sources=["isis"],
+            write_intent=True,
+            rationale="Incorrectly chose the read-only ISIS route.",
+        )
+
+    def recommendation_runner(flow):
+        calls.append("recommendation")
+        return "Prepared an ISIS enrollment confirmation proposal."
+
+    def forbidden(flow):
+        raise AssertionError("write-intent ISIS request reached the read-only simple ISIS route")
+
+    flow = _flow(
+        classifier=bad_classifier,
+        runner_overrides={
+            "simple_isis": forbidden,
+            "recommendation": recommendation_runner,
+        },
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Enroll me in the Software Security Lab course on ISIS. Keep it simple.",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    assert calls == ["recommendation"]
+    assert flow.state.intent.route == "recommendation"
+    assert flow.state.intent.write_intent is True
+    assert flow.state.intent.required_sources == ["isis"]
+
+
+def test_non_llm_isis_enrollment_still_uses_deep_dive(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    calls = []
+
+    flow = _flow(
+        runner_overrides={
+            "simple_isis": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+            "recommendation": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+            "deep_dive": lambda flow: calls.append("deep") or "Handled by full multi-agent crew.",
+        }
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Please enroll me in Software Security Lab on ISIS.",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    assert calls == ["deep"]
+    assert flow.state.intent.route == "deep_dive"
+    assert flow.state.intent.required_sources == ["grade_manager", "moses", "isis"]
+    assert "WARNING" in flow.state.intent.rationale
 
 
 def test_recommendation_route_uses_explicit_proposal_tool(monkeypatch, tmp_path):
@@ -100,7 +185,14 @@ def test_recommendation_route_uses_explicit_proposal_tool(monkeypatch, tmp_path)
 
     from crew.tools.proposal_tools import collect_course_proposals
 
-    flow = _flow(runner_overrides={"recommendation": recommendation_runner})
+    flow = _flow(
+        classifier=_classifier_for(
+            "recommendation",
+            required_sources=["grade_manager", "moses"],
+            complexity="scoped",
+        ),
+        runner_overrides={"recommendation": recommendation_runner},
+    )
     with collect_course_proposals():
         flow.kickoff(
             inputs=StudyChatFlowState(
@@ -136,7 +228,14 @@ def test_follow_up_replacement_keeps_recommendation_route(monkeypatch, tmp_path)
         rolling_summary="Planning next semester.",
     )
 
-    flow = _flow(runner_overrides={"recommendation": lambda flow: "I will replace it with an ML course."})
+    flow = _flow(
+        classifier=_classifier_for(
+            "recommendation",
+            required_sources=["grade_manager", "moses"],
+            complexity="scoped",
+        ),
+        runner_overrides={"recommendation": lambda flow: "I will replace it with an ML course."},
+    )
     flow.kickoff(
         inputs=StudyChatFlowState(
             query="Replace that course with more ML courses.",

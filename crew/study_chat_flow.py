@@ -102,6 +102,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
 
         classifier = self._classifier or self._classify_with_llm_or_heuristics
         intent = classifier(self.state)
+        intent = _normalize_commitment_route(intent, self.state.query)
         self.state.intent = intent
         self.state.route = intent.route
         if self._on_trace_event:
@@ -256,10 +257,16 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         
         If GWDG_API_KEY is not set or LLM classification fails, we always use deep_dive
         (the expensive but robust multi-source route) to ensure quality responses.
-        Heuristic classification is deprecated in favor of this approach.
         """
         if not self._runtime.use_llm_classifier:
-            return classify_intent_heuristically(state.query, state.thread)
+            if self._runtime.verbose:
+                print("⚠️  WARNING: LLM classifier disabled. Using safe deep_dive route.")
+            return IntentClassification(
+                route="deep_dive",
+                complexity="deep",
+                required_sources=["grade_manager", "moses", "isis"],
+                rationale="WARNING: LLM classifier disabled; using safe deep_dive fallback.",
+            )
 
         # Check if LLM API is available
         if not os.getenv("GWDG_API_KEY"):
@@ -287,10 +294,10 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                             "Available routes:\n"
                             "- simple_grade_manager: Single questions about current grades, credits, GPA, degree requirements\n"
                             "- simple_moses: Single questions about module catalog, prerequisites, workload\n"
-                            "- simple_isis: Specific questions about deadlines/assignments in a known ISIS course\n"
-                            "- recommendation: Semester/course planning, follow-ups to active proposals, course selection\n"
+                            "- simple_isis: Read-only questions about deadlines/assignments/info in a known ISIS course\n"
+                            "- recommendation: Semester/course planning, follow-ups to active proposals, course selection, and any request to enroll/register/add/save/write course actions for confirmation\n"
                             "- deep_dive: Broad/multi-source queries, unclear intent, or when combining multiple sources makes sense\n"
-                            "Prefer simple routes for single-source efficiency. Use deep_dive for ambiguous or complex requests."
+                            "Prefer simple routes for read-only single-source efficiency. Never use a simple_* route for write_intent=true."
                         ),
                     },
                     {
@@ -377,81 +384,91 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         return list(thread.active_proposals if thread else [])
 
 
-def classify_intent_heuristically(query: str, thread: ChatThreadState | None = None) -> IntentClassification:
-    text = query.casefold()
-    has_active_proposal = bool(thread and thread.active_proposals)
-    if any(token in text for token in ["approved actions", "confirmation_token", "submit decisions"]):
-        return IntentClassification(
-            route="execute_confirmed_actions",
-            complexity="scoped",
-            required_sources=["grade_manager", "isis"],
-            write_intent=True,
-            rationale="The message appears to contain approval decisions.",
-        )
-    if has_active_proposal and any(token in text for token in ["replace", "exchange", "more", "weniger", "mehr", "ersetze", "tausch"]):
-        return IntentClassification(
-            route="recommendation",
-            complexity="scoped",
-            required_sources=["grade_manager", "moses"],
-            rationale="Follow-up modifies an active course proposal.",
-        )
-    if any(token in text for token in ["next semester", "nächstes semester", "naechstes semester", "recommend", "suggest", "plan", "belegen", "course would"]):
-        return IntentClassification(
-            route="recommendation",
-            language=("de" if _looks_german(text) else "en"),
-            complexity="scoped",
-            required_sources=["grade_manager", "moses"],
-            rationale="Semester/course planning request.",
-        )
-    if any(token in text for token in ["deadline", "due", "forum", "announcement", "isis", "moodle", "assignment", "next week", "nächste woche"]):
-        has_known_course_selector = any(token in text for token in ["course id", "isis id", "course/view.php", "course_id", "id "])
-        needs_study_scope = any(
-            token in text
-            for token in [
-                "deadline",
-                "due",
-                "assignment",
-                "next week",
-                "nächste woche",
-                "current",
-                "currently",
-                "taking",
-                "my courses",
-                "meine kurse",
-                "to do",
-            ]
-        )
-        route = "simple_isis" if has_known_course_selector and not needs_study_scope else "deep_dive"
-        return IntentClassification(
-            route=route,
-            language=("de" if _looks_german(text) else "en"),
-            complexity=("deep" if route == "deep_dive" else "simple"),
-            required_sources=(["grade_manager", "isis"] if route == "deep_dive" else ["isis"]),
-            rationale="ISIS operational information request.",
-        )
-    if any(token in text for token in ["missing", "credits", "gpa", "grade", "degree", "regulation", "requirements", "lp", "ects", "abschluss"]):
-        return IntentClassification(
-            route="simple_grade_manager",
-            language=("de" if _looks_german(text) else "en"),
-            complexity="simple",
-            required_sources=["grade_manager"],
-            rationale="Study progress or degree requirement question.",
-        )
-    if any(token in text for token in ["moses", "module", "catalog", "prerequisite", "exam", "workload", "catalogue", "modul"]):
-        return IntentClassification(
-            route="simple_moses",
-            language=("de" if _looks_german(text) else "en"),
-            complexity="simple",
-            required_sources=["moses"],
-            rationale="MOSES module catalog question.",
-        )
-    return IntentClassification(
-        route="deep_dive",
-        language=("de" if _looks_german(text) else "en"),
-        complexity="deep",
-        required_sources=["grade_manager", "moses", "isis"],
-        rationale="Fallback for broad or ambiguous request.",
+def _normalize_commitment_route(intent: IntentClassification, query: str) -> IntentClassification:
+    if intent.route in {"execute_confirmed_actions", "deep_dive"}:
+        return intent
+    if not intent.write_intent and not _looks_like_course_commitment_request(query.casefold()):
+        return intent
+    if intent.route == "recommendation":
+        return intent
+
+    sources = _dedupe_sources([*intent.required_sources, *_commitment_sources_for_query(query.casefold())])
+    return intent.model_copy(
+        update={
+            "route": "recommendation",
+            "complexity": "scoped",
+            "required_sources": sources or ["grade_manager", "moses", "isis"],
+            "write_intent": True,
+            "tool_budget": max(intent.tool_budget, 12),
+            "rationale": (
+                f"{intent.rationale} Routed through Course Commitment because write/enrollment "
+                "requests must not enter read-only simple flows."
+            ).strip(),
+        }
     )
+
+
+def _looks_like_course_commitment_request(text: str) -> bool:
+    direct_isis_write = [
+        "enroll me",
+        "enrol me",
+        "please enroll",
+        "please enrol",
+        "self-enroll me",
+        "self enrol me",
+        "sign me up",
+        "register me for",
+        "add me to",
+        "join the course",
+        "join this course",
+        "melde mich",
+        "meld mich",
+        "schreib mich",
+        "bitte einschreib",
+        "bitte anmelden",
+        "trag mich",
+    ]
+    direct_plan_write = [
+        "add ",
+        "save ",
+        "put ",
+        "write ",
+        "add this",
+        "add it",
+        "add that",
+        "add the module",
+        "add the course",
+        "to my study plan",
+        "to grade manager",
+        "in my plan",
+        "eintragen",
+        "trag ",
+        "füge ",
+        "hinzufügen",
+    ]
+    has_isis_target = any(token in text for token in ["isis", "moodle", "course", "kurs"])
+    has_plan_target = any(token in text for token in ["study plan", "grade manager", "module", "modul", "plan"])
+    if has_isis_target and any(token in text for token in direct_isis_write):
+        return True
+    return has_plan_target and any(token in text for token in direct_plan_write)
+
+
+def _commitment_sources_for_query(text: str) -> list[str]:
+    sources: list[str] = []
+    if any(token in text for token in ["isis", "moodle", "enroll", "enrol", "register", "einschreib", "anmeld"]):
+        sources.append("isis")
+    if any(token in text for token in ["study plan", "grade manager", "module", "modul", "plan"]):
+        sources.extend(["grade_manager", "moses"])
+    return _dedupe_sources(sources)
+
+
+def _dedupe_sources(sources: list[str]) -> list[str]:
+    allowed = {"grade_manager", "moses", "isis"}
+    result: list[str] = []
+    for source in sources:
+        if source in allowed and source not in result:
+            result.append(source)
+    return result
 
 
 def _execute_grade_manager_action(action: ProposedAction) -> ProposedAction:
@@ -543,7 +560,3 @@ def _summarize_thread(
     if proposals:
         bits.append("Active course proposals: " + ", ".join(proposal.title for proposal in proposals))
     return "\n".join(bits)[-3000:]
-
-
-def _looks_german(text: str) -> bool:
-    return any(token in text for token in [" der ", " die ", " das ", "ich ", "was ", "welche", "nächst", "hinzufügen", "abschluss"])

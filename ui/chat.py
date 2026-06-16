@@ -59,14 +59,16 @@ def render_chat_page() -> None:
     messages = get_profile_messages(profile_slug)
 
     st.markdown(
-        f"""
-        <section class="chat-hero">
-          <div>
-            <h1>Study Chat</h1>
-            <p>Active profile: <strong>{html.escape(profile_name)}</strong>. Multi-agent answers are grounded in Grade Manager, MOSES, and ISIS tool traces.</p>
-          </div>
-        </section>
-        """,
+        _clean_html(
+            f"""
+            <section class="chat-hero">
+              <div>
+                <h1>Study Chat</h1>
+                <p>Active profile: <strong>{html.escape(profile_name)}</strong>. Multi-agent answers are grounded in Grade Manager, MOSES, and ISIS tool traces.</p>
+              </div>
+            </section>
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -543,12 +545,14 @@ def _render_proposals_panel(profile_slug: str, proposals: list[dict[str, Any]]) 
         return
 
     st.markdown(
-        """
-        <div class="pending-write-card">
-          <div class="pending-write-title">📋 Proposed Study Plan & ISIS Actions</div>
-          <div class="pending-write-subtitle">Review the proposed course modifications. You can select actions to approve or decline.</div>
-        </div>
-        """,
+        _clean_html(
+            """
+            <div class="pending-write-card">
+              <div class="pending-write-title">📋 Proposed Study Plan & ISIS Actions</div>
+              <div class="pending-write-subtitle">Review the proposed course modifications. You can select actions to approve or decline.</div>
+            </div>
+            """
+        ),
         unsafe_allow_html=True,
     )
 
@@ -678,6 +682,10 @@ def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool) -> None:
         st.markdown(_compile_workbench_html(workbench, live=False), unsafe_allow_html=True)
         _render_artifact_links(workbench)
         _render_tool_expanders(workbench)
+
+
+def _clean_html(html_str: str) -> str:
+    return "\n".join(line.strip() for line in html_str.split("\n") if line.strip())
 
 
 def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> str:
@@ -824,7 +832,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
       </div>
     </div>
     """
-    return html_content
+    return _clean_html(html_content)
 
 
 def _render_tool_expanders(workbench: dict[str, Any]) -> None:

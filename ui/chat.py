@@ -64,6 +64,26 @@ def render_chat_page() -> None:
 
     settings = _render_chat_config_panel(profile_slug)
     thread = load_chat_thread(profile_slug)
+    
+    # Initialize UI decision state from on-disk active proposals if not present
+    typed_proposals = [_proposal_model(item) for item in thread.active_proposals]
+    cards = _course_cards_from_proposals([item for item in typed_proposals if item is not None])
+    for card in cards:
+        dec_key = _course_decision_key(profile_slug, card)
+        if dec_key not in st.session_state:
+            statuses = {action.status for action in card["actions"]}
+            if "approved" in statuses:
+                st.session_state[dec_key] = "accept"
+            elif "declined" in statuses:
+                st.session_state[dec_key] = "reject"
+            else:
+                st.session_state[dec_key] = "unsure"
+        
+        for action in card["actions"]:
+            toggle_key = _course_action_toggle_key(profile_slug, card, action.action_id)
+            if toggle_key not in st.session_state:
+                st.session_state[toggle_key] = (action.status != "declined")
+
     messages = get_profile_messages(profile_slug)
 
     st.markdown(
@@ -83,6 +103,7 @@ def render_chat_page() -> None:
     if not messages:
         _render_empty_state(profile_slug)
 
+    clear_pass = st.session_state.get("nm_clear_proposals_flag", False)
     run_active = (PENDING_PROMPT_KEY in st.session_state)
 
     last_assistant_idx = -1
@@ -96,20 +117,24 @@ def render_chat_page() -> None:
             _render_agent_interactions_inline(get_interactions_for_message(message), live=False)
         _render_chat_message(message, is_latest_assistant=is_latest_assistant, run_active=run_active)
 
-    pending_prompt = st.session_state.pop(PENDING_PROMPT_KEY, None)
-    if isinstance(pending_prompt, dict) and pending_prompt.get("profile_slug") == profile_slug:
+    pending_prompt = st.session_state.get(PENDING_PROMPT_KEY)
+    if isinstance(pending_prompt, dict) and pending_prompt.get("profile_slug") == profile_slug and not clear_pass:
+        st.session_state.pop(PENDING_PROMPT_KEY)
         prompt_text = str(pending_prompt.get("prompt") or "").strip()
         if prompt_text:
+            proposal_decisions = pending_prompt.get("proposal_decisions") or []
+            ui_decisions = [ActionDecision.model_validate(d) for d in (pending_prompt.get("ui_decisions") or [])]
             _run_and_render_assistant_turn(
                 profile_slug,
                 prompt_text,
                 settings,
                 display_prompt=str(pending_prompt.get("display_prompt") or prompt_text),
-                proposal_decisions=pending_prompt.get("proposal_decisions") or [],
+                proposal_decisions=proposal_decisions,
+                ui_decisions=ui_decisions,
                 approved_actions=pending_prompt.get("approved_actions") or [],
             )
 
-    if thread.active_proposals and not run_active:
+    if thread.active_proposals and not run_active and not clear_pass:
         _render_proposals_panel(profile_slug, thread.active_proposals)
 
     prompt = st.chat_input("Ask, revise, or type 'apply selected'...")
@@ -122,17 +147,21 @@ def render_chat_page() -> None:
                 if _is_apply_selected_prompt(run_prompt)
                 else []
             )
-            if thread.active_proposals:
-                _clear_active_course_proposals(profile_slug)
-                _clear_course_card_state(profile_slug, thread.active_proposals)
+            ui_decisions = _action_decisions_from_course_card_decisions(proposal_decisions)
             st.session_state[PENDING_PROMPT_KEY] = {
                 "profile_slug": profile_slug,
                 "prompt": run_prompt,
                 "display_prompt": run_prompt,
                 "proposal_decisions": proposal_decisions,
+                "ui_decisions": [d.model_dump(mode="json") for d in ui_decisions],
                 "approved_actions": [decision.model_dump(mode="json") for decision in approved_actions],
             }
+            st.session_state["nm_clear_proposals_flag"] = True
             st.rerun()
+
+    if clear_pass:
+        st.session_state.pop("nm_clear_proposals_flag", None)
+        st.rerun()
 
 
 def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
@@ -376,6 +405,7 @@ def _run_and_render_assistant_turn(
     *,
     display_prompt: str | None = None,
     proposal_decisions: list[dict[str, Any]] | None = None,
+    ui_decisions: list[ActionDecision] | None = None,
     approved_actions: list[dict[str, Any]] | list[ActionDecision] | None = None,
 ) -> None:
     events = initial_live_trace_events(prompt, settings)
@@ -414,6 +444,7 @@ def _run_and_render_assistant_turn(
                     isis_client=isis_client,
                     on_trace_event=on_trace_event if settings.trace_enabled else None,
                     approved_actions=approved_actions or [],
+                    ui_decisions=ui_decisions or [],
                 )
                 last_render = 0.0
                 last_heartbeat = 0.0
@@ -503,6 +534,7 @@ def _run_chat_query(
     isis_client: MoodleRestClient | None,
     on_trace_event,
     approved_actions: list[dict[str, Any]] | list[ActionDecision] | None = None,
+    ui_decisions: list[dict[str, Any]] | list[ActionDecision] | None = None,
 ) -> MultiAgentStudyAssistantRunResult:
     return run_study_assistant_query(
         query=prompt,
@@ -510,6 +542,7 @@ def _run_chat_query(
         allow_temp_enrollment=settings.allow_temp_enrollment,
         profile_slug=profile_slug,
         approved_actions=list(approved_actions or []),
+        ui_decisions=list(ui_decisions or []),
         isis_client=isis_client,
         on_trace_event=on_trace_event,
         model=settings.specialist_model,
@@ -861,6 +894,7 @@ def _render_course_choice_card(profile_slug: str, card: dict[str, Any]) -> None:
                 use_container_width=True,
             ):
                 st.session_state[decision_key] = decision
+                st.rerun()
 
     action_toggle_actions = [action for action in card["actions"] if action.kind in {"grade_manager_add", "isis_enroll"}]
     if len(action_toggle_actions) > 1:

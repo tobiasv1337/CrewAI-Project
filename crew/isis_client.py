@@ -4,14 +4,14 @@ import asyncio
 import base64
 from contextvars import ContextVar
 from collections.abc import Callable
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import html
 import os
 import re
 import time
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -578,3 +578,18 @@ def set_default_isis_client(client: MoodleRestClient) -> None:
 
 def reset_default_isis_client() -> None:
     _CLIENT_VAR.set(None)
+
+
+@contextmanager
+def use_default_isis_client(client: MoodleRestClient | None) -> Iterator[MoodleRestClient | None]:
+    """Temporarily scope ISIS tools to a UI/session-provided client.
+
+    Passing ``None`` intentionally clears the scoped client for the duration of
+    the context, so callers can fall back to the normal environment-based
+    behavior outside the context.
+    """
+    token = _CLIENT_VAR.set(client)
+    try:
+        yield client
+    finally:
+        _CLIENT_VAR.reset(token)

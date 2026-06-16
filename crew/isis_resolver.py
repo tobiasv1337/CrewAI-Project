@@ -167,6 +167,18 @@ class ReadOnlyCourseAccess:
                 try:
                     data = reader(course.id)
                     return IsisReadResult(course=course.model_copy(update={"enrolled": True}), access=report, data=data)
+                except MoodleApiError as exc:
+                    if not exc.is_access_error:
+                        raise
+                    report.access_note = (
+                        "ISIS denied access even after temporary enrollment was attempted. "
+                        "Cleanup was still attempted where applicable."
+                    )
+                    return IsisReadResult(
+                        course=course.model_copy(update={"enrolled": True}),
+                        access=report,
+                        data={"error": str(exc), "access_required": True},
+                    )
                 finally:
                     self._cleanup_temporary_enrollment(course.id, enrolled_before, report)
             else:
@@ -190,12 +202,17 @@ class ReadOnlyCourseAccess:
         except MoodleApiError as exc:
             if not exc.is_access_error:
                 raise
-            if not self.allow_temp_enrollment:
+            if self.allow_temp_enrollment:
+                report.access_note = (
+                    "ISIS denied access during a read. The course was already enrolled or temporary enrollment "
+                    "was not applicable for this path, so no additional enrollment cleanup was required."
+                )
+            else:
                 report.access_note = (
                     "ISIS denied access. The student is probably not enrolled. "
                     "Temporary enrollment is disabled for this run, so no enrollment was attempted."
                 )
-                return IsisReadResult(course=course, access=report, data={"error": str(exc), "access_required": True})
+            return IsisReadResult(course=course, access=report, data={"error": str(exc), "access_required": True})
 
     def _enrolled_course_ids(self) -> set[int]:
         return {course.id for course in self.client.enrolled_course_refs()}
@@ -342,4 +359,3 @@ def _token_overlap(left: str, right: str) -> float:
 
 def _normalize(value: object | None) -> str:
     return clean_text(value).lower()
-

@@ -3,6 +3,7 @@ from __future__ import annotations
 from core import persistence
 from core.models import Module, ModuleOffering, ModuleState, MosesModuleData
 from core.providers.tu_berlin import moses as moses_provider
+from crew.profile_context import use_grade_manager_profile
 from crew.tools import grademanager_tools
 
 
@@ -56,6 +57,27 @@ def _setup_profile(monkeypatch, tmp_path, modules: list[Module]) -> None:
         ]
     )
     persistence.save_modules(modules, "primary")
+
+
+def _setup_profiles(monkeypatch, tmp_path, profile_modules: dict[str, list[Module]], *, primary_slug: str = "primary") -> None:
+    data_dir = tmp_path / "data"
+    profiles_dir = data_dir / "profiles"
+    monkeypatch.setattr(persistence, "DATA_DIR", data_dir)
+    monkeypatch.setattr(persistence, "PROFILES_DIR", profiles_dir)
+    monkeypatch.setattr(persistence, "PROFILES_FILE", profiles_dir / "profiles.json")
+    monkeypatch.setattr(persistence, "_LEGACY_MODULES_FILE", data_dir / "modules.json")
+    persistence.save_profiles(
+        [
+            persistence.ProfileRecord(
+                slug=slug,
+                display_name=f"{slug.title()} Test Student",
+                is_primary=slug == primary_slug,
+            )
+            for slug in profile_modules
+        ]
+    )
+    for slug, modules in profile_modules.items():
+        persistence.save_modules(modules, slug)
 
 
 def _fake_moses_result():
@@ -167,6 +189,33 @@ def test_list_study_plan_modules_filters_by_state_and_query(monkeypatch, tmp_pat
     assert "state=Planned" in output
 
 
+def test_study_plan_tools_use_context_selected_profile_and_restore_primary(monkeypatch, tmp_path):
+    _setup_profiles(
+        monkeypatch,
+        tmp_path,
+        {
+            "primary": [
+                _module(module_id="primary-ml", name="Primary Machine Learning", state=ModuleState.COMPLETED, cp=6)
+            ],
+            "alice": [
+                _module(module_id="alice-rl", name="Alice Reinforcement Learning", state=ModuleState.PLANNED, cp=6)
+            ],
+        },
+    )
+
+    with use_grade_manager_profile("alice"):
+        scoped = grademanager_tools.list_study_plan_modules()
+
+    fallback = grademanager_tools.list_study_plan_modules()
+
+    assert "Alice Test Student" in scoped
+    assert "Alice Reinforcement Learning" in scoped
+    assert "Primary Machine Learning" not in scoped
+    assert "Primary Test Student" in fallback
+    assert "Primary Machine Learning" in fallback
+    assert "Alice Reinforcement Learning" not in fallback
+
+
 def test_check_module_against_study_plan_reports_fit_and_duplicates(monkeypatch, tmp_path):
     _setup_profile(
         monkeypatch,
@@ -257,3 +306,37 @@ def test_add_module_to_study_plan_is_confirmation_gated_and_writes(monkeypatch, 
     )
     assert "already present" in duplicate
     assert len(persistence.load_modules("primary")) == 2
+
+
+def test_add_module_to_study_plan_writes_context_selected_profile_only(monkeypatch, tmp_path):
+    _setup_profiles(
+        monkeypatch,
+        tmp_path,
+        {
+            "primary": [
+                _module(module_id="primary-ml1", name="Primary Machine Learning 1", state=ModuleState.COMPLETED, cp=6)
+            ],
+            "alice": [
+                _module(module_id="alice-ml1", name="Alice Machine Learning 1", state=ModuleState.COMPLETED, cp=6)
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        grademanager_tools.moses_provider,
+        "fetch_course_details_for_query",
+        lambda *args, **kwargs: _fake_moses_result(),
+    )
+
+    with use_grade_manager_profile("alice"):
+        added = grademanager_tools.add_module_to_study_plan(
+            module_query="40967",
+            term="WS 26/27",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
+
+    primary_modules = persistence.load_modules("primary")
+    alice_modules = persistence.load_modules("alice")
+
+    assert "profile `Alice Test Student`" in added
+    assert [module.name for module in primary_modules] == ["Primary Machine Learning 1"]
+    assert {module.name for module in alice_modules} == {"Alice Machine Learning 1", "Machine Learning 2"}

@@ -250,3 +250,42 @@ def test_read_access_proactive_enrollment_failure_fallback_failure():
     result = access.read(course=course, operation="overview", reader=reader)
 
     assert result.data["access_required"] is True
+
+
+def test_read_access_reports_failure_after_temporary_enrollment_and_cleans_up():
+    client = FakeClient()
+    access = ReadOnlyCourseAccess(client, allow_temp_enrollment=True)
+    course = client.course_ref_by_id(2020)
+
+    def reader(course_id: int):
+        assert course_id in client.enrolled_ids
+        raise MoodleApiError("Still denied after enrollment", errorcode="nopermissions")
+
+    result = access.read(course=course, operation="overview", reader=reader)
+
+    assert result.data["access_required"] is True
+    assert "Still denied after enrollment" in result.data["error"]
+    assert result.access.temporary_enrolled is True
+    assert result.access.cleanup_attempted is True
+    assert result.access.cleanup_succeeded is True
+    assert client.enrol_calls == [2020]
+    assert client.unenrol_calls == [2020]
+    assert client.enrolled_ids == {1010}
+
+
+def test_read_access_reports_access_error_for_preexisting_course_with_temp_enabled():
+    client = FakeClient()
+    access = ReadOnlyCourseAccess(client, allow_temp_enrollment=True)
+    course = client.course_ref_by_id(1010)
+
+    def reader(course_id: int):
+        raise MoodleApiError("Course hidden", errorcode="coursehidden")
+
+    result = access.read(course=course, operation="overview", reader=reader)
+
+    assert result.data["access_required"] is True
+    assert result.access.initially_enrolled is True
+    assert result.access.temporary_enrolled is False
+    assert result.access.cleanup_attempted is False
+    assert client.enrol_calls == []
+    assert client.unenrol_calls == []

@@ -13,6 +13,7 @@ from core.module_ids import new_module_id
 from core.providers.tu_berlin import moses as moses_provider
 from core.registry import create_program, list_programs, list_relevant_programs, modules_for_program
 from core.terms import canonical_term_label, offering_matches_term, term_sort_key
+from crew.profile_context import get_active_profile_slug
 from crew.state import (
     RequirementBrief,
     StudentModuleBrief,
@@ -399,7 +400,14 @@ def _load_primary_profile_modules():
     profiles = persistence.load_profiles()
     if not profiles:
         raise RuntimeError("No Grade Manager profiles exist.")
-    profile = next((item for item in profiles if item.is_primary), profiles[0])
+    active_slug = get_active_profile_slug()
+    if active_slug:
+        profile = next((item for item in profiles if item.slug == active_slug), None)
+        if profile is None:
+            known = ", ".join(item.slug for item in profiles)
+            raise RuntimeError(f"Active Grade Manager profile `{active_slug}` does not exist. Known profiles: {known}.")
+    else:
+        profile = next((item for item in profiles if item.is_primary), profiles[0])
     return profile, persistence.load_modules(profile.slug)
 
 

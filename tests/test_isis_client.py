@@ -35,6 +35,21 @@ def test_isis_client_context_var_isolation():
     reset_default_isis_client()
 
 
+def test_use_default_isis_client_scopes_and_restores_client():
+    from crew.isis_client import MoodleRestClient, get_default_isis_client, reset_default_isis_client, set_default_isis_client, use_default_isis_client
+
+    outer = MoodleRestClient(wstoken="outer")
+    inner = MoodleRestClient(wstoken="inner")
+
+    set_default_isis_client(outer)
+    with use_default_isis_client(inner) as scoped:
+        assert scoped is inner
+        assert get_default_isis_client().wstoken == "inner"
+
+    assert get_default_isis_client().wstoken == "outer"
+    reset_default_isis_client()
+
+
 def test_self_unenrol_course_fallback_success(monkeypatch):
     from typing import Any
     from crew.isis_client import MoodleRestClient, MoodleApiError

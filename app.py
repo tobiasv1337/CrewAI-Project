@@ -32,13 +32,14 @@ from core.interfaces import Scenario
 
 from ui.dashboard import render_dashboard_page
 from ui.details import render_details_page
+from ui.chat import render_chat_page
 from ui.modules import render_modules_page
 from ui.settings import render_settings_page, selected_discard_variant_key
 from ui.timeline import render_timeline_page
 from ui.program_labels import short_program_label
 
 
-PAGES = ["Dashboard", "Modules", "Study Plan", "Module Details", "Settings"]
+PAGES = ["Dashboard", "Modules", "Study Plan", "Study Chat", "Module Details", "Settings"]
 DEFAULT_HIDE_STREAMLIT_CHROME = True
 PROGRAM_VIEW_ALL = "All"
 
@@ -635,6 +636,9 @@ elif page == "Module Details":
     render_details_page()
 elif page == "Study Plan":
     render_timeline_page()
+elif page == "Study Chat":
+    clear_timeline_shelf_overlay()
+    render_chat_page()
 else:
     clear_timeline_shelf_overlay()
     render_settings_page()

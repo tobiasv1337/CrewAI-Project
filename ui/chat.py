@@ -826,7 +826,7 @@ def _course_cards_from_proposals(proposals: list[CourseProposal]) -> list[dict[s
     cards_by_key: dict[tuple[str, str], dict[str, Any]] = {}
     for proposal in proposals:
         for action in proposal.actions:
-            if action.status != "proposed":
+            if action.status not in {"proposed", "approved", "declined", "needs_clarification"}:
                 continue
             key = (proposal.proposal_id, action.course_title)
             card = cards_by_key.setdefault(
@@ -1032,7 +1032,7 @@ def _is_apply_selected_prompt(prompt: str) -> bool:
 
 
 def _course_decision_key(profile_slug: str, card: dict[str, Any]) -> str:
-    return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{card['proposal_id']}_{_slugify(str(card['course_title']))}"
+    return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{_slugify(str(card['course_title']))}"
 
 
 def _course_action_toggle_key(profile_slug: str, card: dict[str, Any], action_id: str) -> str:

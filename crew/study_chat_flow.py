@@ -302,7 +302,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                         ),
                     },
                 ],
-                response_format=IntentClassification,
+                response_model=IntentClassification,
             )
             if isinstance(result, IntentClassification):
                 return result

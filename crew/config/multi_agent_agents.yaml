@@ -27,7 +27,7 @@ orchestrator:
     repeat information. Get to the point quickly.
   allow_delegation: true
   max_iter: 25
-  max_execution_time: 480
+  max_execution_time: 1800
   max_retry_limit: 2
   respect_context_window: true
 
@@ -46,7 +46,7 @@ study_advisor:
     specialists when module or course data is needed.
   allow_delegation: false
   max_iter: 14
-  max_execution_time: 240
+  max_execution_time: 480
   max_retry_limit: 2
   respect_context_window: true
 
@@ -68,7 +68,7 @@ module_researcher:
     not invent module facts and you do not write to the student's study plan.
   allow_delegation: false
   max_iter: 14
-  max_execution_time: 240
+  max_execution_time: 480
   max_retry_limit: 2
   respect_context_window: true
 
@@ -101,7 +101,7 @@ course_info_specialist:
     Orchestrator can obtain it from the Study Advisor first.
   allow_delegation: false
   max_iter: 16
-  max_execution_time: 300
+  max_execution_time: 480
   max_retry_limit: 2
   respect_context_window: true
 
@@ -125,6 +125,6 @@ course_commitment_specialist:
     that supports asking the user to approve it.
   allow_delegation: false
   max_iter: 12
-  max_execution_time: 240
+  max_execution_time: 480
   max_retry_limit: 2
   respect_context_window: true

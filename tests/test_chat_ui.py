@@ -177,7 +177,33 @@ def test_live_workbench_shows_lifecycle_activity_before_tool_calls():
     assert groups["Orchestrator"]["status"] == "running"
     assert groups["Orchestrator"]["llm_calls"] == 1
     assert groups["Study Advisor"]["activity"] == "Ready for Grade Manager reads and confirmed study-plan writes."
+    assert groups["Degree Regulations Specialist"]["activity"] == "Ready for AllgStuPO, StuPO, and Regelstudienplan PDF lookups."
     assert [phase["status"] for phase in workbench["phases"][:2]] == ["done", "active"]
+
+
+def test_live_workbench_includes_degree_regulations_specialist():
+    events = [
+        {
+            "event": "tool_start",
+            "run_id": "run-regulations",
+            "call_id": 7,
+            "tool_name": "Search Degree Regulation PDFs",
+            "tool_input": {"query": "AllgStuPO Wiederholungsprüfung"},
+            "agent_role": "TU Berlin Degree Regulations Specialist",
+            "source_system": "Degree Regulations",
+            "status": "running",
+            "badges": ["Degree Regulations"],
+        }
+    ]
+
+    workbench = chat.live_workbench_from_events(events)
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+
+    assert "Degree Regulations Specialist" in groups
+    assert groups["Degree Regulations Specialist"]["status"] == "running"
+    assert groups["Degree Regulations Specialist"]["source_system"] == "Degree Regulations"
+    assert groups["Degree Regulations Specialist"]["tool_calls"][0]["tool_name"] == "Search Degree Regulation PDFs"
+    assert workbench["source_flow"] == [{"agent": "Degree Regulations Specialist", "active": True}]
 
 
 def test_pending_write_extraction_uses_refused_tool_inputs():

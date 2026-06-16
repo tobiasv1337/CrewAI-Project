@@ -37,6 +37,7 @@ AGENT_LANES = [
     "Orchestrator",
     "Study Advisor",
     "MOSES Module Researcher",
+    "Degree Regulations Specialist",
     "ISIS Course Info Specialist",
     "Course Commitment Specialist",
 ]
@@ -92,7 +93,7 @@ def render_chat_page() -> None:
             <section class="chat-hero">
               <div>
                 <h1>Study Chat</h1>
-                <p>Active profile: <strong>{html.escape(profile_name)}</strong>. Multi-agent answers are grounded in Grade Manager, MOSES, and ISIS tool traces.</p>
+                <p>Active profile: <strong>{html.escape(profile_name)}</strong>. Multi-agent answers are grounded in Grade Manager, MOSES, degree-regulation PDFs, and ISIS tool traces.</p>
               </div>
             </section>
             """
@@ -1321,6 +1322,8 @@ def _clean_agent_label(role_or_label: str) -> tuple[str, str, str]:
         return "Study Advisor", "🎓", "study-advisor"
     if "moses" in lowered or "module researcher" in lowered:
         return "MOSES Module Researcher", "🔎", "moses"
+    if "degree regulations" in lowered or "regulations specialist" in lowered or "stupo" in lowered:
+        return "Degree Regulations Specialist", "📜", "degree-regulations"
     if "isis" in lowered or "course information specialist" in lowered:
         return "ISIS Course Info Specialist", "📚", "isis"
     if "commitment" in lowered:
@@ -1956,6 +1959,16 @@ def initial_live_trace_events(prompt: str, settings: ChatRuntimeSettings) -> lis
             "event": "agent_ready",
             "event_id": 0,
             "elapsed_ms": 0,
+            "agent_label": "Degree Regulations Specialist",
+            "phase": "ready",
+            "status": "idle",
+            "activity": "Ready for AllgStuPO, StuPO, and Regelstudienplan PDF lookups.",
+            "source_system": "Degree Regulations",
+        },
+        {
+            "event": "agent_ready",
+            "event_id": 0,
+            "elapsed_ms": 0,
             "agent_label": "ISIS Course Info Specialist",
             "phase": "ready",
             "status": "idle",
@@ -2031,6 +2044,8 @@ def _source_for_agent_label(label: str) -> str:
         return "Grade Manager"
     if label == "MOSES Module Researcher":
         return "MOSES"
+    if label == "Degree Regulations Specialist":
+        return "Degree Regulations"
     if label == "ISIS Course Info Specialist":
         return "ISIS"
     if label == "Course Commitment Specialist":
@@ -2043,6 +2058,7 @@ def _default_activity_for_agent(label: str) -> str:
         "Orchestrator": "Preparing delegation.",
         "Study Advisor": "Waiting for Grade Manager work.",
         "MOSES Module Researcher": "Waiting for MOSES work.",
+        "Degree Regulations Specialist": "Waiting for regulation PDF work.",
         "ISIS Course Info Specialist": "Waiting for ISIS work.",
         "Course Commitment Specialist": "Waiting for confirmation proposal or execution work.",
     }.get(label, "Waiting for activity.")
@@ -2059,6 +2075,8 @@ def _event_agent_label(event: dict[str, Any]) -> str:
         return "Study Advisor"
     if "moses" in role or "module researcher" in role:
         return "MOSES Module Researcher"
+    if "degree regulations" in role or "regulations specialist" in role or "stupo" in role:
+        return "Degree Regulations Specialist"
     if "isis" in role or "course information specialist" in role:
         return "ISIS Course Info Specialist"
     if "commitment" in role:
@@ -2359,6 +2377,7 @@ def _default_source_flow(*, active_sources: set[str] | None = None, active: bool
     return [
         {"source": "Grade Manager", "agent": "Study Advisor", "target": "Orchestrator", "active": "Grade Manager" in active_sources},
         {"source": "MOSES", "agent": "MOSES Module Researcher", "target": "Orchestrator", "active": "MOSES" in active_sources},
+        {"source": "Degree Regulations", "agent": "Degree Regulations Specialist", "target": "Orchestrator", "active": "Degree Regulations" in active_sources},
         {"source": "ISIS", "agent": "ISIS Course Info Specialist", "target": "Orchestrator", "active": "ISIS" in active_sources},
         {"source": "Course Commitment", "agent": "Course Commitment Specialist", "target": "Student", "active": "Course Commitment" in active_sources},
         {"source": "Orchestrator", "agent": "Final Answer", "target": "Student", "active": active},

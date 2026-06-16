@@ -106,6 +106,27 @@ def test_capture_tool_traces_emits_live_events_and_workbench(tmp_path):
     assert summary["workbench"]["groups"][0]["tool_calls"][0]["status"] == "ok"
 
 
+def test_degree_regulations_tools_are_labeled_for_workbench():
+    call = tool_call_summary_from_event(
+        {
+            "call_id": 1,
+            "tool_name": "Search Degree Regulation PDFs",
+            "tool_input": {"query": "AllgStuPO Wiederholungsprüfung"},
+            "output_preview": "# Relevant regulation PDF passages",
+            "output_chars": 34,
+            "agent_role": "TU Berlin Degree Regulations Specialist",
+            "duration_ms": 90,
+        }
+    )
+    workbench = build_trace_workbench([call], run_id="regulations")
+
+    assert call.agent_label == "Degree Regulations Specialist"
+    assert call.source_system == "Degree Regulations"
+    assert call.badges == ["Degree Regulations"]
+    assert [group.agent_label for group in workbench.groups] == ["Degree Regulations Specialist"]
+    assert [item["active"] for item in workbench.source_flow] == [False, False, True, False, False, True]
+
+
 def test_capture_tool_traces_emits_lifecycle_events(tmp_path):
     events = []
 
@@ -184,7 +205,7 @@ def test_trace_workbench_groups_calls_by_agent_and_source(tmp_path):
     workbench = build_trace_workbench(calls, run_id="grouped", run_dir=tmp_path / "grouped")
 
     assert [group.agent_label for group in workbench.groups] == ["Study Advisor", "MOSES Module Researcher"]
-    assert [item["active"] for item in workbench.source_flow] == [True, True, False, False, True]
+    assert [item["active"] for item in workbench.source_flow] == [True, True, False, False, False, True]
 
     run_dir = tmp_path / "grouped"
     run_dir.mkdir()

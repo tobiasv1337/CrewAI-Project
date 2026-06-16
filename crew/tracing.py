@@ -773,6 +773,7 @@ def build_trace_workbench(
         "Orchestrator",
         "Study Advisor",
         "MOSES Module Researcher",
+        "Degree Regulations Specialist",
         "ISIS Course Info Specialist",
         "Course Commitment Specialist",
         "Unknown Agent",
@@ -843,6 +844,8 @@ def agent_label_for_role(role: object | None) -> str:
         return "Study Advisor"
     if "moses" in text or "module researcher" in text:
         return "MOSES Module Researcher"
+    if "degree regulations" in text or "regulations specialist" in text or "stupo" in text:
+        return "Degree Regulations Specialist"
     if "isis" in text or "course information specialist" in text:
         return "ISIS Course Info Specialist"
     if "commitment" in text or "course commitment" in text:
@@ -856,6 +859,8 @@ def source_system_for_tool(tool_name: str) -> str:
         return "Grade Manager"
     if "propose course actions" in text or "confirmation" in text:
         return "Course Commitment"
+    if "degree regulation" in text or "regelstudienplan" in text or "stupo" in text:
+        return "Degree Regulations"
     if "moses" in text:
         return "MOSES"
     if "isis" in text:
@@ -922,6 +927,12 @@ def source_flow_for_calls(tool_calls: list[ToolCallSummary]) -> list[dict[str, A
             "agent": "MOSES Module Researcher",
             "target": "Orchestrator",
             "active": "MOSES" in active_sources,
+        },
+        {
+            "source": "Degree Regulations",
+            "agent": "Degree Regulations Specialist",
+            "target": "Orchestrator",
+            "active": "Degree Regulations" in active_sources,
         },
         {
             "source": "ISIS",

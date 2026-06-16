@@ -330,7 +330,7 @@ def _safe_int(val: Any) -> int:
 
 def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
     with st.chat_message(message.get("role", "assistant")):
-        if message.get("role") == "assistant" and not run_active:
+        if message.get("role") == "assistant":
             # Extract workbench from metadata or direct field
             workbench = message.get("workbench") or (message.get("metadata") or {}).get("workbench")
             if workbench:

@@ -1092,7 +1092,7 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "tool_name": event.get("tool_name"),
                 "tool_input": event.get("tool_input") or {},
                 "agent_role": event.get("agent_role"),
-                "agent_label": event.get("agent_label") or "Unknown Agent",
+                "agent_label": _event_agent_label(event) or "Orchestrator",
                 "task_name": event.get("task_name"),
                 "source_system": event.get("source_system") or "Other",
                 "status": "running",
@@ -1104,7 +1104,14 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
         elif event.get("event") == "tool_finish":
             call = dict(event.get("tool_call") or {})
             if call:
-                calls_by_id[_safe_int(call.get("call_id"))] = call
+                call_id = _safe_int(call.get("call_id"))
+                if call_id in calls_by_id:
+                    existing_label = calls_by_id[call_id].get("agent_label")
+                    if existing_label and existing_label != "Unknown Agent" and not call.get("agent_label"):
+                        call["agent_label"] = existing_label
+                if not call.get("agent_label") or call.get("agent_label") == "Unknown Agent":
+                    call["agent_label"] = _event_agent_label(event) or _event_agent_label(call) or "Orchestrator"
+                calls_by_id[call_id] = call
 
     for call in sorted(calls_by_id.values(), key=lambda item: _safe_int(item.get("call_id"))):
         label = str(call.get("agent_label") or "Unknown Agent")
@@ -1277,6 +1284,8 @@ def _default_activity_for_agent(label: str) -> str:
 
 def _event_agent_label(event: dict[str, Any]) -> str:
     label = str(event.get("agent_label") or "")
+    if label == "Unknown Agent":
+        label = ""
     if label in AGENT_LANES:
         return label
     role = str(event.get("agent_role") or "").casefold()
@@ -1573,19 +1582,19 @@ def _dynamic_source_flow(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for event in reversed(events):
         event_name = event.get("event")
         status = event.get("status")
-        agent_lbl = event.get("agent_label")
-        if agent_lbl and agent_lbl not in {"Crew", "System", "User"}:
+        agent_lbl = _event_agent_label(event)
+        if agent_lbl and agent_lbl not in {"Crew", "System", "User", "Unknown Agent"}:
             if status == "running" or event_name in {"llm_started", "tool_start", "task_started"}:
                 current_active_agent = agent_lbl
                 break
                 
     # 2. Reconstruct chronological sequence of agent invocations
     for event in events:
-        agent = event.get("agent_label")
-        if not agent or agent in {"Crew", "System", "User"}:
+        agent = _event_agent_label(event)
+        if not agent or agent in {"Crew", "System", "User", "Unknown Agent"}:
             continue
         event_name = event.get("event")
-        if event_name in {"llm_started", "tool_start", "task_started", "agent_ready"}:
+        if event_name in {"llm_started", "tool_start", "task_started"}:
             if agent != last_agent:
                 sequence.append({
                     "agent": agent,

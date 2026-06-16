@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import threading
 from time import perf_counter
 from typing import Any, Iterator
 from uuid import uuid4
@@ -126,6 +127,11 @@ class ToolTraceRecorder:
         self.tool_calls: list[ToolCallSummary] = []
         self._pending: list[dict[str, Any]] = []
         self._next_call_id = 1
+        self._next_event_id = 1
+        self._started_perf = perf_counter()
+        self._event_lock = threading.Lock()
+        self._event_bus: Any | None = None
+        self._event_bus_handlers: list[tuple[type[Any], Callable[..., Any]]] = []
         self._installed = False
 
     @property
@@ -156,6 +162,7 @@ class ToolTraceRecorder:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         register_before_tool_call_hook(self.before_tool_call)
         register_after_tool_call_hook(self.after_tool_call)
+        self._install_event_bus_handlers()
         self._installed = True
 
     def uninstall(self) -> None:
@@ -163,6 +170,7 @@ class ToolTraceRecorder:
             return
         unregister_before_tool_call_hook(self.before_tool_call)
         unregister_after_tool_call_hook(self.after_tool_call)
+        self._uninstall_event_bus_handlers()
         self._installed = False
 
     def before_tool_call(self, context: ToolCallHookContext) -> bool | None:
@@ -400,11 +408,279 @@ class ToolTraceRecorder:
     def _emit_event(self, event: dict[str, Any]) -> None:
         if self.on_event is None:
             return
+        with self._event_lock:
+            event.setdefault("event_id", self._next_event_id)
+            self._next_event_id += 1
+        event.setdefault("run_id", self.run_id)
+        event.setdefault("emitted_at", utc_now())
+        event.setdefault("elapsed_ms", round((perf_counter() - self._started_perf) * 1000))
         try:
             self.on_event(safe_jsonable(event))
         except Exception:
             # UI callbacks must never break a CrewAI run.
             return
+
+    def _install_event_bus_handlers(self) -> None:
+        if self.on_event is None:
+            return
+        try:
+            from crewai.events.event_bus import crewai_event_bus
+            from crewai.events.types.crew_events import (
+                CrewKickoffCompletedEvent,
+                CrewKickoffFailedEvent,
+                CrewKickoffStartedEvent,
+            )
+            from crewai.events.types.llm_events import (
+                LLMCallCompletedEvent,
+                LLMCallFailedEvent,
+                LLMCallStartedEvent,
+            )
+            from crewai.events.types.task_events import (
+                TaskCompletedEvent,
+                TaskFailedEvent,
+                TaskStartedEvent,
+            )
+            from crewai.events.types.tool_usage_events import (
+                ToolUsageErrorEvent,
+                ToolUsageFinishedEvent,
+                ToolUsageStartedEvent,
+            )
+        except Exception:
+            return
+
+        handlers: list[tuple[type[Any], Callable[..., Any]]] = [
+            (CrewKickoffStartedEvent, self._on_crew_started),
+            (CrewKickoffCompletedEvent, self._on_crew_completed),
+            (CrewKickoffFailedEvent, self._on_crew_failed),
+            (TaskStartedEvent, self._on_task_started),
+            (TaskCompletedEvent, self._on_task_completed),
+            (TaskFailedEvent, self._on_task_failed),
+            (LLMCallStartedEvent, self._on_llm_started),
+            (LLMCallCompletedEvent, self._on_llm_completed),
+            (LLMCallFailedEvent, self._on_llm_failed),
+            (ToolUsageStartedEvent, self._on_tool_usage_started),
+            (ToolUsageFinishedEvent, self._on_tool_usage_finished),
+            (ToolUsageErrorEvent, self._on_tool_usage_error),
+        ]
+        for event_type, handler in handlers:
+            crewai_event_bus.on(event_type)(handler)
+        self._event_bus = crewai_event_bus
+        self._event_bus_handlers = handlers
+
+    def _uninstall_event_bus_handlers(self) -> None:
+        if self._event_bus is None:
+            return
+        for event_type, handler in self._event_bus_handlers:
+            try:
+                self._event_bus.off(event_type, handler)
+            except Exception:
+                continue
+        self._event_bus = None
+        self._event_bus_handlers = []
+
+    def _on_crew_started(self, source: Any, event: Any) -> None:
+        self._emit_event(
+            {
+                "event": "crew_started",
+                "crew_name": getattr(event, "crew_name", None) or getattr(source, "name", None),
+                "phase": "kickoff",
+                "status": "running",
+                "activity": "Crew kickoff started. The orchestrator is reading the request and planning delegation.",
+            }
+        )
+
+    def _on_crew_completed(self, source: Any, event: Any) -> None:
+        self._emit_event(
+            {
+                "event": "crew_completed",
+                "crew_name": getattr(event, "crew_name", None) or getattr(source, "name", None),
+                "phase": "answer",
+                "status": "ok",
+                "activity": "Crew completed. The orchestrator produced the final answer.",
+                "total_tokens": getattr(event, "total_tokens", None),
+            }
+        )
+
+    def _on_crew_failed(self, source: Any, event: Any) -> None:
+        self._emit_event(
+            {
+                "event": "crew_failed",
+                "crew_name": getattr(event, "crew_name", None) or getattr(source, "name", None),
+                "phase": "failed",
+                "status": "error",
+                "activity": "Crew failed before a final answer was produced.",
+                "error": str(getattr(event, "error", "") or ""),
+            }
+        )
+
+    def _on_task_started(self, source: Any, event: Any) -> None:
+        task = getattr(event, "task", None) or source
+        agent_role = _agent_role_from_task(task)
+        self._emit_event(
+            {
+                "event": "task_started",
+                "agent_role": agent_role,
+                "agent_label": agent_label_for_role(agent_role) if agent_role else "Orchestrator",
+                "task_name": _task_name(task),
+                "phase": "task",
+                "status": "running",
+                "activity": f"Task started: {_task_name(task)}",
+            }
+        )
+
+    def _on_task_completed(self, source: Any, event: Any) -> None:
+        task = getattr(event, "task", None) or source
+        agent_role = _agent_role_from_task(task)
+        output = getattr(event, "output", None)
+        self._emit_event(
+            {
+                "event": "task_completed",
+                "agent_role": agent_role,
+                "agent_label": agent_label_for_role(agent_role) if agent_role else "Orchestrator",
+                "task_name": _task_name(task),
+                "phase": "task",
+                "status": "ok",
+                "activity": f"Task completed: {_task_name(task)}",
+                "output_preview": preview_text(getattr(output, "raw", output), 500),
+            }
+        )
+
+    def _on_task_failed(self, source: Any, event: Any) -> None:
+        task = getattr(event, "task", None) or source
+        agent_role = _agent_role_from_task(task)
+        self._emit_event(
+            {
+                "event": "task_failed",
+                "agent_role": agent_role,
+                "agent_label": agent_label_for_role(agent_role) if agent_role else "Orchestrator",
+                "task_name": _task_name(task),
+                "phase": "task",
+                "status": "error",
+                "activity": f"Task failed: {_task_name(task)}",
+                "error": str(getattr(event, "error", "") or ""),
+            }
+        )
+
+    def _on_llm_started(self, source: Any, event: Any) -> None:
+        agent_role = getattr(event, "agent_role", None)
+        label = agent_label_for_role(agent_role)
+        if label == "Unknown Agent":
+            label = "Orchestrator"
+        tools = getattr(event, "tools", None) or []
+        self._emit_event(
+            {
+                "event": "llm_started",
+                "agent_role": agent_role,
+                "agent_label": label,
+                "call_id": getattr(event, "call_id", None),
+                "model": getattr(event, "model", None),
+                "task_name": getattr(event, "task_name", None),
+                "phase": "llm",
+                "status": "running",
+                "activity": "Thinking and selecting the next action.",
+                "tool_choices": [str(item.get("function", {}).get("name") or item.get("name") or "") for item in tools if isinstance(item, dict)],
+                "tools_count": len(tools),
+            }
+        )
+
+    def _on_llm_completed(self, source: Any, event: Any) -> None:
+        agent_role = getattr(event, "agent_role", None)
+        label = agent_label_for_role(agent_role)
+        if label == "Unknown Agent":
+            label = "Orchestrator"
+        self._emit_event(
+            {
+                "event": "llm_completed",
+                "agent_role": agent_role,
+                "agent_label": label,
+                "call_id": getattr(event, "call_id", None),
+                "model": getattr(event, "model", None),
+                "task_name": getattr(event, "task_name", None),
+                "phase": "llm",
+                "status": "ok",
+                "activity": "LLM step completed.",
+                "usage": getattr(event, "usage", None),
+                "finish_reason": getattr(event, "finish_reason", None),
+            }
+        )
+
+    def _on_llm_failed(self, source: Any, event: Any) -> None:
+        agent_role = getattr(event, "agent_role", None)
+        label = agent_label_for_role(agent_role)
+        if label == "Unknown Agent":
+            label = "Orchestrator"
+        self._emit_event(
+            {
+                "event": "llm_failed",
+                "agent_role": agent_role,
+                "agent_label": label,
+                "call_id": getattr(event, "call_id", None),
+                "model": getattr(event, "model", None),
+                "task_name": getattr(event, "task_name", None),
+                "phase": "llm",
+                "status": "error",
+                "activity": "LLM step failed.",
+                "error": str(getattr(event, "error", "") or ""),
+            }
+        )
+
+    def _on_tool_usage_started(self, source: Any, event: Any) -> None:
+        self._emit_event(_tool_usage_event_dict(event, status="running", activity="Tool selected and execution started."))
+
+    def _on_tool_usage_finished(self, source: Any, event: Any) -> None:
+        data = _tool_usage_event_dict(event, status="ok", activity="Tool execution finished.")
+        started_at = getattr(event, "started_at", None)
+        finished_at = getattr(event, "finished_at", None)
+        if started_at and finished_at:
+            try:
+                data["duration_ms"] = round((finished_at - started_at).total_seconds() * 1000)
+            except Exception:
+                pass
+        data["output_preview"] = preview_text(getattr(event, "output", None), 500)
+        self._emit_event(data)
+
+    def _on_tool_usage_error(self, source: Any, event: Any) -> None:
+        data = _tool_usage_event_dict(event, status="error", activity="Tool execution failed.")
+        data["error"] = str(getattr(event, "error", "") or "")
+        self._emit_event(data)
+
+
+def _agent_role_from_task(task: Any) -> str | None:
+    agent = getattr(task, "agent", None)
+    role = getattr(agent, "role", None)
+    return str(role) if role else None
+
+
+def _task_name(task: Any) -> str:
+    name = getattr(task, "name", None)
+    if name:
+        return str(name)
+    description = str(getattr(task, "description", "") or "").strip()
+    if not description:
+        return "Unnamed task"
+    return preview_text(description.replace("\n", " "), 80)
+
+
+def _tool_usage_event_dict(event: Any, *, status: str, activity: str) -> dict[str, Any]:
+    tool_name = str(getattr(event, "tool_name", "") or "Unknown Tool")
+    agent_role = getattr(event, "agent_role", None)
+    label = agent_label_for_role(agent_role)
+    if label == "Unknown Agent" and "coworker" in tool_name.casefold():
+        label = "Orchestrator"
+    source_system = source_system_for_tool(tool_name)
+    return {
+        "event": f"tool_usage_{status}",
+        "agent_role": str(agent_role) if agent_role else None,
+        "agent_label": label,
+        "task_name": getattr(event, "task_name", None),
+        "tool_name": tool_name,
+        "tool_input": safe_jsonable(getattr(event, "tool_args", None)),
+        "source_system": source_system,
+        "phase": "tool",
+        "status": status,
+        "activity": activity,
+        "badges": [source_system],
+    }
 
 
 class NullToolTraceRecorder:

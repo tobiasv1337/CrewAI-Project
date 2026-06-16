@@ -61,6 +61,48 @@ def test_live_workbench_from_events_tracks_running_and_finished_calls():
     assert [item["active"] for item in workbench["source_flow"]] == [True, False, True, True]
 
 
+def test_live_workbench_shows_lifecycle_activity_before_tool_calls():
+    settings = chat.ChatRuntimeSettings(
+        specialist_model=None,
+        manager_model=None,
+        temperature=0.2,
+        top_p=None,
+        trace_enabled=True,
+        trace_full=False,
+        verbose=False,
+        cache=True,
+        allow_temp_enrollment=True,
+    )
+    events = chat.initial_live_trace_events("What courses do I do this semester?", settings)
+    events.extend(
+        [
+            {
+                "event": "crew_started",
+                "elapsed_ms": 120,
+                "agent_label": "Orchestrator",
+                "status": "running",
+                "activity": "Crew kickoff started.",
+            },
+            {
+                "event": "llm_started",
+                "elapsed_ms": 450,
+                "agent_label": "Orchestrator",
+                "status": "running",
+                "activity": "Thinking and selecting the next action.",
+            },
+        ]
+    )
+
+    workbench = chat.live_workbench_from_events(events)
+
+    assert workbench["total_tool_calls"] == 0
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+    assert groups["Orchestrator"]["status"] == "running"
+    assert groups["Orchestrator"]["llm_calls"] == 1
+    assert groups["Study Advisor"]["activity"] == "Ready for Grade Manager reads and confirmed study-plan writes."
+    assert [phase["status"] for phase in workbench["phases"][:2]] == ["done", "active"]
+
+
 def test_pending_write_extraction_uses_refused_tool_inputs():
     result = MultiAgentStudyAssistantRunResult(
         answer="Please confirm the write.",
@@ -100,6 +142,14 @@ def test_pending_write_extraction_can_use_answer_text():
     assert action is not None
     assert action["module_query"] == "40967"
     assert action["term"] == "WS 26/27"
+
+
+def test_pending_write_extraction_ignores_semester_years_without_write_proposal():
+    action = chat.extract_pending_study_plan_write_from_text(
+        "Deine Kurse im Sommersemester 2026: Natural Language Processing in SS 26."
+    )
+
+    assert action is None
 
 
 def test_trace_has_successful_study_plan_write_detects_badge():

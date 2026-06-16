@@ -106,6 +106,59 @@ def test_capture_tool_traces_emits_live_events_and_workbench(tmp_path):
     assert summary["workbench"]["groups"][0]["tool_calls"][0]["status"] == "ok"
 
 
+def test_capture_tool_traces_emits_lifecycle_events(tmp_path):
+    events = []
+
+    with capture_tool_traces(
+        enabled=True,
+        query="What courses do I do?",
+        model="devstral",
+        logs_root=tmp_path,
+        run_id="lifecycle-test",
+        on_event=events.append,
+    ) as recorder:
+        task = SimpleNamespace(
+            name="study_assistant_task",
+            description="Answer the student request",
+            agent=SimpleNamespace(role="TU Berlin Personal Study Advisor"),
+        )
+        recorder._on_crew_started(SimpleNamespace(name="Study Crew"), SimpleNamespace(crew_name="Study Crew"))
+        recorder._on_task_started(task, SimpleNamespace(task=task))
+        recorder._on_llm_started(
+            None,
+            SimpleNamespace(
+                agent_role="TU Berlin Personal Study Advisor",
+                call_id="llm-1",
+                model="devstral",
+                task_name="study_assistant_task",
+                tools=[{"function": {"name": "Get Study Plan Snapshot"}}],
+            ),
+        )
+        recorder._on_llm_completed(
+            None,
+            SimpleNamespace(
+                agent_role="TU Berlin Personal Study Advisor",
+                call_id="llm-1",
+                model="devstral",
+                task_name="study_assistant_task",
+                usage={"total_tokens": 42},
+                finish_reason="stop",
+            ),
+        )
+        recorder._on_crew_completed(SimpleNamespace(name="Study Crew"), SimpleNamespace(crew_name="Study Crew", total_tokens=42))
+
+    assert [event["event"] for event in events] == [
+        "crew_started",
+        "task_started",
+        "llm_started",
+        "llm_completed",
+        "crew_completed",
+    ]
+    assert events[1]["agent_label"] == "Study Advisor"
+    assert events[2]["tool_choices"] == ["Get Study Plan Snapshot"]
+    assert events[-1]["status"] == "ok"
+
+
 def test_trace_workbench_groups_calls_by_agent_and_source(tmp_path):
     events = [
         {

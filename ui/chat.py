@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 import html
 import json
 from pathlib import Path
+from queue import Empty, Queue
 import re
+import time
 from typing import Any
 
 import streamlit as st
@@ -237,25 +240,50 @@ def _render_chat_message(message: dict[str, Any]) -> None:
 
 
 def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: ChatRuntimeSettings) -> None:
-    events: list[dict[str, Any]] = []
+    events = initial_live_trace_events(prompt, settings)
+    event_queue: Queue[dict[str, Any]] = Queue()
+    student_context = build_student_context(profile_slug)
+    isis_client = get_profile_isis_client(profile_slug)
+
     with st.chat_message("assistant"):
         status = st.status("Crew is coordinating agents...", expanded=True)
         live_placeholder = st.empty()
 
         def on_trace_event(event: dict[str, Any]) -> None:
-            events.append(event)
-            with live_placeholder.container():
-                _render_live_trace(events)
+            event_queue.put(event)
 
         try:
             with status:
-                _render_live_trace(events)
-                result = _run_chat_query(
-                    profile_slug=profile_slug,
-                    prompt=prompt,
-                    settings=settings,
-                    on_trace_event=on_trace_event if settings.trace_enabled else None,
-                )
+                with live_placeholder.container():
+                    _render_live_trace(events)
+                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="study-chat-crew") as executor:
+                    future = executor.submit(
+                        _run_chat_query,
+                        profile_slug=profile_slug,
+                        prompt=prompt,
+                        settings=settings,
+                        student_context=student_context,
+                        isis_client=isis_client,
+                        on_trace_event=on_trace_event if settings.trace_enabled else None,
+                    )
+                    last_render = 0.0
+                    last_heartbeat = 0.0
+                    while not future.done():
+                        updated = _drain_trace_queue(event_queue, events)
+                        now = time.monotonic()
+                        if now - last_heartbeat >= 1.2:
+                            _append_heartbeat_event(events)
+                            updated = True
+                            last_heartbeat = now
+                        if updated or now - last_render >= 1.0:
+                            with live_placeholder.container():
+                                _render_live_trace(events)
+                            last_render = now
+                        time.sleep(0.2)
+                    _drain_trace_queue(event_queue, events)
+                    with live_placeholder.container():
+                        _render_live_trace(events, completed=True)
+                    result = future.result()
             status.update(label="Crew finished", state="complete", expanded=False)
             st.markdown(result.answer.rstrip())
             workbench = _workbench_from_result(result)
@@ -282,6 +310,18 @@ def _run_and_render_assistant_turn(profile_slug: str, prompt: str, settings: Cha
                 },
             )
         except Exception as exc:
+            events.append(
+                {
+                    "event": "ui_error",
+                    "agent_label": "Orchestrator",
+                    "status": "error",
+                    "phase": "failed",
+                    "activity": f"Crew run failed: {exc}",
+                    "elapsed_ms": _elapsed_ms_from_events(events),
+                }
+            )
+            with live_placeholder.container():
+                _render_live_trace(events, completed=True)
             status.update(label="Crew failed", state="error", expanded=True)
             content = f"Could not run the Study Assistant: `{exc}`"
             st.error(content)
@@ -293,14 +333,16 @@ def _run_chat_query(
     profile_slug: str,
     prompt: str,
     settings: ChatRuntimeSettings,
+    student_context: str,
+    isis_client: MoodleRestClient | None,
     on_trace_event,
 ) -> MultiAgentStudyAssistantRunResult:
     return run_study_assistant_query(
         query=prompt,
-        student_context=build_student_context(profile_slug),
+        student_context=student_context,
         allow_temp_enrollment=settings.allow_temp_enrollment,
         profile_slug=profile_slug,
-        isis_client=get_profile_isis_client(profile_slug),
+        isis_client=isis_client,
         on_trace_event=on_trace_event,
         model=settings.specialist_model,
         manager_model=settings.manager_model,
@@ -363,19 +405,63 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
     )
 
 
-def _render_live_trace(events: list[dict[str, Any]]) -> None:
+def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
     workbench = live_workbench_from_events(events)
-    st.markdown("<div class='live-label'>Live agent workbench</div>", unsafe_allow_html=True)
+    label = "Crew execution trace" if completed else "Live crew execution trace"
+    st.markdown(f"<div class='live-label'>{label}</div>", unsafe_allow_html=True)
+    _render_run_timeline(workbench)
     _render_source_flow(workbench)
     _render_agent_lanes(workbench, live=True)
+    _render_live_event_stream(workbench)
 
 
 def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool) -> None:
     with st.expander("Agent workbench and tool trace", expanded=expanded):
+        _render_trace_summary(workbench)
         _render_source_flow(workbench)
         _render_agent_lanes(workbench, live=False)
         _render_artifact_links(workbench)
         _render_tool_expanders(workbench)
+
+
+def _render_trace_summary(workbench: dict[str, Any]) -> None:
+    groups = workbench.get("groups") or []
+    total = int(workbench.get("total_tool_calls") or 0)
+    active_agents = sum(1 for group in groups if group.get("tool_calls"))
+    warnings = sum(
+        1
+        for group in groups
+        for call in (group.get("tool_calls") or [])
+        if call.get("status") in {"warning", "error"}
+    )
+    st.markdown(
+        f"""
+        <div class="trace-summary">
+          <div><strong>{total}</strong><span>tool calls</span></div>
+          <div><strong>{active_agents}</strong><span>agents with evidence</span></div>
+          <div><strong>{warnings}</strong><span>warnings/errors</span></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_run_timeline(workbench: dict[str, Any]) -> None:
+    phases = workbench.get("phases") or []
+    if not phases:
+        return
+    pieces = []
+    for phase in phases:
+        cls = f"run-phase {html.escape(str(phase.get('status') or 'idle'))}"
+        pieces.append(
+            f"""
+            <div class="{cls}">
+              <div class="run-phase-kicker">{html.escape(str(phase.get('label') or 'Phase'))}</div>
+              <div class="run-phase-title">{html.escape(str(phase.get('title') or ''))}</div>
+            </div>
+            """
+        )
+    st.markdown(f"<div class='run-timeline'>{''.join(pieces)}</div>", unsafe_allow_html=True)
 
 
 def _render_source_flow(workbench: dict[str, Any]) -> None:
@@ -385,8 +471,15 @@ def _render_source_flow(workbench: dict[str, Any]) -> None:
     pieces = []
     for item in flows:
         cls = "flow-step active" if item.get("active") else "flow-step"
-        label = f"{item.get('source')} -> {item.get('agent')} -> {item.get('target')}"
-        pieces.append(f"<div class='{cls}'>{html.escape(label)}</div>")
+        pieces.append(
+            f"""
+            <div class="{cls}">
+              <div class="flow-source">{html.escape(str(item.get('source') or 'Source'))}</div>
+              <div class="flow-agent">{html.escape(str(item.get('agent') or 'Agent'))}</div>
+              <div class="flow-target">{html.escape(str(item.get('target') or 'Target'))}</div>
+            </div>
+            """
+        )
     st.markdown(f"<div class='source-flow'>{''.join(pieces)}</div>", unsafe_allow_html=True)
 
 
@@ -394,40 +487,109 @@ def _render_agent_lanes(workbench: dict[str, Any], *, live: bool) -> None:
     groups = _groups_by_label(workbench)
     cols = st.columns(4)
     for index, label in enumerate(AGENT_LANES):
-        group = groups.get(label, {"agent_label": label, "tool_calls": [], "status": "idle", "duration_ms": 0})
+        group = groups.get(
+            label,
+            {
+                "agent_label": label,
+                "tool_calls": [],
+                "status": "idle",
+                "duration_ms": 0,
+                "events": [],
+                "activity": "Waiting for the orchestrator.",
+                "llm_calls": 0,
+                "source_system": _source_for_agent_label(label),
+            },
+        )
         with cols[index]:
             status = str(group.get("status") or ("running" if live else "idle"))
             calls = group.get("tool_calls") or []
+            events = group.get("events") or []
+            activity = str(group.get("activity") or "Waiting for activity.")
+            llm_calls = int(group.get("llm_calls") or 0)
+            source = str(group.get("source_system") or _source_for_agent_label(label))
+            active_tool = next((call for call in reversed(calls) if call.get("status") == "running"), None)
+            latest_tool = active_tool or (calls[-1] if calls else None)
             st.markdown(
                 f"""
                 <div class="agent-lane {html.escape(status)}">
-                  <div class="agent-lane-title">{html.escape(label)}</div>
-                  <div class="agent-lane-meta">{len(calls)} tool call{'s' if len(calls) != 1 else ''}</div>
+                  <div class="agent-lane-head">
+                    <div>
+                      <div class="agent-lane-title">{html.escape(label)}</div>
+                      <div class="agent-source">{html.escape(source)}</div>
+                    </div>
+                    <span class="agent-status">{html.escape(status)}</span>
+                  </div>
+                  <div class="agent-activity">{html.escape(activity)}</div>
+                  <div class="agent-metrics">
+                    <span>{llm_calls} LLM</span>
+                    <span>{len(calls)} tools</span>
+                  </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
-            if calls:
-                for call in calls[-4:]:
-                    _render_tool_call_row(call)
+            if latest_tool:
+                _render_tool_call_row(latest_tool, compact=False)
+            if calls and not live:
+                for call in calls[-3:-1]:
+                    _render_tool_call_row(call, compact=True)
+            if events:
+                _render_agent_event_list(events[-3:])
             else:
-                st.caption("Waiting for activity.")
+                st.caption("No lower-level events yet.")
 
 
-def _render_tool_call_row(call: dict[str, Any]) -> None:
+def _render_agent_event_list(events: list[dict[str, Any]]) -> None:
+    pieces = []
+    for event in events:
+        elapsed = _format_elapsed(event.get("elapsed_ms"))
+        title = str(event.get("activity") or event.get("event") or "Event")
+        event_type = str(event.get("event") or "")
+        pieces.append(
+            f"<li><span>{html.escape(elapsed)}</span><strong>{html.escape(event_type)}</strong>{html.escape(title)}</li>"
+        )
+    st.markdown(f"<ul class='agent-events'>{''.join(pieces)}</ul>", unsafe_allow_html=True)
+
+
+def _render_tool_call_row(call: dict[str, Any], *, compact: bool = False) -> None:
     badges = " ".join(f"<span class='trace-badge'>{html.escape(str(badge))}</span>" for badge in call.get("badges", []))
     duration = call.get("duration_ms")
     duration_text = f"{duration} ms" if duration is not None else str(call.get("status") or "running")
+    preview = "" if compact else str(call.get("output_preview") or "")
+    preview_html = f"<div class='tool-preview'>{html.escape(preview[:180])}</div>" if preview else ""
     st.markdown(
         f"""
-        <div class="tool-row {html.escape(str(call.get('status') or 'ok'))}">
+        <div class="tool-row {html.escape(str(call.get('status') or 'ok'))} {'compact' if compact else ''}">
           <div class="tool-name">{html.escape(str(call.get('tool_name') or 'Tool'))}</div>
           <div class="tool-meta">{html.escape(duration_text)}</div>
           <div>{badges}</div>
+          {preview_html}
         </div>
         """,
         unsafe_allow_html=True,
     )
+
+
+def _render_live_event_stream(workbench: dict[str, Any]) -> None:
+    events = workbench.get("latest_events") or []
+    if not events:
+        return
+    pieces = []
+    for event in events[-8:]:
+        elapsed = _format_elapsed(event.get("elapsed_ms"))
+        label = str(event.get("agent_label") or "Crew")
+        activity = str(event.get("activity") or event.get("event") or "")
+        status = str(event.get("status") or "ok")
+        pieces.append(
+            f"""
+            <div class="live-event {html.escape(status)}">
+              <span>{html.escape(elapsed)}</span>
+              <strong>{html.escape(label)}</strong>
+              <em>{html.escape(activity)}</em>
+            </div>
+            """
+        )
+    st.markdown(f"<div class='live-events'>{''.join(pieces)}</div>", unsafe_allow_html=True)
 
 
 def _render_tool_expanders(workbench: dict[str, Any]) -> None:
@@ -459,8 +621,37 @@ def _render_artifact_links(workbench: dict[str, Any]) -> None:
 def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
     calls_by_id: dict[int, dict[str, Any]] = {}
     run_id = None
+    groups: dict[str, dict[str, Any]] = {
+        label: {
+            "agent_label": label,
+            "agent_role": None,
+            "source_system": _source_for_agent_label(label),
+            "tool_calls": [],
+            "events": [],
+            "duration_ms": 0,
+            "status": "idle",
+            "activity": _default_activity_for_agent(label),
+            "llm_calls": 0,
+        }
+        for label in AGENT_LANES
+    }
+    latest_events: list[dict[str, Any]] = []
     for event in events:
         run_id = event.get("run_id") or run_id
+        event_name = str(event.get("event") or "")
+        label = _event_agent_label(event)
+        if label in groups:
+            group = groups[label]
+            group["events"].append(event)
+            group["activity"] = _activity_from_event(event)
+            group["status"] = _merge_group_status(str(group.get("status") or "idle"), str(event.get("status") or "ok"))
+            group["agent_role"] = event.get("agent_role") or group.get("agent_role")
+            if event_name == "llm_started":
+                group["llm_calls"] = int(group.get("llm_calls") or 0) + 1
+            if event.get("source_system"):
+                group["source_system"] = event.get("source_system")
+        if event_name not in {"heartbeat"}:
+            latest_events.append(event)
         if event.get("event") == "tool_start":
             call_id = int(event.get("call_id") or 0)
             calls_by_id[call_id] = {
@@ -482,7 +673,6 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
             if call:
                 calls_by_id[int(call.get("call_id") or 0)] = call
 
-    groups: dict[str, dict[str, Any]] = {}
     for call in sorted(calls_by_id.values(), key=lambda item: int(item.get("call_id") or 0)):
         label = str(call.get("agent_label") or "Unknown Agent")
         group = groups.setdefault(
@@ -492,21 +682,242 @@ def live_workbench_from_events(events: list[dict[str, Any]]) -> dict[str, Any]:
                 "agent_role": call.get("agent_role"),
                 "source_system": call.get("source_system") or "Other",
                 "tool_calls": [],
+                "events": [],
                 "duration_ms": 0,
-                "status": "ok",
+                "status": "idle",
+                "activity": _default_activity_for_agent(label),
+                "llm_calls": 0,
             },
         )
         group["tool_calls"].append(call)
         group["status"] = _combine_status(str(group.get("status") or "ok"), str(call.get("status") or "ok"))
+        if call.get("status") == "running":
+            group["activity"] = f"Running {call.get('tool_name') or 'tool'}."
+        elif call.get("tool_name"):
+            group["activity"] = f"Finished {call.get('tool_name')}."
     active_sources = {str(call.get("source_system") or "Other") for call in calls_by_id.values()}
+    source_flow = _default_source_flow(active_sources=active_sources, active=bool(calls_by_id) or _has_event(events, "crew_started"))
+    _activate_flow_for_lifecycle_events(source_flow, events)
     return {
         "run_id": run_id,
         "run_dir": None,
         "groups": [groups[label] for label in AGENT_LANES if label in groups],
         "total_tool_calls": len(calls_by_id),
-        "source_flow": _default_source_flow(active_sources=active_sources, active=bool(calls_by_id)),
+        "source_flow": source_flow,
+        "phases": _trace_phases_from_events(events, calls_by_id),
+        "latest_events": latest_events[-12:],
         "artifacts": {},
     }
+
+
+def initial_live_trace_events(prompt: str, settings: ChatRuntimeSettings) -> list[dict[str, Any]]:
+    del prompt
+    temp_status = "enabled" if settings.allow_temp_enrollment else "disabled"
+    return [
+        {
+            "event": "ui_run_started",
+            "event_id": 0,
+            "elapsed_ms": 0,
+            "agent_label": "Orchestrator",
+            "phase": "kickoff",
+            "status": "running",
+            "activity": "Request accepted. Preparing hierarchical crew.",
+        },
+        {
+            "event": "agent_ready",
+            "event_id": 0,
+            "elapsed_ms": 0,
+            "agent_label": "Study Advisor",
+            "phase": "ready",
+            "status": "idle",
+            "activity": "Ready for Grade Manager reads and confirmed study-plan writes.",
+            "source_system": "Grade Manager",
+        },
+        {
+            "event": "agent_ready",
+            "event_id": 0,
+            "elapsed_ms": 0,
+            "agent_label": "MOSES Module Researcher",
+            "phase": "ready",
+            "status": "idle",
+            "activity": "Ready for MOSES catalog and degree-structure lookups.",
+            "source_system": "MOSES",
+        },
+        {
+            "event": "agent_ready",
+            "event_id": 0,
+            "elapsed_ms": 0,
+            "agent_label": "ISIS Course Info Specialist",
+            "phase": "ready",
+            "status": "idle",
+            "activity": f"Ready for ISIS read-only inspection; temporary enrollment is {temp_status}.",
+            "source_system": "ISIS",
+        },
+    ]
+
+
+def _drain_trace_queue(event_queue: Queue[dict[str, Any]], events: list[dict[str, Any]]) -> bool:
+    updated = False
+    while True:
+        try:
+            events.append(event_queue.get_nowait())
+            updated = True
+        except Empty:
+            return updated
+
+
+def _append_heartbeat_event(events: list[dict[str, Any]]) -> None:
+    elapsed_ms = _elapsed_ms_from_events(events)
+    last = next((event for event in reversed(events) if event.get("event") != "heartbeat"), {})
+    label = _event_agent_label(last)
+    if label not in AGENT_LANES:
+        label = "Orchestrator"
+    activity = _heartbeat_activity(last)
+    if events and events[-1].get("event") == "heartbeat":
+        events[-1].update({"elapsed_ms": elapsed_ms, "agent_label": label, "activity": activity})
+        return
+    events.append(
+        {
+            "event": "heartbeat",
+            "elapsed_ms": elapsed_ms,
+            "agent_label": label,
+            "phase": "heartbeat",
+            "status": "running",
+            "activity": activity,
+        }
+    )
+
+
+def _elapsed_ms_from_events(events: list[dict[str, Any]]) -> int:
+    elapsed = 0
+    for event in reversed(events):
+        try:
+            elapsed = int(event.get("elapsed_ms") or 0)
+            break
+        except (TypeError, ValueError):
+            continue
+    return elapsed + 1200
+
+
+def _source_for_agent_label(label: str) -> str:
+    if label == "Study Advisor":
+        return "Grade Manager"
+    if label == "MOSES Module Researcher":
+        return "MOSES"
+    if label == "ISIS Course Info Specialist":
+        return "ISIS"
+    return "CrewAI"
+
+
+def _default_activity_for_agent(label: str) -> str:
+    return {
+        "Orchestrator": "Preparing delegation.",
+        "Study Advisor": "Waiting for Grade Manager work.",
+        "MOSES Module Researcher": "Waiting for MOSES work.",
+        "ISIS Course Info Specialist": "Waiting for ISIS work.",
+    }.get(label, "Waiting for activity.")
+
+
+def _event_agent_label(event: dict[str, Any]) -> str:
+    label = str(event.get("agent_label") or "")
+    if label in AGENT_LANES:
+        return label
+    role = str(event.get("agent_role") or "").casefold()
+    if "study advisor" in role or "personal study advisor" in role:
+        return "Study Advisor"
+    if "moses" in role or "module researcher" in role:
+        return "MOSES Module Researcher"
+    if "isis" in role or "course information specialist" in role:
+        return "ISIS Course Info Specialist"
+    if event.get("event") in {"crew_started", "crew_completed", "crew_failed", "ui_run_started"}:
+        return "Orchestrator"
+    tool_name = str(event.get("tool_name") or "").casefold()
+    if "coworker" in tool_name:
+        return "Orchestrator"
+    return label or "Orchestrator"
+
+
+def _activity_from_event(event: dict[str, Any]) -> str:
+    activity = str(event.get("activity") or "").strip()
+    if activity:
+        return activity
+    event_name = str(event.get("event") or "")
+    if event_name == "tool_start":
+        return f"Running {event.get('tool_name') or 'tool'}."
+    if event_name == "tool_finish":
+        call = event.get("tool_call") or {}
+        return f"Finished {call.get('tool_name') or 'tool'}."
+    return event_name.replace("_", " ").strip().title() or "Working."
+
+
+def _merge_group_status(current: str, incoming: str) -> str:
+    if incoming in {"error", "warning", "running"}:
+        return _combine_status(current, incoming)
+    if current in {"error", "warning"} and incoming == "ok":
+        return current
+    return incoming or current
+
+
+def _has_event(events: list[dict[str, Any]], name: str) -> bool:
+    return any(event.get("event") == name for event in events)
+
+
+def _activate_flow_for_lifecycle_events(flow: list[dict[str, Any]], events: list[dict[str, Any]]) -> None:
+    active_labels = {_event_agent_label(event) for event in events if event.get("status") == "running"}
+    for item in flow:
+        agent = str(item.get("agent") or "")
+        if agent in active_labels or (agent == "Final Answer" and "Orchestrator" in active_labels):
+            item["active"] = True
+
+
+def _trace_phases_from_events(events: list[dict[str, Any]], calls_by_id: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+    has_started = _has_event(events, "crew_started") or _has_event(events, "ui_run_started")
+    has_llm = any(str(event.get("event") or "").startswith("llm_") for event in events)
+    has_delegation = any("coworker" in str(call.get("tool_name") or "").casefold() for call in calls_by_id.values())
+    has_tools = bool(calls_by_id)
+    has_completed = _has_event(events, "crew_completed")
+    has_failed = _has_event(events, "crew_failed") or _has_event(events, "ui_error")
+    return [
+        {"label": "1", "title": "Kickoff", "status": _phase_status(has_started, has_llm or has_tools or has_completed, has_failed)},
+        {"label": "2", "title": "Manager reasoning", "status": _phase_status(has_llm, has_delegation or has_tools or has_completed, has_failed)},
+        {"label": "3", "title": "Delegation", "status": _phase_status(has_delegation, has_tools or has_completed, has_failed)},
+        {"label": "4", "title": "Tool work", "status": _phase_status(has_tools, has_completed, has_failed)},
+        {"label": "5", "title": "Final answer", "status": "error" if has_failed else ("done" if has_completed else "idle")},
+    ]
+
+
+def _phase_status(started: bool, finished: bool, failed: bool) -> str:
+    if failed:
+        return "error"
+    if finished:
+        return "done"
+    if started:
+        return "active"
+    return "idle"
+
+
+def _heartbeat_activity(last_event: dict[str, Any]) -> str:
+    event_name = str(last_event.get("event") or "")
+    if event_name in {"tool_start", "tool_usage_running"}:
+        return "Tool is still running."
+    if event_name == "llm_started":
+        return "LLM call is still running; waiting for the next tool or response."
+    if event_name in {"ui_run_started", "crew_started"}:
+        return "Orchestrator is still planning or starting the first delegation."
+    return "Crew is still working; waiting for the next observable event."
+
+
+def _format_elapsed(value: object) -> str:
+    try:
+        millis = int(value or 0)
+    except (TypeError, ValueError):
+        millis = 0
+    seconds = millis / 1000
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes = int(seconds // 60)
+    remainder = int(seconds % 60)
+    return f"{minutes}m {remainder}s"
 
 
 def _workbench_from_result(result: MultiAgentStudyAssistantRunResult) -> dict[str, Any] | None:
@@ -537,12 +948,34 @@ def extract_pending_study_plan_write(
 
 
 def extract_pending_study_plan_write_from_text(text: str) -> dict[str, Any] | None:
-    module_match = re.search(r"\b(?:MOSES\s*)?(?:module\s*)?(\d{4,6})\b", text, flags=re.I)
+    normalized = text.casefold()
+    write_markers = (
+        "add module",
+        "study-plan write",
+        "study plan write",
+        "confirm",
+        "confirmation",
+        "eintragen",
+        "hinzufügen",
+        "hinzufuegen",
+        "in deinen plan",
+        "in den plan",
+    )
+    if not any(marker in normalized for marker in write_markers):
+        return None
+    module_match = re.search(
+        r"\b(?:MOSES\s*)?(?:module|modul|modulnummer|module\s*id|moses\s*id)\s*[:#-]?\s*(\d{4,6})\b",
+        text,
+        flags=re.I,
+    )
     term_match = re.search(r"\b(WS\s*\d{2}(?:/\d{2})?|SS\s*\d{2}|WiSe\s*\d{4}(?:/\d{2})?|SoSe\s*\d{4})\b", text, flags=re.I)
     if not module_match or not term_match:
         return None
+    module_query = module_match.group(1)
+    if len(module_query) == 4 and 1900 <= int(module_query) <= 2099:
+        return None
     return {
-        "module_query": module_match.group(1),
+        "module_query": module_query,
         "term": term_match.group(1).upper().replace("  ", " "),
         "area": None,
         "program_key": None,
@@ -717,6 +1150,69 @@ def inject_chat_css() -> None:
             color: #1f2937;
             margin: 0.25rem 0 0.5rem 0;
         }
+        .trace-summary {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.5rem;
+            margin: 0.25rem 0 0.75rem 0;
+        }
+        .trace-summary div {
+            border: 1px solid #d8dee8;
+            border-radius: 8px;
+            padding: 0.6rem 0.7rem;
+            background: #ffffff;
+        }
+        .trace-summary strong {
+            display: block;
+            font-size: 1.2rem;
+            color: #111827;
+            line-height: 1.15;
+        }
+        .trace-summary span {
+            color: #667085;
+            font-size: 0.74rem;
+        }
+        .run-timeline {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+            gap: 0.45rem;
+            margin: 0.5rem 0 0.75rem 0;
+        }
+        .run-phase {
+            border: 1px solid #d8dee8;
+            border-radius: 8px;
+            padding: 0.5rem 0.6rem;
+            background: #ffffff;
+            min-height: 3.6rem;
+        }
+        .run-phase.idle {
+            background: #f8fafc;
+            color: #7a8699;
+        }
+        .run-phase.active {
+            border-color: #376fd0;
+            background: #f1f6ff;
+        }
+        .run-phase.done {
+            border-color: #2f8f68;
+            background: #eef9f3;
+        }
+        .run-phase.error {
+            border-color: #c94b5b;
+            background: #fff1f3;
+        }
+        .run-phase-kicker {
+            color: #667085;
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            font-weight: 760;
+        }
+        .run-phase-title {
+            color: #1f2937;
+            font-size: 0.78rem;
+            font-weight: 720;
+            margin-top: 0.15rem;
+        }
         .source-flow {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -729,7 +1225,7 @@ def inject_chat_css() -> None:
             color: #687386;
             border-radius: 8px;
             padding: 0.55rem 0.65rem;
-            font-size: 0.78rem;
+            font-size: 0.76rem;
             min-height: 3rem;
         }
         .flow-step.active {
@@ -737,13 +1233,29 @@ def inject_chat_css() -> None:
             background: #eef9f3;
             color: #155b42;
         }
+        .flow-source {
+            font-weight: 760;
+            color: #1f2937;
+        }
+        .flow-agent {
+            color: #475467;
+            margin-top: 0.15rem;
+        }
+        .flow-target {
+            color: #667085;
+            font-size: 0.7rem;
+            margin-top: 0.12rem;
+        }
         .agent-lane {
             border: 1px solid #d8dee8;
             background: #ffffff;
             border-radius: 8px;
-            padding: 0.75rem;
-            min-height: 4.4rem;
+            padding: 0.7rem;
+            min-height: 7.8rem;
             margin-bottom: 0.5rem;
+        }
+        .agent-lane.idle {
+            background: #fbfcfe;
         }
         .agent-lane.running {
             border-color: #7093d8;
@@ -757,15 +1269,73 @@ def inject_chat_css() -> None:
             border-color: #c94b5b;
             background: #fff1f3;
         }
+        .agent-lane-head {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 0.5rem;
+        }
         .agent-lane-title {
             font-weight: 760;
             font-size: 0.92rem;
             color: #1f2937;
         }
-        .agent-lane-meta {
+        .agent-source {
             color: #687386;
             font-size: 0.76rem;
             margin-top: 0.2rem;
+        }
+        .agent-status {
+            border-radius: 999px;
+            border: 1px solid #d8dee8;
+            color: #344054;
+            background: #f8fafc;
+            padding: 0.05rem 0.35rem;
+            font-size: 0.66rem;
+            white-space: nowrap;
+        }
+        .agent-activity {
+            color: #344054;
+            font-size: 0.78rem;
+            line-height: 1.3;
+            min-height: 2.45rem;
+            margin: 0.55rem 0 0.45rem 0;
+            overflow-wrap: anywhere;
+        }
+        .agent-metrics {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.3rem;
+        }
+        .agent-metrics span {
+            border: 1px solid #e1e6ef;
+            background: #ffffff;
+            color: #536070;
+            border-radius: 999px;
+            padding: 0.08rem 0.4rem;
+            font-size: 0.68rem;
+        }
+        .agent-events {
+            list-style: none;
+            padding: 0;
+            margin: 0.25rem 0 0 0;
+        }
+        .agent-events li {
+            border-left: 2px solid #d8dee8;
+            padding: 0.15rem 0 0.15rem 0.45rem;
+            margin: 0.15rem 0;
+            color: #536070;
+            font-size: 0.68rem;
+            line-height: 1.25;
+            overflow-wrap: anywhere;
+        }
+        .agent-events span {
+            color: #8792a3;
+            margin-right: 0.35rem;
+        }
+        .agent-events strong {
+            color: #344054;
+            margin-right: 0.35rem;
         }
         .tool-row {
             border: 1px solid #e1e6ef;
@@ -783,6 +1353,9 @@ def inject_chat_css() -> None:
         .tool-row.error {
             border-color: #c94b5b;
         }
+        .tool-row.compact {
+            padding: 0.42rem;
+        }
         .tool-name {
             font-size: 0.78rem;
             font-weight: 700;
@@ -794,6 +1367,15 @@ def inject_chat_css() -> None:
             font-size: 0.72rem;
             margin: 0.15rem 0 0.35rem 0;
         }
+        .tool-preview {
+            border-top: 1px solid #eef1f6;
+            color: #536070;
+            font-size: 0.7rem;
+            margin-top: 0.35rem;
+            padding-top: 0.35rem;
+            line-height: 1.3;
+            overflow-wrap: anywhere;
+        }
         .trace-badge {
             display: inline-block;
             border-radius: 999px;
@@ -803,6 +1385,30 @@ def inject_chat_css() -> None:
             font-size: 0.68rem;
             color: #344054;
             background: #f8fafc;
+        }
+        .live-events {
+            border-top: 1px solid #e1e6ef;
+            margin-top: 0.75rem;
+            padding-top: 0.55rem;
+        }
+        .live-event {
+            display: grid;
+            grid-template-columns: 4.2rem minmax(7rem, 13rem) minmax(0, 1fr);
+            gap: 0.45rem;
+            align-items: start;
+            font-size: 0.72rem;
+            color: #536070;
+            padding: 0.22rem 0;
+        }
+        .live-event span {
+            color: #8792a3;
+        }
+        .live-event strong {
+            color: #1f2937;
+        }
+        .live-event em {
+            font-style: normal;
+            overflow-wrap: anywhere;
         }
         .pending-write {
             border: 1px solid rgba(190, 54, 73, 0.35);
@@ -816,6 +1422,14 @@ def inject_chat_css() -> None:
             background: rgba(255, 255, 255, 0.75);
             padding: 0.05rem 0.25rem;
             border-radius: 4px;
+        }
+        @media (max-width: 720px) {
+            .live-event {
+                grid-template-columns: 3.4rem minmax(0, 1fr);
+            }
+            .live-event em {
+                grid-column: 2;
+            }
         }
         </style>
         """,

@@ -275,10 +275,13 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         if self.state.conversation_context:
             parts.append(f"Conversation context:\n{self.state.conversation_context}")
         if self.state.thread and self.state.thread.active_proposals:
-            proposal_lines = [
-                f"- {proposal.title}: {proposal.summary}"
-                for proposal in self.state.thread.active_proposals
-            ]
+            proposal_lines = []
+            for proposal in self.state.thread.active_proposals:
+                action_lines = []
+                for action in proposal.actions:
+                    action_lines.append(f"  * [{action.status.upper()}] {action.kind}: {action.course_title}")
+                actions_str = "\n".join(action_lines)
+                proposal_lines.append(f"- {proposal.title}: {proposal.summary}\n{actions_str}")
             parts.append("Active proposal state:\n" + "\n".join(proposal_lines))
         return "\n\n".join(parts)
 
@@ -600,13 +603,14 @@ def _conversation_context(thread: ChatThreadState) -> str:
     if recent:
         parts.append(f"Recent messages:\n{recent}")
     if thread.active_proposals:
-        parts.append(
-            "Active proposals:\n"
-            + "\n".join(
-                f"- {proposal.title}: {proposal.summary} ({len(proposal.proposed_actions)} open action(s))"
-                for proposal in thread.active_proposals
-            )
-        )
+        proposal_lines = []
+        for proposal in thread.active_proposals:
+            action_lines = []
+            for action in proposal.actions:
+                action_lines.append(f"  * [{action.status.upper()}] {action.kind}: {action.course_title}")
+            actions_str = "\n".join(action_lines)
+            proposal_lines.append(f"- {proposal.title}: {proposal.summary}\n{actions_str}")
+        parts.append("Active proposals:\n" + "\n".join(proposal_lines))
     return "\n\n".join(parts)
 
 

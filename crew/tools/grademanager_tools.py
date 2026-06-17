@@ -26,6 +26,23 @@ from crew.write_permissions import confirmed_writes_enabled
 STUDY_PLAN_CONFIRMATION_TOKEN = "CONFIRM_STUDY_PLAN_WRITE"
 DEFAULT_MOSES_TIMEOUT_SECONDS = 15
 MAX_OUTPUT_MODULES = 100
+TI_BSC_PROGRAM = "TU Berlin - Technische Informatik (B.Sc.)"
+PROGRAM_KEY_ALIASES = {
+    "techinformatikbsc2014": TI_BSC_PROGRAM,
+    "techinformatikbsc": TI_BSC_PROGRAM,
+    "technischeinformatikbsc": TI_BSC_PROGRAM,
+    "technischeinformatik": TI_BSC_PROGRAM,
+}
+AREA_ALIASES = {
+    "core": "Mandatory",
+    "coremodule": "Mandatory",
+    "coremodules": "Mandatory",
+    "basics": "Mandatory",
+    "basicsmodule": "Mandatory",
+    "basicsmodules": "Mandatory",
+    "pflichtmodul": "Mandatory",
+    "pflichtmodule": "Mandatory",
+}
 
 ModuleStateFilter = Literal["any", "Completed", "In Progress", "Planned", "Possible Candidate"]
 
@@ -77,6 +94,44 @@ class AddStudyModuleInput(CheckStudyModuleInput):
     allow_offering_mismatch: bool = Field(
         default=False,
         description="Set true only after explicit user confirmation when the MOSES offering cycle does not match the planned semester.",
+    )
+    confirmation_token: str = Field(
+        ...,
+        description=f"Must be exactly {STUDY_PLAN_CONFIRMATION_TOKEN} after explicit user confirmation.",
+    )
+
+
+class UpdateStudyModuleInput(CheckStudyModuleInput):
+    current_term: str | None = Field(default=None, description="Optional current semester selector, e.g. WS 26/27.")
+    current_area: str | None = Field(default=None, description="Optional current area selector.")
+    current_state: ModuleStateFilter = Field(default="Planned", description="Current state selector. Defaults to Planned.")
+    target_term: str = Field(..., description="New planned semester, e.g. SS 26.")
+    target_area: str | None = Field(default=None, description="New study area. Omit to keep the existing area.")
+    target_state: Literal["Completed", "In Progress", "Planned", "Possible Candidate"] | None = Field(
+        default=None,
+        description="Optional new module state. Omit to keep the existing state.",
+    )
+    allow_offering_mismatch: bool = Field(
+        default=False,
+        description="Set true only after explicit user confirmation when the MOSES offering cycle does not match the target semester.",
+    )
+    allow_non_planned: bool = Field(
+        default=False,
+        description="Set true only after explicit user confirmation to update modules that are not currently Planned.",
+    )
+    confirmation_token: str = Field(
+        ...,
+        description=f"Must be exactly {STUDY_PLAN_CONFIRMATION_TOKEN} after explicit user confirmation.",
+    )
+
+
+class RemoveStudyModuleInput(CheckStudyModuleInput):
+    current_term: str | None = Field(default=None, description="Optional current semester selector, e.g. WS 26/27.")
+    current_area: str | None = Field(default=None, description="Optional current area selector.")
+    current_state: ModuleStateFilter = Field(default="Planned", description="Current state selector. Defaults to Planned.")
+    allow_non_planned: bool = Field(
+        default=False,
+        description="Set true only after explicit user confirmation to remove modules that are not currently Planned.",
     )
     confirmation_token: str = Field(
         ...,
@@ -346,6 +401,186 @@ def add_module_to_study_plan(
     )
 
 
+def update_module_in_study_plan(
+    module_query: str,
+    target_term: str,
+    version: int | None = None,
+    program_key: str | None = None,
+    current_term: str | None = None,
+    current_area: str | None = None,
+    current_state: ModuleStateFilter = "Planned",
+    target_area: str | None = None,
+    target_state: str | None = None,
+    allow_offering_mismatch: bool = False,
+    allow_non_planned: bool = False,
+    confirmation_token: str = "",
+) -> str:
+    """Update one existing Grade Manager module after explicit UI confirmation."""
+    if confirmation_token != STUDY_PLAN_CONFIRMATION_TOKEN:
+        return (
+            "Study-plan write refused. The confirmation_token must be exactly "
+            f"`{STUDY_PLAN_CONFIRMATION_TOKEN}` after explicit user confirmation."
+        )
+    if not confirmed_writes_enabled():
+        return (
+            "Study-plan write refused: confirmed Flow execution scope is required "
+            "after UI approval."
+        )
+
+    try:
+        target_term_label = _canonical_term_or_error(target_term)
+        current_term_label = _canonical_term_or_error(current_term) if current_term else None
+        profile, modules = _load_primary_profile_modules()
+        resolved_program = _resolve_program_key(program_key, modules, require_single=True)
+        existing = _select_existing_module(
+            modules,
+            module_query=module_query,
+            version=version,
+            program_key=resolved_program,
+            term=current_term_label,
+            area=current_area,
+            state=current_state,
+        )
+        if existing.state != ModuleState.PLANNED and not allow_non_planned:
+            return (
+                "Study-plan write refused: only `Planned` modules can be updated by default. "
+                f"`{existing.name}` is currently `{existing.state.value}`."
+            )
+        new_state = _module_state_or_error(target_state) if target_state else existing.state
+        if new_state != ModuleState.PLANNED and not allow_non_planned:
+            return (
+                "Study-plan write refused: changing a study-plan commitment to a non-Planned state "
+                "requires allow_non_planned=true."
+            )
+        new_area = (
+            _normalize_area_for_program(resolved_program, target_area)
+            if target_area
+            else _normalize_area_for_program(resolved_program, existing.area)
+        )
+        if not offering_matches_term(existing.offered_in, target_term_label) and not allow_offering_mismatch:
+            return (
+                "Study-plan write refused: this module is listed as offered in "
+                f"`{existing.offered_in.value}`, which does not match `{target_term_label}`. "
+                "Ask the user for explicit confirmation and set allow_offering_mismatch=true if they still want this update."
+            )
+    except Exception as exc:
+        return f"Study-plan write refused: {exc}"
+
+    old_term = existing.term
+    old_area = existing.area
+    old_state = existing.state
+    if old_term == target_term_label and old_area == new_area and old_state == new_state:
+        return (
+            f"No study-plan change needed: `{existing.name}` is already `{new_state.value}` "
+            f"for `{target_term_label}` in `{new_area}` under `{resolved_program}`."
+        )
+
+    try:
+        existing.term = target_term_label
+        existing.area = new_area
+        existing.state = new_state
+        existing.program_key = resolved_program
+        persistence.save_modules(modules, profile.slug)
+    except Exception as exc:
+        return f"Study-plan write failed while saving: {exc}"
+
+    return (
+        f"Updated `{existing.name}` in profile `{profile.display_name}` from "
+        f"`{old_state.value}`, area `{old_area}`, term `{_value(old_term)}` to "
+        f"`{new_state.value}`, area `{new_area}`, term `{target_term_label}` under `{resolved_program}`."
+    )
+
+
+def remove_module_from_study_plan(
+    module_query: str,
+    version: int | None = None,
+    program_key: str | None = None,
+    current_term: str | None = None,
+    current_area: str | None = None,
+    current_state: ModuleStateFilter = "Planned",
+    allow_non_planned: bool = False,
+    confirmation_token: str = "",
+) -> str:
+    """Remove one existing Grade Manager module after explicit UI confirmation."""
+    if confirmation_token != STUDY_PLAN_CONFIRMATION_TOKEN:
+        return (
+            "Study-plan write refused. The confirmation_token must be exactly "
+            f"`{STUDY_PLAN_CONFIRMATION_TOKEN}` after explicit user confirmation."
+        )
+    if not confirmed_writes_enabled():
+        return (
+            "Study-plan write refused: confirmed Flow execution scope is required "
+            "after UI approval."
+        )
+
+    try:
+        current_term_label = _canonical_term_or_error(current_term) if current_term else None
+        profile, modules = _load_primary_profile_modules()
+        resolved_program = _resolve_program_key(program_key, modules, require_single=True)
+        existing = _select_existing_module(
+            modules,
+            module_query=module_query,
+            version=version,
+            program_key=resolved_program,
+            term=current_term_label,
+            area=current_area,
+            state=current_state,
+        )
+        if existing.state != ModuleState.PLANNED and not allow_non_planned:
+            return (
+                "Study-plan write refused: only `Planned` modules can be removed by default. "
+                f"`{existing.name}` is currently `{existing.state.value}`."
+            )
+    except Exception as exc:
+        return f"Study-plan write refused: {exc}"
+
+    try:
+        modules.remove(existing)
+        persistence.save_modules(modules, profile.slug)
+    except Exception as exc:
+        return f"Study-plan write failed while saving: {exc}"
+
+    return (
+        f"Removed `{existing.name}` from profile `{profile.display_name}` "
+        f"({existing.state.value}, area `{existing.area}`, term `{_value(existing.term)}`)."
+    )
+
+
+def canonicalize_program_key(
+    program_key: str | None,
+    modules: list[Module] | None = None,
+    *,
+    require_single: bool = False,
+) -> str | None:
+    """Resolve user/agent program aliases to a canonical Grade Manager program key."""
+    if program_key is None and not require_single:
+        return None
+    return _resolve_program_key(program_key, modules or [], require_single=require_single)
+
+
+def find_existing_study_plan_module(
+    modules: list[Module],
+    *,
+    module_query: str,
+    version: int | None = None,
+    program_key: str | None = None,
+) -> Module | None:
+    """Best-effort lookup used by proposal building; returns None when not unique."""
+    try:
+        candidates = _matching_modules(
+            modules,
+            module_query=module_query,
+            version=version,
+            program_key=program_key,
+            term=None,
+            area=None,
+            state="any",
+        )
+    except Exception:
+        return None
+    return candidates[0] if len(candidates) == 1 else None
+
+
 class GetStudyPlanSnapshotTool(BaseTool):
     name: str = "Get Study Plan Snapshot"
     description: str = "Read the active Grade Manager profile and summarize study progress, GPA, missing requirements, and Moses handoff directives."
@@ -391,13 +626,35 @@ class AddModuleToStudyPlanTool(BaseTool):
         return add_module_to_study_plan(**kwargs)
 
 
+class UpdateModuleInStudyPlanTool(BaseTool):
+    name: str = "Update Module In Study Plan"
+    description: str = "Write-capable Grade Manager tool: update one existing planned module's term, area, or state after explicit user confirmation."
+    args_schema: Type[BaseModel] = UpdateStudyModuleInput
+
+    def _run(self, **kwargs) -> str:
+        return update_module_in_study_plan(**kwargs)
+
+
+class RemoveModuleFromStudyPlanTool(BaseTool):
+    name: str = "Remove Module From Study Plan"
+    description: str = "Write-capable Grade Manager tool: remove one existing planned module after explicit user confirmation."
+    args_schema: Type[BaseModel] = RemoveStudyModuleInput
+
+    def _run(self, **kwargs) -> str:
+        return remove_module_from_study_plan(**kwargs)
+
+
 GRADE_MANAGER_READ_TOOLS = [
     GetStudyPlanSnapshotTool(),
     ListStudyPlanModulesTool(),
     GetDegreeRequirementDetailsTool(),
     CheckModuleAgainstStudyPlanTool(),
 ]
-GRADE_MANAGER_WRITE_TOOLS = [AddModuleToStudyPlanTool()]
+GRADE_MANAGER_WRITE_TOOLS = [
+    AddModuleToStudyPlanTool(),
+    UpdateModuleInStudyPlanTool(),
+    RemoveModuleFromStudyPlanTool(),
+]
 STUDY_ADVISOR_TOOLS = [*GRADE_MANAGER_READ_TOOLS]
 GRADE_MANAGER_TOOLS = [*GRADE_MANAGER_READ_TOOLS, *GRADE_MANAGER_WRITE_TOOLS]
 
@@ -437,6 +694,9 @@ def _resolve_program_key(
         if exact:
             return exact[0]
         normalized = _normalize(query)
+        alias = PROGRAM_KEY_ALIASES.get(normalized)
+        if alias:
+            return alias
         matches = [program for program in programs if normalized in _normalize(program)]
         if len(matches) == 1:
             return matches[0]
@@ -461,6 +721,105 @@ def _resolve_program_key(
             "No degree program can be inferred from the active profile. Provide program_key explicitly."
         )
     raise ProgramResolutionError("program_key is required for this operation.")
+
+
+def _select_existing_module(
+    modules: list[Module],
+    *,
+    module_query: str,
+    version: int | None,
+    program_key: str,
+    term: str | None,
+    area: str | None,
+    state: ModuleStateFilter,
+) -> Module:
+    candidates = _matching_modules(
+        modules,
+        module_query=module_query,
+        version=version,
+        program_key=program_key,
+        term=term,
+        area=area,
+        state=state,
+    )
+    if not candidates:
+        raise ValueError(
+            f"No existing study-plan module matched `{module_query}` under `{program_key}`"
+            + (f" in `{term}`" if term else "")
+            + "."
+        )
+    if len(candidates) > 1:
+        details = "; ".join(
+            f"{module.name} ({module.state.value}, {module.area}, {_value(module.term)}, MOSES {_value(module.moses_number)})"
+            for module in candidates[:6]
+        )
+        raise ValueError(f"Module selector `{module_query}` is ambiguous. Matching modules: {details}.")
+    return candidates[0]
+
+
+def _matching_modules(
+    modules: list[Module],
+    *,
+    module_query: str,
+    version: int | None,
+    program_key: str | None,
+    term: str | None,
+    area: str | None,
+    state: ModuleStateFilter,
+) -> list[Module]:
+    query = str(module_query or "").strip()
+    if not query:
+        raise ValueError("module_query is required.")
+    normalized_query = _normalize(query)
+    normalized_area = None
+    if area:
+        try:
+            normalized_area = _normalize(_normalize_area_for_program(program_key, area)) if program_key else _normalize(area)
+        except Exception:
+            normalized_area = _normalize(area)
+    selected_state = None if state == "any" else _module_state_or_error(state)
+    result: list[Module] = []
+    scoped = modules_for_program(program_key, modules) if program_key else list(modules)
+    for module in scoped:
+        if selected_state is not None and module.state != selected_state:
+            continue
+        if term and canonical_term_label(module.term) != term:
+            continue
+        if normalized_area and normalized_area not in _normalize(module.area):
+            continue
+        if version is not None and module.moses_version is not None and module.moses_version != int(version):
+            continue
+        if _module_matches_query(module, query, normalized_query):
+            result.append(module)
+    return result
+
+
+def _module_matches_query(module: Module, raw_query: str, normalized_query: str) -> bool:
+    if not normalized_query:
+        return False
+    if module.id == raw_query:
+        return True
+    if module.moses_number and _normalize(module.moses_number) == normalized_query:
+        return True
+    if module.url and normalized_query in _normalize(module.url):
+        return True
+    if normalized_query == _normalize(module.name):
+        return True
+    return normalized_query in _normalize(module.name)
+
+
+def _module_state_or_error(value: str | ModuleState) -> ModuleState:
+    if isinstance(value, ModuleState):
+        return value
+    text = str(value or "").strip()
+    for state in ModuleState:
+        if state.value == text:
+            return state
+    raise ValueError(
+        f"Unknown module state `{value}`. Valid states: "
+        + ", ".join(state.value for state in ModuleState)
+        + "."
+    )
 
 
 def _build_program_summary(program_key: str, modules: list[Module]) -> StudyPlanProgramSummary:
@@ -589,11 +948,21 @@ def _canonical_term_or_error(term: str | None) -> str:
 
 
 def _resolve_area_for_module(program_key: str, data, area: str | None) -> str:
-    strategy = create_program(program_key)
     raw_area = area or moses_provider.suggest_area_for_module(program_key, data)
     if not raw_area:
         raise ValueError("No study area could be inferred. Provide area explicitly.")
-    normalized_area = strategy.normalize_area(raw_area)
+    return _normalize_area_for_program(program_key, raw_area)
+
+
+def _normalize_area_for_program(program_key: str, area: str | None) -> str:
+    strategy = create_program(program_key)
+    raw_area = str(area or "").strip()
+    if not raw_area:
+        raise ValueError("No study area could be inferred. Provide area explicitly.")
+    alias_area = AREA_ALIASES.get(_normalize(raw_area), raw_area)
+    normalized_area = strategy.normalize_area(alias_area)
+    if normalized_area not in strategy.get_valid_areas():
+        normalized_area = strategy.normalize_area(raw_area)
     valid_areas = strategy.get_valid_areas()
     if normalized_area not in valid_areas:
         raise ValueError(

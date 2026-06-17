@@ -117,15 +117,9 @@ class MultiAgentStudyAssistantCrew:
 
     @agent
     def course_commitment_specialist(self) -> Agent:
-        from crew.tools.grademanager_tools import AddModuleToStudyPlanTool
-        from crew.tools.isis_tools import PermanentlyEnrollInIsisCourseTool
-        tools = list(COURSE_COMMITMENT_TOOLS) + [
-            AddModuleToStudyPlanTool(),
-            PermanentlyEnrollInIsisCourseTool(),
-        ]
         return Agent(
             config=self.agents_config["course_commitment_specialist"],  # type: ignore[index]
-            tools=tools,
+            tools=list(COURSE_COMMITMENT_TOOLS),
             llm=self._llm(),
             verbose=self.verbose,
             cache=self.cache,

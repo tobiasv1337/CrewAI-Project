@@ -24,12 +24,13 @@ def _module(
     moses_number: str | None = None,
     moses_version: int | None = None,
     module_types: list[str] | None = None,
+    program_key: str = CS_PROGRAM,
 ) -> Module:
     return Module(
         id=module_id,
         name=name,
         state=state,
-        program_key=CS_PROGRAM,
+        program_key=program_key,
         cp=cp,
         grade=grade,
         area=area,
@@ -367,3 +368,117 @@ def test_add_module_to_study_plan_writes_context_selected_profile_only(monkeypat
     assert "profile `Alice Test Student`" in added
     assert [module.name for module in primary_modules] == ["Primary Machine Learning 1"]
     assert {module.name for module in alice_modules} == {"Alice Machine Learning 1", "Machine Learning 2"}
+
+
+def test_update_module_in_study_plan_moves_existing_planned_module(monkeypatch, tmp_path):
+    _setup_profile(
+        monkeypatch,
+        tmp_path,
+        [
+            _module(
+                module_id="ana2",
+                name="Analysis II für Ingenieurwissenschaften",
+                state=ModuleState.PLANNED,
+                cp=9,
+                area="Mandatory",
+                term="WS 26/27",
+                moses_number="20130",
+                moses_version=4,
+                program_key=TI_PROGRAM,
+            )
+        ],
+    )
+
+    with allow_confirmed_writes():
+        output = grademanager_tools.update_module_in_study_plan(
+            module_query="20130",
+            version=4,
+            program_key="tech_informatik_bsc",
+            current_term="WS 26/27",
+            target_term="SS 26",
+            target_area="Core Module",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
+
+    modules = persistence.load_modules("primary")
+    ana2 = modules[0]
+    assert "Updated `Analysis II für Ingenieurwissenschaften`" in output
+    assert ana2.id == "ana2"
+    assert ana2.term == "SS 26"
+    assert ana2.area == "Mandatory"
+    assert ana2.program_key == TI_PROGRAM
+
+
+def test_remove_module_from_study_plan_removes_only_unique_planned_module(monkeypatch, tmp_path):
+    _setup_profile(
+        monkeypatch,
+        tmp_path,
+        [
+            _module(
+                module_id="ana2",
+                name="Analysis II für Ingenieurwissenschaften",
+                state=ModuleState.PLANNED,
+                cp=9,
+                area="Mandatory",
+                term="WS 26/27",
+                moses_number="20130",
+                moses_version=4,
+                program_key=TI_PROGRAM,
+            ),
+            _module(
+                module_id="ana1",
+                name="Analysis I und Lineare Algebra für Ingenieurwissenschaften",
+                state=ModuleState.COMPLETED,
+                cp=9,
+                area="Mandatory",
+                term="SS 26",
+                moses_number="20122",
+                moses_version=4,
+                program_key=TI_PROGRAM,
+            ),
+        ],
+    )
+
+    with allow_confirmed_writes():
+        refused = grademanager_tools.remove_module_from_study_plan(
+            module_query="20122",
+            program_key=TI_PROGRAM,
+            current_state="any",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
+    assert "only `Planned` modules can be removed" in refused
+    assert len(persistence.load_modules("primary")) == 2
+
+    with allow_confirmed_writes():
+        removed = grademanager_tools.remove_module_from_study_plan(
+            module_query="20130",
+            program_key=TI_PROGRAM,
+            current_term="WS 26/27",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
+
+    assert "Removed `Analysis II für Ingenieurwissenschaften`" in removed
+    assert [module.id for module in persistence.load_modules("primary")] == ["ana1"]
+
+
+def test_program_alias_and_core_module_area_are_canonicalized_for_writes(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path, [])
+    monkeypatch.setattr(
+        grademanager_tools.moses_provider,
+        "fetch_course_details_for_query",
+        lambda *args, **kwargs: _fake_moses_result(),
+    )
+
+    with allow_confirmed_writes():
+        added = grademanager_tools.add_module_to_study_plan(
+            module_query="40967",
+            term="WS 26/27",
+            program_key="TechInformatik_B.Sc._2014",
+            area="Core Module",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
+
+    module = persistence.load_modules("primary")[0]
+    assert "under `TU Berlin - Technische Informatik (B.Sc.)`" in added
+    assert module.program_key == TI_PROGRAM
+    assert module.area == "Mandatory"

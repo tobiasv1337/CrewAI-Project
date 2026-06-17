@@ -94,6 +94,29 @@ def test_resolver_reports_ambiguity_instead_of_guessing():
     assert {course.id for course in result.candidates} == {2020, 3030}
 
 
+def test_resolver_does_not_treat_term_only_match_as_plausible_candidate():
+    client = FakeClient()
+    client.enrolled_ids = {5050}
+    client.courses[5050] = IsisCourseRef(
+        id=5050,
+        fullname="[SoSe 2026] Completely Different Course",
+        shortname="Different",
+        enrolled=True,
+        term_hint="SS 26",
+    )
+
+    result = IsisCourseResolver(client).resolve(
+        IsisCourseSelector(
+            course_query="Algorithmen und Datenstrukturen",
+            expected_title="Algorithmen und Datenstrukturen",
+            term_hint="SoSe 2026",
+        )
+    )
+
+    assert result.status == "not_found"
+    assert all(course.id != 5050 for course in result.candidates)
+
+
 def test_read_access_refuses_temp_enrollment_when_disabled():
     client = FakeClient()
     access = ReadOnlyCourseAccess(client, allow_temp_enrollment=False)

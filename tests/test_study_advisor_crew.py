@@ -47,7 +47,11 @@ def test_study_advisor_crew_uses_grade_manager_tools_only(monkeypatch):
 
     assert agent_tool_names == expected_names
     assert "Add Module To Study Plan" in write_names
+    assert "Update Module In Study Plan" in write_names
+    assert "Remove Module From Study Plan" in write_names
     assert "Add Module To Study Plan" not in agent_tool_names
+    assert "Update Module In Study Plan" not in agent_tool_names
+    assert "Remove Module From Study Plan" not in agent_tool_names
     assert set(read_names).issubset(agent_tool_names)
     assert "Search TU Berlin MOSES Modules" not in agent_tool_names
     assert "Get TU Berlin MOSES Degree Area Modules" not in agent_tool_names

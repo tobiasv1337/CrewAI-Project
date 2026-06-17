@@ -26,6 +26,8 @@ from crew.tools.grademanager_tools import (
     STUDY_PLAN_CONFIRMATION_TOKEN,
     add_module_to_study_plan,
     check_module_against_study_plan,
+    remove_module_from_study_plan,
+    update_module_in_study_plan,
 )
 from crew.tools.isis_tools import CONFIRMATION_TOKEN, PermanentlyEnrollInIsisCourseTool
 from crew.tools.proposal_tools import current_course_proposals
@@ -292,13 +294,19 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         return self.state
 
     def _run_route(self, route: str) -> str:
+        approved_execution_actions = self._approved_actions_for_execution()
+        if approved_execution_actions:
+            self.state.executed_actions = self._execute_approved_actions(approved_execution_actions)
+            self.state.proposed_actions = self._remaining_proposals()
+            if self._execution_only_turn():
+                return _format_execution_answer(
+                    self.state.executed_actions,
+                    language=(self.state.intent.language if self.state.intent else "en"),
+                )
+
         runner = self._runner_overrides.get(route)
         if runner:
-            res = runner(self)
-            if self.state.approved_actions:
-                self.state.executed_actions = self._verify_and_update_executed_actions()
-                self.state.proposed_actions = self._remaining_proposals()
-            return res
+            return runner(self)
         if route == "simple_grade_manager":
             from crew.study_advisor_crew import StudyAdvisorCrew
 
@@ -347,48 +355,19 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         from crew.multi_agent_crew import MultiAgentStudyAssistantCrew
 
         student_context = self.state.student_context or "No student context supplied."
-        approved_execution_actions = self._approved_actions_for_execution()
-        if approved_execution_actions:
-            student_context = (
-                f"{student_context}\n\n"
-                f"{_approved_action_execution_manifest(approved_execution_actions)}"
-            )
-
-        if approved_execution_actions:
-            from crew.write_permissions import allow_confirmed_writes
-            with allow_confirmed_writes():
-                result = MultiAgentStudyAssistantCrew(
-                    **self._crew_kwargs(),
-                    manager_model=self._runtime.manager_model,
-                    allow_temp_enrollment=self._runtime.allow_temp_enrollment,
-                    planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
-                    planning_llm_model=self._runtime.planning_llm_model,
-                ).crew().kickoff(
-                    inputs={
-                        "query": self._contextual_query(),
-                        "student_context": student_context,
-                        "isis_context": self.state.isis_context_json or "{}",
-                    }
-                )
-        else:
-            result = MultiAgentStudyAssistantCrew(
-                **self._crew_kwargs(),
-                manager_model=self._runtime.manager_model,
-                allow_temp_enrollment=self._runtime.allow_temp_enrollment,
-                planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
-                planning_llm_model=self._runtime.planning_llm_model,
-            ).crew().kickoff(
-                inputs={
-                    "query": self._contextual_query(),
-                    "student_context": student_context,
-                    "isis_context": self.state.isis_context_json or "{}",
-                }
-            )
-
-        if self.state.approved_actions:
-            self.state.executed_actions = self._verify_and_update_executed_actions()
-            self.state.proposed_actions = self._remaining_proposals()
-
+        result = MultiAgentStudyAssistantCrew(
+            **self._crew_kwargs(),
+            manager_model=self._runtime.manager_model,
+            allow_temp_enrollment=self._runtime.allow_temp_enrollment,
+            planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
+            planning_llm_model=self._runtime.planning_llm_model,
+        ).crew().kickoff(
+            inputs={
+                "query": self._contextual_query(),
+                "student_context": student_context,
+                "isis_context": self.state.isis_context_json or "{}",
+            }
+        )
         return str(getattr(result, "raw", result))
 
     def _approved_actions_for_execution(self) -> list[ProposedAction]:
@@ -408,6 +387,69 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             if action is not None:
                 execution_actions.append(action.model_copy(deep=True))
         return execution_actions
+
+    def _execute_approved_actions(self, actions: list[ProposedAction]) -> list[ProposedAction]:
+        executed: list[ProposedAction] = []
+        with allow_confirmed_writes():
+            for action in actions:
+                if action.kind == "grade_manager_add":
+                    executed.append(_execute_grade_manager_action(action))
+                elif action.kind == "grade_manager_update":
+                    executed.append(_execute_grade_manager_update_action(action))
+                elif action.kind == "grade_manager_remove":
+                    executed.append(_execute_grade_manager_remove_action(action))
+                elif action.kind in {"isis_enroll", "isis_resolve"}:
+                    executed.append(_execute_isis_action(action))
+                else:
+                    executed.append(
+                        action.model_copy(
+                            update={
+                                "status": "failed",
+                                "result": f"Unknown action kind: {action.kind}",
+                            }
+                        )
+                    )
+        self._record_executed_actions(executed)
+        return executed
+
+    def _record_executed_actions(self, executed: list[ProposedAction]) -> None:
+        thread = self.state.thread or load_chat_thread(self.state.profile_slug, thread_id=self.state.thread_id)
+        action_by_id = {
+            action.action_id: action
+            for proposal in thread.active_proposals
+            for action in proposal.actions
+        }
+        executed_by_identity = {
+            (_course_identity_for_action(action), action.kind): action
+            for action in executed
+        }
+        for executed_action in executed:
+            action = action_by_id.get(executed_action.action_id)
+            if action is None:
+                continue
+            action.status = executed_action.status
+            action.result = executed_action.result
+
+        for proposal in thread.active_proposals:
+            for action in proposal.actions:
+                if action.status not in ACTIVE_PROPOSAL_STATUSES:
+                    continue
+                identity = _course_identity_for_action(action)
+                if action.kind == "isis_resolve" and (identity, "isis_enroll") in executed_by_identity:
+                    action.status = "executed"
+                    action.result = "Superseded by a resolved ISIS enrollment action for the same course."
+
+        decisions_to_record = self.state.ui_decisions or self.state.approved_actions
+        thread.proposal_decisions.extend(decisions_to_record)
+        thread.active_proposals = _prune_proposals(thread.active_proposals)
+        save_chat_thread(thread)
+        self.state.thread = thread
+
+    def _execution_only_turn(self) -> bool:
+        decision = self.state.decision_interpretation
+        if decision is not None:
+            return decision.intent == "apply_selected"
+        return bool(self.state.approved_actions)
 
     def _crew_kwargs(self) -> dict[str, Any]:
         return {
@@ -641,6 +683,28 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 status, result = _verify_grade_manager_addition(updated)
                 updated.status = status
                 updated.result = result
+            elif updated.kind == "grade_manager_update":
+                target_term = str((updated.grade_manager_payload or {}).get("target_term") or "").strip()
+                if target_term:
+                    status, result = _verify_grade_manager_addition(
+                        updated.model_copy(
+                            update={
+                                "kind": "grade_manager_add",
+                                "grade_manager_payload": {
+                                    **(updated.grade_manager_payload or {}),
+                                    "term": target_term,
+                                },
+                            }
+                        )
+                    )
+                    updated.status = status
+                    updated.result = result
+                else:
+                    updated.status = "failed"
+                    updated.result = "Verification failed: no target_term was provided."
+            elif updated.kind == "grade_manager_remove":
+                updated.status = "executed" if action.status == "executed" else action.status
+                updated.result = action.result or "Remove action processed."
             elif updated.kind in {"isis_enroll", "isis_resolve"}:
                 status, result = _verify_isis_commitment(updated)
                 updated.status = status
@@ -762,65 +826,6 @@ def _format_isis_candidates(candidates: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def _approved_action_execution_manifest(actions: list[ProposedAction]) -> str:
-    manifest: list[dict[str, Any]] = []
-    for action in actions:
-        if action.kind == "grade_manager_add":
-            payload = {key: value for key, value in dict(action.grade_manager_payload or {}).items() if value not in (None, "")}
-            payload.setdefault("module_query", action.course_title)
-            payload["confirmation_token"] = STUDY_PLAN_CONFIRMATION_TOKEN
-            manifest.append(
-                {
-                    "action_id": action.action_id,
-                    "kind": action.kind,
-                    "course_title": action.course_title,
-                    "tool_name": "Add Module To Study Plan",
-                    "tool_arguments": payload,
-                    "execution_rule": "Call the tool once with exactly these arguments, then report the returned result.",
-                }
-            )
-        elif action.kind in {"isis_enroll", "isis_resolve"}:
-            source_payload = {key: value for key, value in dict(action.isis_payload or {}).items() if value not in (None, "")}
-            tool_payload = {
-                key: source_payload[key]
-                for key in ("course_id", "course_url", "course_query", "term_hint", "expected_title")
-                if source_payload.get(key) not in (None, "")
-            }
-            tool_payload.setdefault("course_query", action.course_title)
-            tool_payload.setdefault("expected_title", action.course_title)
-            tool_payload["confirmation_token"] = CONFIRMATION_TOKEN
-            manifest.append(
-                {
-                    "action_id": action.action_id,
-                    "kind": action.kind,
-                    "course_title": action.course_title,
-                    "tool_name": "Permanently Enroll In ISIS Course",
-                    "tool_arguments": tool_payload,
-                    "source_payload": {
-                        key: source_payload.get(key)
-                        for key in ("moses_module_number", "isis_resolution_status")
-                        if source_payload.get(key) not in (None, "")
-                    },
-                    "execution_rule": (
-                        "Call the permanent enrollment tool once with exactly these tool_arguments. "
-                        "For isis_resolve, the tool resolves by query/title/term first and enrolls only if unambiguous. "
-                        "If it returns ambiguous_course, not_found, invalid_selector, auth_failed, tool_failed, missing_isis_id, or refused, "
-                        "report ISIS as blocked with candidates/reason and do not claim enrollment success."
-                    ),
-                }
-            )
-
-    return (
-        "=== APPROVED_ACTION_EXECUTION_MANIFEST ===\n"
-        "The student explicitly accepted these enabled UI course-card actions. "
-        "This manifest is the only authorized write scope for this run.\n"
-        "The Orchestrator must delegate this exact manifest to the Course Commitment Specialist. "
-        "The Course Commitment Specialist must execute each item by calling the listed tool once with the exact tool_arguments. "
-        "Do not infer additional write actions. Do not execute declined, disabled, unsure, or merely proposed actions.\n\n"
-        f"{json.dumps(manifest, ensure_ascii=False, indent=2)}"
-    )
-
-
 def _prune_proposals(proposals: list[CourseProposal]) -> list[CourseProposal]:
     return _merge_proposals(proposals, [])
 
@@ -832,17 +837,16 @@ def _merge_proposals(existing_proposals: list[CourseProposal], new_proposals: li
         for action in proposal.actions:
             if action.status not in ACTIVE_PROPOSAL_STATUSES:
                 continue
-            key = (_course_identity_for_action(action), action.kind)
-            action_by_key.setdefault(key, (proposal, action))
+            key = (_course_identity_for_action(action), _action_family(action))
+            existing = action_by_key.get(key)
+            if existing is None or _action_merge_priority(action) > _action_merge_priority(existing[1]):
+                action_by_key[key] = (proposal, action)
 
     for proposal in new_proposals:
         for action in proposal.actions:
             if action.status not in ACTIVE_PROPOSAL_STATUSES:
                 continue
-            key = (_course_identity_for_action(action), action.kind)
-            existing = action_by_key.get(key)
-            if existing is not None and existing[1].status == "approved":
-                continue
+            key = (_course_identity_for_action(action), _action_family(action))
             action_by_key[key] = (proposal, action)
 
     if not action_by_key:
@@ -850,6 +854,27 @@ def _merge_proposals(existing_proposals: list[CourseProposal], new_proposals: li
     template = new_proposals[-1] if new_proposals else next(iter(action_by_key.values()))[0]
     actions = [action for _, action in action_by_key.values()]
     return [template.model_copy(update={"actions": actions}, deep=True)]
+
+
+def _action_family(action: ProposedAction) -> str:
+    if action.kind in {"isis_resolve", "isis_enroll"}:
+        return "isis"
+    if action.kind in {"grade_manager_add", "grade_manager_update", "grade_manager_remove"}:
+        return "grade_manager"
+    return action.kind
+
+
+def _action_merge_priority(action: ProposedAction) -> int:
+    priority = {
+        "grade_manager_add": 10,
+        "grade_manager_update": 20,
+        "grade_manager_remove": 30,
+        "isis_resolve": 10,
+        "isis_enroll": 20,
+    }.get(action.kind, 0)
+    if action.status == "approved":
+        priority += 1
+    return priority
 
 
 def _course_identity_for_action(action: ProposedAction) -> str:
@@ -1180,6 +1205,7 @@ def _execute_grade_manager_action(action: ProposedAction) -> ProposedAction:
         version=payload.get("version"),
         program_key=payload.get("program_key"),
         area=payload.get("area"),
+        allow_offering_mismatch=bool(payload.get("allow_offering_mismatch", False)),
         confirmation_token=STUDY_PLAN_CONFIRMATION_TOKEN,
     )
     verification = check_module_against_study_plan(
@@ -1188,8 +1214,62 @@ def _execute_grade_manager_action(action: ProposedAction) -> ProposedAction:
         program_key=payload.get("program_key"),
         term=term,
     )
-    status = "executed" if result.startswith("Added `") or result.startswith("Study-plan write refused: this MOSES module is already present") else "failed"
+    if result.startswith("Added `"):
+        status = "executed"
+    elif result.startswith("Study-plan write refused: this MOSES module is already present"):
+        status, verification_result = _verify_grade_manager_addition(action)
+        if status != "executed":
+            verification = verification_result
+    else:
+        status = "failed"
     return action.model_copy(update={"status": status, "result": f"{result}\n\nVerification:\n{verification}"})
+
+
+def _execute_grade_manager_update_action(action: ProposedAction) -> ProposedAction:
+    payload = dict(action.grade_manager_payload or {})
+    module_query = str(payload.get("module_query") or action.course_title).strip()
+    target_term = str(payload.get("target_term") or payload.get("term") or "").strip()
+    if not target_term:
+        return action.model_copy(update={"status": "needs_clarification", "result": "No target term was provided."})
+    result = update_module_in_study_plan(
+        module_query=module_query,
+        target_term=target_term,
+        version=payload.get("version"),
+        program_key=payload.get("program_key"),
+        current_term=payload.get("current_term"),
+        current_area=payload.get("current_area"),
+        current_state=payload.get("current_state") or "Planned",
+        target_area=payload.get("target_area") or payload.get("area"),
+        target_state=payload.get("target_state"),
+        allow_offering_mismatch=bool(payload.get("allow_offering_mismatch", False)),
+        allow_non_planned=bool(payload.get("allow_non_planned", False)),
+        confirmation_token=STUDY_PLAN_CONFIRMATION_TOKEN,
+    )
+    verification = check_module_against_study_plan(
+        module_query=module_query,
+        version=payload.get("version"),
+        program_key=payload.get("program_key"),
+        term=target_term,
+    )
+    status = "executed" if result.startswith("Updated `") or result.startswith("No study-plan change needed:") else "failed"
+    return action.model_copy(update={"status": status, "result": f"{result}\n\nVerification:\n{verification}"})
+
+
+def _execute_grade_manager_remove_action(action: ProposedAction) -> ProposedAction:
+    payload = dict(action.grade_manager_payload or {})
+    module_query = str(payload.get("module_query") or action.course_title).strip()
+    result = remove_module_from_study_plan(
+        module_query=module_query,
+        version=payload.get("version"),
+        program_key=payload.get("program_key"),
+        current_term=payload.get("current_term") or payload.get("term"),
+        current_area=payload.get("current_area") or payload.get("area"),
+        current_state=payload.get("current_state") or "Planned",
+        allow_non_planned=bool(payload.get("allow_non_planned", False)),
+        confirmation_token=STUDY_PLAN_CONFIRMATION_TOKEN,
+    )
+    status = "executed" if result.startswith("Removed `") else "failed"
+    return action.model_copy(update={"status": status, "result": result})
 
 
 def _execute_isis_action(action: ProposedAction) -> ProposedAction:

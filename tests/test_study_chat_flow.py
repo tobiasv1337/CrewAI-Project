@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from core import persistence
+from core.models import Module, ModuleState
 from crew.chat_models import ActionDecision, IntentClassification, ProposedAction, StudyChatFlowState, UserDecisionInterpretation
 from crew.chat_persistence import append_turn, load_chat_thread
 from crew.study_chat_flow import StudyChatFlow, StudyChatFlowRuntime
@@ -376,7 +377,7 @@ def test_confirmed_grade_manager_action_passes_exact_confirmation_token(monkeypa
     assert flow.state.executed_actions[0].status == "executed"
 
 
-def test_approved_actions_are_resolved_to_manifest_for_course_commitment_specialist(monkeypatch, tmp_path):
+def test_approved_actions_execute_deterministically_without_crew_manifest(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     proposal = build_course_proposal(
         proposal_title="Confirmed plan",
@@ -402,27 +403,24 @@ def test_approved_actions_are_resolved_to_manifest_for_course_commitment_special
         rolling_summary="Planning next semester.",
     )
 
-    captured_inputs = {}
-
     import crew.multi_agent_crew as multi_agent_module
     import crew.study_chat_flow as flow_module
-    from crew.write_permissions import confirmed_writes_enabled
 
     class FakeMultiAgentStudyAssistantCrew:
         def __init__(self, **kwargs):
-            self.kwargs = kwargs
-
-        def crew(self):
-            return self
-
-        def kickoff(self, inputs):
-            assert confirmed_writes_enabled()
-            captured_inputs.update(inputs)
-            return SimpleNamespace(raw="Course Commitment Specialist executed the manifest.")
+            raise AssertionError("crew should not run for a pure apply-selected turn")
 
     monkeypatch.setattr(multi_agent_module, "MultiAgentStudyAssistantCrew", FakeMultiAgentStudyAssistantCrew)
-    monkeypatch.setattr(flow_module, "_verify_grade_manager_addition", lambda action: ("executed", "Study plan verified."))
-    monkeypatch.setattr(flow_module, "_verify_isis_commitment", lambda action: ("executed", "ISIS enrollment verified."))
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Study plan updated."}),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_isis_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "ISIS enrollment updated."}),
+    )
 
     decisions = [ActionDecision(action_id=action.action_id, approved=True) for action in proposal.actions]
     flow = _flow()
@@ -434,41 +432,9 @@ def test_approved_actions_are_resolved_to_manifest_for_course_commitment_special
         ).model_dump(mode="json")
     )
 
-    manifest_context = captured_inputs["student_context"]
-    assert "APPROVED_ACTION_EXECUTION_MANIFEST" in manifest_context
-    assert '"kind": "grade_manager_add"' in manifest_context
-    assert '"kind": "isis_enroll"' in manifest_context
-    assert '"tool_name": "Add Module To Study Plan"' in manifest_context
-    assert '"tool_name": "Permanently Enroll In ISIS Course"' in manifest_context
-    assert '"confirmation_token": "CONFIRM_STUDY_PLAN_WRITE"' in manifest_context
-    assert '"confirmation_token": "CONFIRM_PERMANENT_ISIS_ENROLLMENT"' in manifest_context
     assert [action.status for action in flow.state.executed_actions] == ["executed", "executed"]
-
-
-def test_unresolved_isis_manifest_uses_resolve_enroll_without_moses_id_as_course_id():
-    import crew.study_chat_flow as flow_module
-
-    proposal = build_course_proposal(
-        proposal_title="Unresolved ISIS plan",
-        proposal_summary="One unresolved ISIS course.",
-        courses=[
-            ProposalCourseInput(
-                course_title="Einführung in die Programmierung",
-                rationale="Mandatory course.",
-                module_query="40017",
-                term="WS 26/27",
-                moses_module_number="40017",
-            )
-        ],
-    )
-
-    manifest = flow_module._approved_action_execution_manifest(proposal.actions)
-
-    assert '"kind": "isis_resolve"' in manifest
-    assert '"tool_name": "Permanently Enroll In ISIS Course"' in manifest
-    assert '"course_query": "Einführung in die Programmierung"' in manifest
-    assert '"moses_module_number": "40017"' in manifest
-    assert '"course_id": "40017"' not in manifest
+    assert "Confirmed Actions" in flow.state.answer_markdown
+    assert load_chat_thread("primary").active_proposals == []
 
 
 def test_natural_language_confirmation_uses_interpreter_not_phrase_list(monkeypatch, tmp_path):
@@ -498,8 +464,8 @@ def test_natural_language_confirmation_uses_interpreter_not_phrase_list(monkeypa
 
     monkeypatch.setattr(
         flow_module,
-        "_verify_grade_manager_addition",
-        lambda action: ("executed", "Added."),
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Added."}),
     )
 
     flow = _flow(runner_overrides={"recommendation": lambda f: "Add course."})
@@ -597,8 +563,8 @@ def test_partial_apply_and_revise_executes_approved_subset_then_runs_recommendat
 
     monkeypatch.setattr(
         flow_module,
-        "_verify_grade_manager_addition",
-        lambda action: ("executed", f"Added {action.course_title}."),
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": f"Added {action.course_title}."}),
     )
 
     flow = _flow(
@@ -653,13 +619,13 @@ def test_bundled_partial_apply_removes_declined_course_and_keeps_new_suggestion(
 
     monkeypatch.setattr(
         flow_module,
-        "_verify_grade_manager_addition",
-        lambda action: ("executed", f"Added {action.course_title}."),
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": f"Added {action.course_title}."}),
     )
     monkeypatch.setattr(
         flow_module,
-        "_verify_isis_commitment",
-        lambda action: ("executed", f"Enrolled {action.course_title}."),
+        "_execute_isis_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": f"Enrolled {action.course_title}."}),
     )
 
     new_proposal = build_course_proposal(
@@ -738,8 +704,16 @@ def test_conflicting_clarification_flag_does_not_block_clear_partial_revision(mo
 
     import crew.study_chat_flow as flow_module
 
-    monkeypatch.setattr(flow_module, "_verify_grade_manager_addition", lambda action: ("executed", "Added."))
-    monkeypatch.setattr(flow_module, "_verify_isis_commitment", lambda action: ("executed", "Enrolled."))
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Added."}),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_isis_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Enrolled."}),
+    )
 
     calls = []
     flow = _flow(
@@ -795,10 +769,14 @@ def test_disabled_isis_toggle_executes_study_plan_only_and_clears_disabled_actio
 
     import crew.study_chat_flow as flow_module
 
-    monkeypatch.setattr(flow_module, "_verify_grade_manager_addition", lambda action: ("executed", "Added."))
     monkeypatch.setattr(
         flow_module,
-        "_verify_isis_commitment",
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Added."}),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_isis_action",
         lambda action: (_ for _ in ()).throw(AssertionError("disabled ISIS action was executed")),
     )
 
@@ -818,6 +796,142 @@ def test_disabled_isis_toggle_executes_study_plan_only_and_clears_disabled_actio
     )
 
     assert [(action.kind, action.status) for action in flow.state.executed_actions] == [("grade_manager_add", "executed")]
+    assert load_chat_thread("primary").active_proposals == []
+
+
+def test_approved_grade_manager_update_executes_deterministically(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    update_action = ProposedAction(
+        action_id="gm-update-ana2",
+        kind="grade_manager_update",
+        course_title="Analysis II für Ingenieurwissenschaften",
+        grade_manager_payload={
+            "module_query": "20130",
+            "version": 4,
+            "program_key": "TU Berlin - Technische Informatik (B.Sc.)",
+            "current_term": "WS 26/27",
+            "target_term": "SS 26",
+            "target_area": "Mandatory",
+        },
+    )
+    proposal = build_course_proposal(
+        proposal_title="placeholder",
+        proposal_summary="placeholder",
+        courses=[
+            ProposalCourseInput(
+                course_title="Placeholder",
+                rationale="placeholder",
+                module_query="99999",
+                term="WS 26/27",
+                include_isis=False,
+            )
+        ],
+    ).model_copy(update={"proposal_id": "move-ana2", "title": "Move Ana2", "actions": [update_action]}, deep=True)
+    append_turn(
+        "primary",
+        user_content="Ana2 should be in summer.",
+        assistant_content="Please confirm.",
+        proposals=[proposal],
+        rolling_summary="Planning next semester.",
+    )
+
+    import crew.study_chat_flow as flow_module
+
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_grade_manager_update_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Updated Analysis II."}),
+    )
+
+    flow = _flow(runner_overrides={"recommendation": lambda flow: (_ for _ in ()).throw(AssertionError("crew should not run"))})
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Ja",
+            profile_slug="primary",
+            ui_decisions=[ActionDecision(action_id=update_action.action_id, approved=True)],
+        ).model_dump(mode="json")
+    )
+
+    assert [(action.kind, action.status) for action in flow.state.executed_actions] == [("grade_manager_update", "executed")]
+    assert load_chat_thread("primary").active_proposals == []
+
+
+def test_analysis_two_update_flow_moves_existing_module_to_summer(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            Module(
+                id="ana2",
+                name="Analysis II für Ingenieurwissenschaften",
+                state=ModuleState.PLANNED,
+                program_key="TU Berlin - Technische Informatik (B.Sc.)",
+                cp=9,
+                area="Mandatory",
+                is_graded=True,
+                term="WS 26/27",
+                moses_number="20130",
+                moses_version=4,
+            )
+        ],
+        "primary",
+    )
+    update_action = ProposedAction(
+        action_id="gm-update-ana2",
+        kind="grade_manager_update",
+        course_title="Analysis II für Ingenieurwissenschaften",
+        grade_manager_payload={
+            "module_query": "20130",
+            "version": 4,
+            "program_key": "tech_informatik_bsc",
+            "current_term": "WS 26/27",
+            "target_term": "SS 26",
+            "target_area": "Core Module",
+        },
+    )
+    proposal = build_course_proposal(
+        proposal_title="placeholder",
+        proposal_summary="placeholder",
+        courses=[
+            ProposalCourseInput(
+                course_title="Placeholder",
+                rationale="placeholder",
+                module_query="99999",
+                term="WS 26/27",
+                include_isis=False,
+            )
+        ],
+    ).model_copy(update={"proposal_id": "move-ana2", "title": "Move Ana2", "actions": [update_action]}, deep=True)
+    append_turn(
+        "primary",
+        user_content="Ana2 should be in summer.",
+        assistant_content="Please confirm.",
+        proposals=[proposal],
+        rolling_summary="Planning next semester.",
+    )
+
+    import crew.study_chat_flow as flow_module
+
+    monkeypatch.setattr(flow_module, "check_module_against_study_plan", lambda **kwargs: "Verified in test profile.")
+
+    flow = _flow()
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Ja",
+            profile_slug="primary",
+            ui_decisions=[ActionDecision(action_id=update_action.action_id, approved=True)],
+        ).model_dump(mode="json")
+    )
+
+    modules = persistence.load_modules("primary")
+    assert [(module.name, module.term, module.area, module.program_key) for module in modules] == [
+        (
+            "Analysis II für Ingenieurwissenschaften",
+            "SS 26",
+            "Mandatory",
+            "TU Berlin - Technische Informatik (B.Sc.)",
+        )
+    ]
+    assert [(action.kind, action.status) for action in flow.state.executed_actions] == [("grade_manager_update", "executed")]
     assert load_chat_thread("primary").active_proposals == []
 
 
@@ -1052,7 +1166,8 @@ def test_ui_decisions_update_action_status_and_merge_proposals(monkeypatch, tmp_
     assert action_by_title["Course C"].status == "proposed"
 
 
-def test_merge_replaces_stale_proposal_actions_by_course_identity():
+def test_merge_replaces_stale_proposal_actions_by_course_identity(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
     import crew.study_chat_flow as flow_module
 
     old_proposal = build_course_proposal(
@@ -1087,6 +1202,88 @@ def test_merge_replaces_stale_proposal_actions_by_course_identity():
     assert merged[0].title == "Updated recommendations"
     assert [action.kind for action in merged[0].actions] == ["grade_manager_add", "isis_resolve"]
     assert merged[0].actions[0].grade_manager_payload["area"] == "Elective"
+
+
+def test_merge_replaces_isis_resolve_with_verified_enroll(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    import crew.study_chat_flow as flow_module
+
+    old_proposal = build_course_proposal(
+        proposal_title="Old unresolved ISIS",
+        proposal_summary="Old suggestion.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Software Security Lab",
+                rationale="Initial recommendation.",
+                module_query="41240",
+                term="WS 26/27",
+            )
+        ],
+    )
+    new_proposal = build_course_proposal(
+        proposal_title="Resolved ISIS",
+        proposal_summary="Resolved suggestion.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Software Security Lab",
+                rationale="Resolved ISIS candidate.",
+                module_query="41240",
+                term="WS 26/27",
+                verified_isis_course_id=48474,
+                isis_resolution_status="resolved",
+            )
+        ],
+    )
+
+    merged = flow_module._merge_proposals([old_proposal], [new_proposal])
+
+    assert [action.kind for action in merged[0].actions] == ["grade_manager_add", "isis_enroll"]
+    assert merged[0].actions[1].isis_payload["course_id"] == 48474
+
+
+def test_merge_replaces_old_grade_manager_add_with_update_for_same_module():
+    import crew.study_chat_flow as flow_module
+
+    old_proposal = build_course_proposal(
+        proposal_title="Old Analysis II",
+        proposal_summary="Analysis II in winter.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Analysis II für Ingenieurwissenschaften",
+                rationale="Old term.",
+                module_query="20130",
+                version=4,
+                term="WS 26/27",
+                include_isis=False,
+            )
+        ],
+    )
+    update_action = ProposedAction(
+        action_id="gm-update-ana2",
+        kind="grade_manager_update",
+        course_title="Analysis II für Ingenieurwissenschaften",
+        grade_manager_payload={
+            "module_query": "20130",
+            "moses_module_number": "20130",
+            "version": 4,
+            "current_term": "WS 26/27",
+            "target_term": "SS 26",
+            "program_key": "TU Berlin - Technische Informatik (B.Sc.)",
+        },
+    )
+    new_proposal = old_proposal.model_copy(
+        update={
+            "proposal_id": "new-ana2",
+            "title": "Move Analysis II",
+            "actions": [update_action],
+        },
+        deep=True,
+    )
+
+    merged = flow_module._merge_proposals([old_proposal], [new_proposal])
+
+    assert [action.kind for action in merged[0].actions] == ["grade_manager_update"]
+    assert merged[0].actions[0].grade_manager_payload["target_term"] == "SS 26"
 
 
 def test_isis_candidates_persisted_to_next_turn(monkeypatch, tmp_path):

@@ -22,7 +22,13 @@ IntentRoute = Literal[
     "discard_active_proposals",
     "proposal_clarification",
 ]
-ActionKind = Literal["grade_manager_add", "isis_resolve", "isis_enroll"]
+ActionKind = Literal[
+    "grade_manager_add",
+    "grade_manager_update",
+    "grade_manager_remove",
+    "isis_resolve",
+    "isis_enroll",
+]
 ActionStatus = Literal["proposed", "approved", "declined", "executed", "failed", "needs_clarification"]
 UserDecisionIntent = Literal[
     "apply_selected",

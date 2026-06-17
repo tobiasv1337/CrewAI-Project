@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import crew.runtime
 from core import persistence
+from core.models import Module, ModuleState
 from crew.chat_persistence import append_turn, load_chat_thread
 from crew.profile_context import use_grade_manager_profile
 from crew.tools.proposal_tools import (
@@ -60,7 +61,8 @@ def test_proposal_tool_records_explicit_ui_actions_only_inside_collection_contex
     assert proposal.actions[0].action_id == proposal.actions[0].action_id
 
 
-def test_proposal_tool_creates_isis_resolution_action_when_id_is_unverified():
+def test_proposal_tool_creates_isis_resolution_action_when_id_is_unverified(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
     tool = ProposeCourseActionsTool()
 
     with collect_course_proposals() as proposals:
@@ -90,7 +92,8 @@ def test_proposal_tool_creates_isis_resolution_action_when_id_is_unverified():
     assert actions[1].isis_payload["course_query"] == "Systemprogrammierung"
 
 
-def test_proposal_tool_defaults_to_bundled_study_plan_and_isis_resolution():
+def test_proposal_tool_defaults_to_bundled_study_plan_and_isis_resolution(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
     tool = ProposeCourseActionsTool()
 
     with collect_course_proposals() as proposals:
@@ -113,6 +116,74 @@ def test_proposal_tool_defaults_to_bundled_study_plan_and_isis_resolution():
     assert actions[0].grade_manager_payload["module_query"] == "40017"
     assert actions[1].isis_payload["course_query"] == "Einführung in die Programmierung"
     assert actions[1].isis_payload["isis_resolution_status"] == "unresolved"
+
+
+def test_proposal_tool_turns_existing_module_with_new_term_into_update(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            Module(
+                id="ana2",
+                name="Analysis II für Ingenieurwissenschaften",
+                state=ModuleState.PLANNED,
+                program_key="TU Berlin - Technische Informatik (B.Sc.)",
+                cp=9,
+                area="Mandatory",
+                is_graded=True,
+                term="WS 26/27",
+                moses_number="20130",
+                moses_version=4,
+            )
+        ],
+        "primary",
+    )
+
+    proposal = build_course_proposal(
+        proposal_title="Move Analysis II",
+        proposal_summary="Analysis II should move to summer.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Analysis II für Ingenieurwissenschaften",
+                rationale="The user corrected the semester.",
+                module_query="20130",
+                version=4,
+                term="SS 26",
+                area="Mandatory",
+                program_key="tech_informatik_bsc",
+                include_isis=False,
+            )
+        ],
+    )
+
+    assert [action.kind for action in proposal.actions] == ["grade_manager_update"]
+    payload = proposal.actions[0].grade_manager_payload
+    assert payload["program_key"] == "TU Berlin - Technische Informatik (B.Sc.)"
+    assert payload["current_term"] == "WS 26/27"
+    assert payload["target_term"] == "SS 26"
+    assert payload["target_area"] == "Mandatory"
+
+
+def test_proposal_tool_can_create_remove_action(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+
+    proposal = build_course_proposal(
+        proposal_title="Remove Analysis II",
+        proposal_summary="Remove the old planned module.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Analysis II für Ingenieurwissenschaften",
+                rationale="The user no longer wants it in this term.",
+                module_query="20130",
+                term="WS 26/27",
+                program_key="TU Berlin - Technische Informatik (B.Sc.)",
+                grade_manager_action="remove",
+                include_isis=False,
+            )
+        ],
+    )
+
+    assert [action.kind for action in proposal.actions] == ["grade_manager_remove"]
+    assert proposal.actions[0].grade_manager_payload["current_term"] == "WS 26/27"
 
 
 def test_delete_course_proposal_tool_removes_agent_suggestion_from_thread_and_collector(monkeypatch, tmp_path):

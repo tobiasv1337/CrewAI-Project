@@ -68,7 +68,8 @@ study_assistant_task:
       deadlines, announcements, forums, grades, materials, assessments, or
       calendar dates to the ISIS Course Information Specialist.
     - Delegate explicit UI course proposals to the Course Commitment Specialist.
-      The Course Commitment Specialist also executes approved action writes (Grade Manager study plan additions and ISIS course enrollments) when the context contains an APPROVED_ACTION_EXECUTION_MANIFEST with confirmation tokens.
+      Confirmed Grade Manager and ISIS writes are executed deterministically by
+      the surrounding Flow after explicit UI approval, not by crew agents.
 
     Hard sequencing rules:
     - RULE 0 — Regulation PDFs define formal degree constraints.
@@ -94,7 +95,7 @@ study_assistant_task:
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal and execution actions.
       Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Course proposals should include Grade Manager + ISIS by default: use Study Plan + ISIS Enrollment when a verified ISIS id/url exists, and Study Plan + ISIS Resolve + Enroll when ISIS is not verified yet. Do NOT ask another specialist to call a write tool.
-      If the context contains APPROVED_ACTION_EXECUTION_MANIFEST, delegate that exact manifest to the Course Commitment Specialist. The Course Commitment Specialist must call each listed write tool once with the exact tool_arguments and tokens, verify/report success, and report blocked ISIS candidates when resolution is ambiguous. If active course-card actions are APPROVED or DECLINED but no execution manifest is present, retain approved actions and revise declined actions only when the user requested replacement, but do not claim that Grade Manager writes or ISIS enrollments happened.
+      If the context contains "Actions already executed in this turn", summarize those execution results exactly and do not re-run the same actions. If active course-card actions are APPROVED or DECLINED but not listed as executed, retain approved actions and revise declined actions only when the user requested replacement, but do not claim that Grade Manager writes or ISIS enrollments happened.
     - RULE D — Study Advisor cannot discover new modules in the catalog.
       For any task requiring finding, suggesting, or planning new modules or courses (e.g. semester planning, course planning, or course recommendations), you MUST NEVER delegate to the Study Advisor to search for or suggest new modules. The Study Advisor only knows about modules already in the student's plan and cannot search the catalog. You must first delegate to the Study Advisor to identify missing requirements/handoff search directives, then delegate to the MOSES Module Researcher with those directives to search the MOSES catalog and find matching modules, and finally delegate back to the Study Advisor with specific module numbers/names using `Check Module Against Study Plan` to verify degree area fit before proposing them to the student.
     - RULE E — Program Switch / Explore Rule.
@@ -143,10 +144,8 @@ study_assistant_task:
       enrollment but only MOSES data or a title is available, create an unresolved
       ISIS Resolve + Enroll action with exact course title, expected term, and
       MOSES context instead of inventing an ISIS id. After the user accepts such
-      an action, the APPROVED_ACTION_EXECUTION_MANIFEST authorizes the Course
-      Commitment Specialist to call Permanently Enroll In ISIS Course using the
-      provided query/title/term. That tool resolves the real ISIS course and
-      enrolls only if unambiguous. If ISIS resolution or enrollment returns
+      an action, the Flow resolves the real ISIS course and enrolls only if
+      unambiguous. If ISIS resolution or enrollment returns
       ambiguous, not_found, auth_failed, tool_failed, invalid_selector,
       missing_isis_id, refused, or any non-success status, treat it as blocking
       and ask the student to choose from candidates or clarify.
@@ -164,8 +163,8 @@ study_assistant_task:
       Specialist.
     - For pure progress/degree questions: only Study Advisor.
     - For recommendation banners: only Course Commitment Specialist.
-    - For study-plan writes and permanent ISIS enrollment: only the
-      Course Commitment Specialist when authorized via confirmation tokens.
+    - For study-plan writes and permanent ISIS enrollment: only the deterministic
+      Flow after explicit UI approval.
     - Keep source boundaries explicit. Regulation PDF facts ≠ MOSES facts ≠
       ISIS facts ≠ Grade Manager facts. Do not let one source substitute for
       another.
@@ -192,9 +191,8 @@ study_assistant_task:
     - If any proposal or accepted action involves ISIS enrollment, did it avoid
       using a MOSES module number as an ISIS course_id? Verified ISIS id/url is
       best. If only title/term/MOSES context is available, the proposal must be
-      an unresolved ISIS Resolve + Enroll action, and the accepted execution
-      manifest must let the Course Commitment Specialist resolve/enroll through
-      the permanent enrollment tool instead of guessing.
+      an unresolved ISIS Resolve + Enroll action, and deterministic Flow execution
+      will resolve/enroll after UI approval instead of guessing.
     - If the context contains "Actions already executed in this turn", did you
       accurately summarize those execution results and avoid re-proposing the
       same completed actions? If not, correct your answer.
@@ -233,9 +231,8 @@ study_assistant_task:
       permissible-alternative uncertainty remains after other specialists
       return their evidence.
     - Delegate to Course Commitment Specialist with the exact course list when
-      a UI proposal must be created or revised. When approved actions must be
-      executed, pass the exact APPROVED_ACTION_EXECUTION_MANIFEST and do not add,
-      remove, or rewrite manifest actions.
+      a UI proposal must be created or revised. Do not ask specialists to execute
+      approved actions; the Flow handles confirmed writes.
     Then loop back to Phase 3 for another review pass.
 
 

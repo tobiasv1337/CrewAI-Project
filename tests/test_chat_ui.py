@@ -269,7 +269,8 @@ def test_trace_has_successful_study_plan_write_detects_badge():
     )
 
 
-def test_resolve_course_proposals_rebuilds_explicit_proposal_tool_call():
+def test_resolve_course_proposals_rebuilds_explicit_proposal_tool_call(monkeypatch, tmp_path):
+    _setup_chat_profiles(monkeypatch, tmp_path)
     result = MultiAgentStudyAssistantRunResult(
         answer="The proposal has been prepared.",
         tool_summary_lines=[],
@@ -325,7 +326,8 @@ def test_resolve_course_proposals_rebuilds_explicit_proposal_tool_call():
     assert proposal.actions[1].isis_payload["course_id"] == 48474
 
 
-def test_course_card_decisions_default_to_unsure_and_respect_action_toggles():
+def test_course_card_decisions_default_to_unsure_and_respect_action_toggles(monkeypatch, tmp_path):
+    _setup_chat_profiles(monkeypatch, tmp_path)
     proposal = build_course_proposal(
         proposal_title="Security option",
         proposal_summary="One suggested course.",
@@ -564,7 +566,8 @@ def test_live_workbench_agent_status_graceful_tool_failures():
     assert groups["MOSES Module Researcher"]["status"] == "ok"
 
 
-def test_course_cards_collapse_same_course_across_proposals():
+def test_course_cards_collapse_same_course_across_proposals(monkeypatch, tmp_path):
+    _setup_chat_profiles(monkeypatch, tmp_path)
     proposal1 = build_course_proposal(
         proposal_title="Option A",
         proposal_summary="First suggestion.",

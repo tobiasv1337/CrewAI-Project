@@ -4,12 +4,13 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from hashlib import sha1
-from typing import Any, Type
+from typing import Any, Literal, Type
 
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 
 from crew.chat_models import CourseProposal, ProposedAction
+from crew.tools import grademanager_tools
 
 
 _RECORDED_COURSE_PROPOSALS: ContextVar[list[CourseProposal] | None] = ContextVar(
@@ -28,6 +29,16 @@ class ProposalCourseInput(BaseModel):
     term: str | None = Field(default=None, description="Planned semester, e.g. WS 26/27.")
     area: str | None = Field(default=None, description="Grade Manager area, e.g. Elective. Leave empty only if the write tool should infer it.")
     program_key: str | None = Field(default=None, description="Exact Grade Manager degree program key when needed.")
+    grade_manager_action: Literal["add", "update", "remove", "none"] = Field(
+        default="add",
+        description="Grade Manager action to propose. Use update to move/change an existing module, remove to delete one, none for ISIS-only.",
+    )
+    current_term: str | None = Field(default=None, description="Current semester selector for update/remove actions.")
+    current_area: str | None = Field(default=None, description="Current area selector for update/remove actions.")
+    current_state: str | None = Field(default="Planned", description="Current state selector for update/remove actions.")
+    target_term: str | None = Field(default=None, description="Target semester for update actions. Defaults to term.")
+    target_area: str | None = Field(default=None, description="Target area for update actions. Defaults to area.")
+    target_state: str | None = Field(default=None, description="Optional target state for update actions.")
     verified_isis_course_id: int | None = Field(default=None, description="Verified ISIS/Moodle course id for permanent enrollment.")
     verified_isis_course_url: str | None = Field(default=None, description="Verified ISIS course URL for permanent enrollment.")
     isis_course_id: int | None = Field(default=None, description="Deprecated compatibility field. Prefer verified_isis_course_id.")
@@ -96,23 +107,17 @@ def build_course_proposal(
         evidence.extend(course.evidence)
         moses_query = course.moses_module_number or course.module_query or course.course_title
         if course.include_grade_manager:
-            payload = {
-                "module_query": moses_query,
-                "moses_module_number": course.moses_module_number or _numeric_text(course.module_query),
-                "version": course.version,
-                "term": course.term,
-                "area": course.area,
-                "program_key": course.program_key,
-            }
-            actions.append(
-                ProposedAction(
-                    action_id=_stable_action_id("grade_manager_add", course.course_title, payload),
-                    kind="grade_manager_add",
-                    course_title=course.course_title,
-                    evidence=[course.rationale, *course.evidence],
-                    grade_manager_payload=payload,
+            gm_action, payload = _grade_manager_action_payload(course, moses_query)
+            if gm_action is not None:
+                actions.append(
+                    ProposedAction(
+                        action_id=_stable_action_id(gm_action, course.course_title, payload),
+                        kind=gm_action,
+                        course_title=course.course_title,
+                        evidence=[course.rationale, *course.evidence],
+                        grade_manager_payload=payload,
+                    )
                 )
-            )
         if course.include_isis:
             verified_id = course.verified_isis_course_id or course.isis_course_id
             verified_url = course.verified_isis_course_url or course.isis_course_url
@@ -240,6 +245,100 @@ class DeleteCourseProposalTool(BaseTool):
 def _stable_action_id(kind: str, course_title: str, payload: dict[str, Any]) -> str:
     material = repr((kind, course_title, sorted((key, str(value)) for key, value in payload.items() if value is not None)))
     return f"{kind}-{sha1(material.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _grade_manager_action_payload(
+    course: ProposalCourseInput,
+    moses_query: str,
+) -> tuple[str | None, dict[str, Any]]:
+    action = course.grade_manager_action
+    if action == "none":
+        return None, {}
+
+    moses_number = course.moses_module_number or _numeric_text(course.module_query)
+    program_key = _canonical_program_key_or_original(course.program_key)
+    target_term = course.target_term or course.term
+    target_area = course.target_area or course.area
+    existing = _existing_module_for_course(course, moses_query, program_key)
+
+    if action == "add" and existing is not None:
+        existing_term = _canonical_term(existing.term)
+        desired_term = _canonical_term(target_term)
+        existing_area = str(existing.area or "").strip()
+        desired_area = str(target_area or existing_area or "").strip()
+        if desired_term and existing_term and desired_term != existing_term:
+            action = "update"
+        elif desired_area and existing_area and desired_area != existing_area:
+            action = "update"
+        else:
+            return None, {}
+
+    base = {
+        "module_query": moses_query,
+        "moses_module_number": moses_number,
+        "version": course.version,
+        "program_key": program_key,
+    }
+    if action == "add":
+        return "grade_manager_add", {
+            **base,
+            "term": target_term,
+            "area": target_area,
+        }
+    if action == "update":
+        return "grade_manager_update", {
+            **base,
+            "current_term": course.current_term or (existing.term if existing is not None else None),
+            "current_area": course.current_area or (existing.area if existing is not None else None),
+            "current_state": course.current_state or (existing.state.value if existing is not None else "Planned"),
+            "target_term": target_term,
+            "target_area": target_area or (existing.area if existing is not None else None),
+            "target_state": course.target_state,
+        }
+    if action == "remove":
+        return "grade_manager_remove", {
+            **base,
+            "current_term": course.current_term or (existing.term if existing is not None else course.term),
+            "current_area": course.current_area or (existing.area if existing is not None else course.area),
+            "current_state": course.current_state or (existing.state.value if existing is not None else "Planned"),
+        }
+    return None, {}
+
+
+def _existing_module_for_course(
+    course: ProposalCourseInput,
+    moses_query: str,
+    program_key: str | None,
+):
+    try:
+        _, modules = grademanager_tools._load_primary_profile_modules()
+    except Exception:
+        return None
+    return grademanager_tools.find_existing_study_plan_module(
+        modules,
+        module_query=moses_query,
+        version=course.version,
+        program_key=program_key,
+    )
+
+
+def _canonical_program_key_or_original(program_key: str | None) -> str | None:
+    if not program_key:
+        return None
+    try:
+        _, modules = grademanager_tools._load_primary_profile_modules()
+    except Exception:
+        modules = []
+    try:
+        return grademanager_tools.canonicalize_program_key(program_key, modules)
+    except Exception:
+        return program_key
+
+
+def _canonical_term(value: str | None) -> str | None:
+    from core.terms import canonical_term_label
+
+    return canonical_term_label(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

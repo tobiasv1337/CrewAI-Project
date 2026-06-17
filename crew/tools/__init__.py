@@ -30,6 +30,8 @@ from crew.tools.grademanager_tools import (
     get_degree_requirement_details,
     get_study_plan_snapshot,
     list_study_plan_modules,
+    remove_module_from_study_plan,
+    update_module_in_study_plan,
 )
 from crew.tools.proposal_tools import (
     ProposeCourseActionsTool,
@@ -87,4 +89,6 @@ __all__ = [
     "get_degree_requirement_details",
     "check_module_against_study_plan",
     "add_module_to_study_plan",
+    "update_module_in_study_plan",
+    "remove_module_from_study_plan",
 ]

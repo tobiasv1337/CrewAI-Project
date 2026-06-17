@@ -578,12 +578,12 @@ def extract_refused_proposals(workbench: dict[str, Any] | None) -> list[dict[str
 
     for group in groups:
         for call in (group.get("tool_calls") or []):
-            if call.get("tool_name") == "Add Module To Study Plan":
+            if call.get("tool_name") in {"Add Module To Study Plan", "Update Module In Study Plan", "Remove Module From Study Plan"}:
                 output = str(call.get("output_preview") or "").casefold()
                 if "refused" in output or "token" in output:
                     tool_input = call.get("tool_input") or {}
                     module_query = str(tool_input.get("module_query") or "").strip()
-                    term = str(tool_input.get("term") or "").strip()
+                    term = str(tool_input.get("target_term") or tool_input.get("term") or tool_input.get("current_term") or "").strip()
                     if module_query and term:
                         if len(module_query) == 4 and 1900 <= int(module_query) <= 2099:
                             continue
@@ -905,7 +905,11 @@ def _render_course_choice_card(profile_slug: str, card: dict[str, Any]) -> None:
                 st.session_state[decision_key] = decision
                 st.rerun()
 
-    action_toggle_actions = [action for action in card["actions"] if action.kind in {"grade_manager_add", "isis_resolve", "isis_enroll"}]
+    action_toggle_actions = [
+        action
+        for action in card["actions"]
+        if action.kind in {"grade_manager_add", "grade_manager_update", "grade_manager_remove", "isis_resolve", "isis_enroll"}
+    ]
     if len(action_toggle_actions) > 1:
         toggle_cols = st.columns(len(action_toggle_actions), gap="small")
         for col, action in zip(toggle_cols, action_toggle_actions):
@@ -927,10 +931,10 @@ def _course_card_metadata(card: dict[str, Any]) -> list[tuple[str, str]]:
     module = None
     isis_id = None
     for action in card["actions"]:
-        if action.kind == "grade_manager_add":
+        if action.kind in {"grade_manager_add", "grade_manager_update", "grade_manager_remove"}:
             payload = action.grade_manager_payload or {}
-            term = term or payload.get("term")
-            area = area or payload.get("area")
+            term = term or payload.get("target_term") or payload.get("term") or payload.get("current_term")
+            area = area or payload.get("target_area") or payload.get("area") or payload.get("current_area")
             module = module or payload.get("module_query")
         elif action.kind in {"isis_resolve", "isis_enroll"}:
             payload = action.isis_payload or {}
@@ -1084,7 +1088,11 @@ def _render_legacy_proposals_panel(profile_slug: str, proposals: list[Any]) -> N
 
 def _action_kind_label(kind: str) -> str:
     if kind == "grade_manager_add":
-        return "Study Plan"
+        return "Study Plan Add"
+    if kind == "grade_manager_update":
+        return "Study Plan Update"
+    if kind == "grade_manager_remove":
+        return "Study Plan Remove"
     if kind == "isis_resolve":
         return "ISIS Resolve + Enroll"
     if kind == "isis_enroll":
@@ -1094,7 +1102,11 @@ def _action_kind_label(kind: str) -> str:
 
 def _action_kind_short_label(kind: str) -> str:
     if kind == "grade_manager_add":
-        return "Study Plan"
+        return "Plan"
+    if kind == "grade_manager_update":
+        return "Update"
+    if kind == "grade_manager_remove":
+        return "Remove"
     if kind == "isis_resolve":
         return "ISIS"
     if kind == "isis_enroll":
@@ -1103,7 +1115,7 @@ def _action_kind_short_label(kind: str) -> str:
 
 
 def _action_kind_class(kind: str) -> str:
-    if kind == "grade_manager_add":
+    if kind in {"grade_manager_add", "grade_manager_update", "grade_manager_remove"}:
         return "grade-manager"
     if kind in {"isis_resolve", "isis_enroll"}:
         return "isis"
@@ -2009,7 +2021,7 @@ def initial_live_trace_events(prompt: str, settings: ChatRuntimeSettings) -> lis
             "agent_label": "Course Commitment Specialist",
             "phase": "ready",
             "status": "idle",
-            "activity": "Ready to create explicit confirmation proposals or execute approved actions.",
+            "activity": "Ready to create explicit confirmation proposals.",
             "source_system": "Course Commitment",
         },
     ]
@@ -2212,10 +2224,10 @@ def extract_pending_study_plan_write(
 ) -> dict[str, Any] | None:
     if workbench:
         for call in _all_tool_calls(workbench):
-            if call.get("tool_name") == "Add Module To Study Plan" and "write refused" in str(call.get("output_preview") or "").casefold():
+            if call.get("tool_name") in {"Add Module To Study Plan", "Update Module In Study Plan", "Remove Module From Study Plan"} and "write refused" in str(call.get("output_preview") or "").casefold():
                 tool_input = call.get("tool_input") or {}
                 module_query = str(tool_input.get("module_query") or "").strip()
-                term = str(tool_input.get("term") or "").strip()
+                term = str(tool_input.get("target_term") or tool_input.get("term") or tool_input.get("current_term") or "").strip()
                 if module_query and term:
                     return {
                         "module_query": module_query,

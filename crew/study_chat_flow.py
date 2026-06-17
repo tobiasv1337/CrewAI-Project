@@ -115,14 +115,14 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     def classify_intent(self) -> str:
         if self.state.approved_actions:
             intent = IntentClassification(
-                route="execute_confirmed_actions",
+                route="recommendation",
                 complexity="scoped",
-                required_sources=["grade_manager", "isis"],
+                required_sources=["degree_regulations", "grade_manager", "moses", "isis"],
                 write_intent=True,
                 rationale="User submitted explicit UI action decisions.",
             )
             self.state.intent = intent
-            self.state.route = "execute_confirmed_actions"
+            self.state.route = "recommendation"
             if self._on_trace_event:
                 self._on_trace_event(
                     {
@@ -131,7 +131,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                         "status": "ok",
                     }
                 )
-            return "execute_confirmed_actions"
+            return "recommendation"
 
         decision = self._interpret_active_proposal_decision()
         if decision is not None:
@@ -172,21 +172,16 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             if decision.intent in {"apply_selected", "apply_partial_and_revise"}:
                 self.state.approved_actions = self._action_decisions_from_interpretation(decision)
                 if self.state.approved_actions:
-                    route = "execute_then_recommendation" if decision.intent == "apply_partial_and_revise" else "execute_confirmed_actions"
                     intent = IntentClassification(
-                        route=route,
+                        route="recommendation",
                         complexity="scoped",
-                        required_sources=(
-                            ["grade_manager", "isis"]
-                            if route == "execute_confirmed_actions"
-                            else ["degree_regulations", "grade_manager", "moses", "isis"]
-                        ),
+                        required_sources=["degree_regulations", "grade_manager", "moses", "isis"],
                         write_intent=True,
                         rationale=decision.rationale or "User decision interpreter selected approved UI actions for execution.",
                     )
                     self.state.intent = intent
-                    self.state.route = route
-                    return route
+                    self.state.route = "recommendation"
+                    return "recommendation"
 
             if decision.intent == "revise_only":
                 intent = IntentClassification(
@@ -243,26 +238,6 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         self.state.answer_markdown = self._run_route("deep_dive")
         self._adopt_recorded_or_existing_proposals()
 
-    @listen("execute_confirmed_actions")
-    def run_confirmed_action_execution(self) -> None:
-        self.state.executed_actions = self._execute_action_decisions()
-        self.state.proposed_actions = self._remaining_proposals()
-        self.state.answer_markdown = _format_execution_answer(
-            self.state.executed_actions,
-            language=(self.state.intent.language if self.state.intent else "en"),
-        )
-
-    @listen("execute_then_recommendation")
-    def run_execute_then_recommendation(self) -> None:
-        self.state.executed_actions = self._execute_action_decisions()
-        execution_answer = _format_execution_answer(
-            self.state.executed_actions,
-            language=(self.state.intent.language if self.state.intent else "en"),
-        )
-        recommendation_answer = self._run_route("recommendation")
-        self._adopt_recorded_or_existing_proposals()
-        self.state.answer_markdown = f"{execution_answer.rstrip()}\n\n{recommendation_answer.rstrip()}".strip()
-
     @listen("discard_active_proposals")
     def run_discard_active_proposals(self) -> None:
         self._clear_active_proposals()
@@ -282,8 +257,6 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             run_simple_degree_regulations,
             run_recommendation_route,
             run_deep_dive_route,
-            run_confirmed_action_execution,
-            run_execute_then_recommendation,
             run_discard_active_proposals,
             run_proposal_clarification,
         )
@@ -320,7 +293,11 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     def _run_route(self, route: str) -> str:
         runner = self._runner_overrides.get(route)
         if runner:
-            return runner(self)
+            res = runner(self)
+            if self.state.approved_actions:
+                self.state.executed_actions = self._verify_and_update_executed_actions()
+                self.state.proposed_actions = self._remaining_proposals()
+            return res
         if route == "simple_grade_manager":
             from crew.study_advisor_crew import StudyAdvisorCrew
 
@@ -368,19 +345,74 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
 
         from crew.multi_agent_crew import MultiAgentStudyAssistantCrew
 
-        result = MultiAgentStudyAssistantCrew(
-            **self._crew_kwargs(),
-            manager_model=self._runtime.manager_model,
-            allow_temp_enrollment=self._runtime.allow_temp_enrollment,
-            planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
-            planning_llm_model=self._runtime.planning_llm_model,
-        ).crew().kickoff(
-            inputs={
-                "query": self._contextual_query(),
-                "student_context": self.state.student_context or "No student context supplied.",
-                "isis_context": self.state.isis_context_json or "{}",
-            }
-        )
+        student_context = self.state.student_context or "No student context supplied."
+        if self.state.approved_actions:
+            actions_to_pass = []
+            for action in self.state.approved_actions:
+                if action.kind == "grade_manager_add":
+                    payload = dict(action.grade_manager_payload or {})
+                    if "module_query" not in payload:
+                        payload["module_query"] = action.course_title
+                    payload["confirmation_token"] = "CONFIRM_STUDY_PLAN_WRITE"
+                    actions_to_pass.append({
+                        "kind": action.kind,
+                        "course_title": action.course_title,
+                        "payload": payload,
+                    })
+                elif action.kind == "isis_enroll":
+                    payload = dict(action.isis_payload or {})
+                    payload["confirmation_token"] = "CONFIRM_PERMANENT_ISIS_ENROLLMENT"
+                    actions_to_pass.append({
+                        "kind": action.kind,
+                        "course_title": action.course_title,
+                        "payload": payload,
+                    })
+            
+            actions_context = (
+                "\n\n=== APPROVED ACTIONS TO EXECUTE ===\n"
+                "The student has explicitly APPROVED the following course actions for execution. "
+                "The Course Commitment Specialist MUST execute these actions by calling the write tools "
+                "with the exact arguments and the provided confirmation tokens. "
+                "Verify success, retrieve any course/module IDs, and report the execution outcomes in the final response.\n\n"
+                f"{json.dumps(actions_to_pass, ensure_ascii=False, indent=2)}\n"
+            )
+            student_context = f"{student_context}\n{actions_context}"
+
+        if self.state.approved_actions:
+            from crew.write_permissions import allow_confirmed_writes
+            with allow_confirmed_writes():
+                result = MultiAgentStudyAssistantCrew(
+                    **self._crew_kwargs(),
+                    manager_model=self._runtime.manager_model,
+                    allow_temp_enrollment=self._runtime.allow_temp_enrollment,
+                    planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
+                    planning_llm_model=self._runtime.planning_llm_model,
+                ).crew().kickoff(
+                    inputs={
+                        "query": self._contextual_query(),
+                        "student_context": student_context,
+                        "isis_context": self.state.isis_context_json or "{}",
+                    }
+                )
+        else:
+            result = MultiAgentStudyAssistantCrew(
+                **self._crew_kwargs(),
+                manager_model=self._runtime.manager_model,
+                allow_temp_enrollment=self._runtime.allow_temp_enrollment,
+                planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
+                planning_llm_model=self._runtime.planning_llm_model,
+            ).crew().kickoff(
+                inputs={
+                    "query": self._contextual_query(),
+                    "student_context": student_context,
+                    "isis_context": self.state.isis_context_json or "{}",
+                }
+            )
+
+        if self.state.approved_actions:
+            self.state.executed_actions = self._verify_and_update_executed_actions()
+            self.state.proposed_actions = self._remaining_proposals()
+
         return str(getattr(result, "raw", result))
 
     def _crew_kwargs(self) -> dict[str, Any]:
@@ -585,7 +617,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         thread = self.state.thread
         self.state.proposed_actions = list(thread.active_proposals if thread else [])
 
-    def _execute_action_decisions(self) -> list[ProposedAction]:
+    def _verify_and_update_executed_actions(self) -> list[ProposedAction]:
         thread = self.state.thread or load_chat_thread(self.state.profile_slug, thread_id=self.state.thread_id)
         action_by_id = {
             action.action_id: action
@@ -593,31 +625,37 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             for action in proposal.actions
         }
         executed: list[ProposedAction] = []
-        with allow_confirmed_writes():
-            for decision in self.state.approved_actions:
-                action = action_by_id.get(decision.action_id)
-                if action is None:
-                    executed.append(
-                        ProposedAction(
-                            action_id=decision.action_id,
-                            kind="grade_manager_add",
-                            course_title="Unknown action",
-                            status="failed",
-                            result="No active proposal action matched this decision.",
-                        )
+        for decision in self.state.approved_actions:
+            action = action_by_id.get(decision.action_id)
+            if action is None:
+                executed.append(
+                    ProposedAction(
+                        action_id=decision.action_id,
+                        kind="grade_manager_add",
+                        course_title="Unknown action",
+                        status="failed",
+                        result="No active proposal action matched this decision.",
                     )
-                    continue
-                updated = action.model_copy(deep=True)
-                if not decision.approved:
-                    updated.status = "declined"
-                    updated.result = decision.feedback or "Declined by user."
-                elif updated.kind == "grade_manager_add":
-                    updated = _execute_grade_manager_action(updated)
-                elif updated.kind in {"isis_resolve", "isis_enroll"}:
-                    updated = _execute_isis_action(updated)
-                action.status = updated.status
-                action.result = updated.result
-                executed.append(updated)
+                )
+                continue
+            updated = action.model_copy(deep=True)
+            if not decision.approved:
+                updated.status = "declined"
+                updated.result = decision.feedback or "Declined by user."
+            elif updated.kind == "grade_manager_add":
+                status, result = _verify_grade_manager_addition(updated)
+                updated.status = status
+                updated.result = result
+            elif updated.kind == "isis_enroll":
+                status, result = _verify_isis_enrollment(updated)
+                updated.status = status
+                updated.result = result
+            else:
+                updated.status = "failed"
+                updated.result = f"Unknown action kind: {updated.kind}"
+            action.status = updated.status
+            action.result = updated.result
+            executed.append(updated)
 
         thread.proposal_decisions.extend(self.state.approved_actions)
         thread.active_proposals = [
@@ -632,6 +670,55 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     def _remaining_proposals(self) -> list[CourseProposal]:
         thread = self.state.thread
         return list(thread.active_proposals if thread else [])
+
+
+
+def _verify_grade_manager_addition(action: ProposedAction) -> tuple[str, str]:
+    payload = dict(action.grade_manager_payload or {})
+    module_query = str(payload.get("module_query") or action.course_title).strip()
+    term = str(payload.get("term") or "").strip()
+    
+    from crew.tools.grademanager_tools import _load_primary_profile_modules, _canonical_term_or_error, _resolve_moses_module
+    from core.providers.tu_berlin import moses as moses_provider
+    try:
+        profile, modules = _load_primary_profile_modules()
+        term_label = _canonical_term_or_error(term)
+        resolved = _resolve_moses_module(module_query, version=payload.get("version"), term=term_label)
+        data = resolved.data
+        
+        existing = moses_provider.find_existing_module_by_moses_identity_any_program(
+            modules,
+            number=data.number,
+            version=data.version,
+        )
+        if existing and existing.state.value == "Planned" and existing.term == term_label:
+            return "executed", f"Verified: Module '{existing.name}' is planned for {term_label} in study plan."
+        else:
+            return "failed", f"Failed verification: Module '{data.name}' not found in study plan for {term_label}."
+    except Exception as exc:
+        return "failed", f"Verification failed with error: {exc}"
+
+
+def _verify_isis_enrollment(action: ProposedAction) -> tuple[str, str]:
+    payload = {key: value for key, value in dict(action.isis_payload or {}).items() if value not in (None, "")}
+    course_id = str(payload.get("course_id") or "").strip()
+    
+    from crew.isis_client import get_default_isis_client
+    try:
+        client = get_default_isis_client()
+        if not course_id:
+            return "failed", "Verification failed: No course_id provided for ISIS enrollment."
+        course_id_int = int(course_id)
+        enrolled_ids = {course.id for course in client.enrolled_course_refs()}
+        if course_id_int in enrolled_ids:
+            course_ref = client.course_ref_by_id(course_id_int)
+            return "executed", f"Verified: Enrolled in ISIS course '{course_ref.title}' ({course_id_int})."
+        else:
+            return "failed", f"Failed verification: ISIS course ID {course_id_int} not found in enrolled courses."
+    except Exception as exc:
+        return "failed", f"Verification failed with error: {exc}"
+
+
 
 
 def _merge_proposals(existing_proposals: list[CourseProposal], new_proposals: list[CourseProposal]) -> list[CourseProposal]:
@@ -838,7 +925,7 @@ def _has_separate_user_question(query: str) -> bool:
 
 
 def _normalize_commitment_route(intent: IntentClassification, query: str) -> IntentClassification:
-    if intent.route in {"execute_confirmed_actions", "deep_dive"}:
+    if intent.route in {"deep_dive"}:
         return intent
     if not intent.write_intent and not _looks_like_course_commitment_request(query.casefold()):
         return intent

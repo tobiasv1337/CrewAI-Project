@@ -64,9 +64,7 @@ study_assistant_task:
       deadlines, announcements, forums, grades, materials, assessments, or
       calendar dates to the ISIS Course Information Specialist.
     - Delegate explicit UI course proposals to the Course Commitment Specialist.
-      No specialist in this hierarchical crew permanently changes Grade Manager
-      or ISIS data. The application Flow executes accepted proposal actions only
-      after the UI approval gate and then supplies execution results as context.
+      The Course Commitment Specialist also executes approved action writes (Grade Manager study plan additions and ISIS course enrollments) when authorized via confirmation tokens provided in the context.
 
     Hard sequencing rules:
     - RULE 0 — Regulation PDFs define formal degree constraints.
@@ -92,7 +90,7 @@ study_assistant_task:
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal actions.
       Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Do NOT ask another specialist to call a write tool.
-      If the context contains "Actions already executed in this turn", summarize those deterministic Flow execution results and build around them. If active course-card actions are APPROVED or DECLINED but no execution results are supplied, retain approved actions and revise declined actions, but do not claim that Grade Manager writes or ISIS enrollments happened. The Course Commitment Specialist does not execute irreversible writes inside the hierarchical crew.
+      If the context contains approved actions to execute and their confirmation tokens, delegate the execution to the Course Commitment Specialist. The Course Commitment Specialist will call the write tools with the exact arguments and tokens provided, verify success, and report outcomes. If active course-card actions are APPROVED or DECLINED but no execution is requested, retain approved actions and revise declined actions, but do not claim that Grade Manager writes or ISIS enrollments happened.
     - RULE D — Study Advisor cannot discover new modules in the catalog.
       For any task requiring finding, suggesting, or planning new modules or courses (e.g. semester planning, course planning, or course recommendations), you MUST NEVER delegate to the Study Advisor to search for or suggest new modules. The Study Advisor only knows about modules already in the student's plan and cannot search the catalog. You must first delegate to the Study Advisor to identify missing requirements/handoff search directives, then delegate to the MOSES Module Researcher with those directives to search the MOSES catalog and find matching modules, and finally delegate back to the Study Advisor with specific module numbers/names using `Check Module Against Study Plan` to verify degree area fit before proposing them to the student.
     - RULE E — Program Switch / Explore Rule.
@@ -149,8 +147,7 @@ study_assistant_task:
     - For pure progress/degree questions: only Study Advisor.
     - For recommendation banners: only Course Commitment Specialist.
     - For study-plan writes and permanent ISIS enrollment: only the
-      application Flow after accepted UI course-card decisions; no agent in
-      this hierarchical crew has that authority.
+      Course Commitment Specialist when authorized via confirmation tokens.
     - Keep source boundaries explicit. Regulation PDF facts ≠ MOSES facts ≠
       ISIS facts ≠ Grade Manager facts. Do not let one source substitute for
       another.
@@ -212,10 +209,8 @@ study_assistant_task:
       permissible-alternative uncertainty remains after other specialists
       return their evidence.
     - Delegate to Course Commitment Specialist with the exact course list when
-      a UI proposal must be created or revised. Include approved actions as
-      fixed context, declined actions as exclusions, and replacement needs as
-      new proposal candidates. Do not delegate irreversible writes to any
-      specialist.
+      a UI proposal must be created or revised, or when approved actions must
+      be executed. Include approved actions and confirmation tokens as context.
     Then loop back to Phase 3 for another review pass.
 
 

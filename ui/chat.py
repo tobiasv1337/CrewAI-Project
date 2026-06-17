@@ -819,16 +819,18 @@ def _render_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:
 
 
 def _course_cards_from_proposals(proposals: list[CourseProposal]) -> list[dict[str, Any]]:
-    cards_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    cards_by_key: dict[str, dict[str, Any]] = {}
     for proposal in proposals:
         for action in proposal.actions:
             if action.status not in {"proposed", "approved", "declined", "needs_clarification"}:
                 continue
-            key = (proposal.proposal_id, action.course_title)
+            key = _course_card_identity(action)
             card = cards_by_key.setdefault(
                 key,
                 {
+                    "card_id": key,
                     "proposal_id": proposal.proposal_id,
+                    "proposal_ids": [],
                     "proposal_title": proposal.title,
                     "proposal_summary": proposal.summary,
                     "course_title": action.course_title,
@@ -837,7 +839,17 @@ def _course_cards_from_proposals(proposals: list[CourseProposal]) -> list[dict[s
                     "evidence": [],
                 },
             )
-            card["actions"].append(action)
+            card["proposal_id"] = proposal.proposal_id
+            if proposal.proposal_id not in card["proposal_ids"]:
+                card["proposal_ids"].append(proposal.proposal_id)
+            card["proposal_title"] = proposal.title or card["proposal_title"]
+            card["proposal_summary"] = proposal.summary or card["proposal_summary"]
+            card["source_agent"] = proposal.source_agent or card["source_agent"]
+            existing_idx = next((idx for idx, existing in enumerate(card["actions"]) if existing.kind == action.kind), -1)
+            if existing_idx >= 0:
+                card["actions"][existing_idx] = action
+            else:
+                card["actions"].append(action)
             card["evidence"].extend(action.evidence or [])
             card["evidence"].extend(proposal.evidence or [])
     for card in cards_by_key.values():
@@ -953,7 +965,9 @@ def _collect_course_card_decisions(profile_slug: str, proposals: list[Any]) -> l
             )
         decisions.append(
             {
+                "card_id": card.get("card_id"),
                 "proposal_id": card["proposal_id"],
+                "proposal_ids": card.get("proposal_ids", []),
                 "proposal_title": card["proposal_title"],
                 "course_title": card["course_title"],
                 "decision": selected if selected in {"accept", "reject", "unsure"} else "unsure",
@@ -970,13 +984,16 @@ def _action_decisions_from_course_card_decisions(decisions: list[dict[str, Any]]
         if decision not in {"accept", "reject"}:
             continue
         for action in item.get("actions") or []:
-            if not action.get("enabled", True):
-                continue
+            enabled = bool(action.get("enabled", True))
             action_decisions.append(
                 ActionDecision(
                     action_id=str(action.get("action_id") or ""),
-                    approved=(decision == "accept"),
-                    feedback=f"Course card decision: {decision}",
+                    approved=(decision == "accept" and enabled),
+                    feedback=(
+                        f"Course card decision: {decision}"
+                        if enabled or decision == "reject"
+                        else "Course card action disabled by user."
+                    ),
                 )
             )
     return [decision for decision in action_decisions if decision.action_id]
@@ -1003,8 +1020,8 @@ def _format_course_card_decisions_context(decisions: list[dict[str, Any]]) -> st
 
 
 def _course_decision_key(profile_slug: str, card: dict[str, Any]) -> str:
-    proposal_id = card.get("proposal_id", "default")
-    return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{_slugify(proposal_id)}_{_slugify(str(card['course_title']))}"
+    card_id = str(card.get("card_id") or f"{card.get('proposal_id', 'default')}:{card['course_title']}")
+    return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{_slugify(card_id)}"
 
 
 def _course_action_toggle_key(profile_slug: str, card: dict[str, Any], action_id: str) -> str:
@@ -1025,6 +1042,40 @@ def _dedupe_text(values: list[Any]) -> list[str]:
             result.append(cleaned)
             seen.add(cleaned)
     return result
+
+
+def _course_card_identity(action: Any) -> str:
+    grade_payload = getattr(action, "grade_manager_payload", None) or {}
+    isis_payload = getattr(action, "isis_payload", None) or {}
+    moses_identity = (
+        grade_payload.get("moses_module_number")
+        or isis_payload.get("moses_module_number")
+        or _numeric_identity(grade_payload.get("module_query"))
+    )
+    if moses_identity:
+        return f"moses:{_identity_text(moses_identity)}"
+    title = _identity_text(getattr(action, "course_title", ""))
+    if title:
+        return f"title:{title}"
+    course_id = isis_payload.get("course_id")
+    if course_id:
+        return f"isis-id:{_identity_text(course_id)}"
+    course_url = isis_payload.get("course_url")
+    if course_url:
+        return f"isis-url:{_identity_text(course_url)}"
+    course_query = isis_payload.get("course_query")
+    if course_query:
+        return f"isis-query:{_identity_text(course_query)}"
+    return f"action:{getattr(action, 'action_id', 'unknown')}"
+
+
+def _identity_text(value: Any) -> str:
+    return " ".join(str(value or "").casefold().strip().split())
+
+
+def _numeric_identity(value: Any) -> str | None:
+    text = str(value or "").strip()
+    return text if text.isdigit() else None
 
 
 def _render_legacy_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:

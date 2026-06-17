@@ -53,7 +53,7 @@ def test_orchestrator_prompt_includes_degree_regulations_recovery_loop(monkeypat
     assert "before finalizing a workaround or proposal" in task_description
 
 
-def test_orchestrator_prompt_keeps_irreversible_writes_in_flow(monkeypatch):
+def test_orchestrator_prompt_delegates_manifest_writes_to_commitment_specialist(monkeypatch):
     import crew.multi_agent_crew as crew_module
 
     monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
@@ -65,11 +65,12 @@ def test_orchestrator_prompt_keeps_irreversible_writes_in_flow(monkeypatch):
     task_description = study_crew.tasks_config["study_assistant_task"]["description"]
 
     assert "APPROVED ACTION EXECUTION RULE" in orchestrator_backstory
-    assert "delegate the execution of these actions to the Course Commitment Specialist" in orchestrator_backstory
+    assert "APPROVED_ACTION_EXECUTION_MANIFEST" in orchestrator_backstory
+    assert "delegate the exact manifest to the Course Commitment Specialist" in orchestrator_backstory
     assert "agents must create UI proposals only" in orchestrator_backstory
     assert "execute confirmed course actions" in commitment_backstory
     assert "Never execute declined, unsure, or merely proposed actions" in commitment_backstory
-    assert "The Course Commitment Specialist also executes approved action writes" in task_description
+    assert "APPROVED_ACTION_EXECUTION_MANIFEST" in task_description
 
 
 def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeypatch):

@@ -365,9 +365,12 @@ def test_course_card_decisions_default_to_unsure_and_respect_action_toggles():
 
     assert decisions[0]["decision"] == "accept"
     assert [action["enabled"] for action in decisions[0]["actions"]] == [True, False]
-    assert len(action_decisions) == 1
+    assert len(action_decisions) == 2
     assert action_decisions[0].action_id == card["actions"][0].action_id
     assert action_decisions[0].approved is True
+    assert action_decisions[1].action_id == card["actions"][1].action_id
+    assert action_decisions[1].approved is False
+    assert "disabled" in action_decisions[1].feedback
 
 
 def test_decision_context_is_compact():
@@ -561,7 +564,7 @@ def test_live_workbench_agent_status_graceful_tool_failures():
     assert groups["MOSES Module Researcher"]["status"] == "ok"
 
 
-def test_course_decision_keys_are_unique_for_different_proposals():
+def test_course_cards_collapse_same_course_across_proposals():
     proposal1 = build_course_proposal(
         proposal_title="Option A",
         proposal_summary="First suggestion.",
@@ -593,13 +596,11 @@ def test_course_decision_keys_are_unique_for_different_proposals():
         ],
     )
 
-    card1 = chat._course_cards_from_proposals([proposal1])[0]
-    card2 = chat._course_cards_from_proposals([proposal2])[0]
+    cards = chat._course_cards_from_proposals([proposal1, proposal2])
 
-    key1 = chat._course_decision_key("alice", card1)
-    key2 = chat._course_decision_key("alice", card2)
+    assert len(cards) == 1
+    card = cards[0]
+    key = chat._course_decision_key("alice", card)
 
-    assert key1 != key2
-    assert chat._slugify(proposal1.proposal_id) in key1
-    assert chat._slugify(proposal2.proposal_id) in key2
-
+    assert [action.kind for action in card["actions"]] == ["grade_manager_add", "isis_enroll"]
+    assert "moses_41240" in key

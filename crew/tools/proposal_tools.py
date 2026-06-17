@@ -39,7 +39,13 @@ class ProposalCourseInput(BaseModel):
         description="Use 'resolved' only when the ISIS id/url was verified against title and term. Otherwise leave unset.",
     )
     include_grade_manager: bool = Field(default=True, description="Create a proposed Grade Manager add action.")
-    include_isis: bool = Field(default=False, description="Create a proposed permanent ISIS enrollment action.")
+    include_isis: bool = Field(
+        default=True,
+        description=(
+            "Create a proposed permanent ISIS resolve/enroll action by default. "
+            "Set this to false only when the user explicitly wants a study-plan-only course action."
+        ),
+    )
 
 
 class ProposeCourseActionsInput(BaseModel):
@@ -52,6 +58,8 @@ class ProposeCourseActionsTool(BaseTool):
     name: str = "Propose Course Actions For Confirmation"
     description: str = (
         "Create explicit UI confirmation proposals for specific course actions. "
+        "For course commitments, propose Grade Manager + ISIS together by default; "
+        "use include_isis=false only when the user explicitly asks for study-plan-only. "
         "Use this only when you intentionally want the Streamlit UI to show recommendation banners. "
         "This tool does not write to Grade Manager or ISIS."
     )
@@ -254,4 +262,3 @@ def _ids_match(left: object | None, right: object | None) -> bool:
     if left is None or right is None:
         return False
     return str(left).strip() == str(right).strip()
-

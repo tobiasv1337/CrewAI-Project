@@ -35,6 +35,7 @@ from crew.write_permissions import allow_confirmed_writes
 FlowRunner = Callable[["StudyChatFlow"], str]
 Classifier = Callable[[StudyChatFlowState], IntentClassification]
 DecisionInterpreter = Callable[[StudyChatFlowState], UserDecisionInterpretation]
+ACTIVE_PROPOSAL_STATUSES = {"proposed", "approved", "needs_clarification"}
 
 
 @dataclass(frozen=True)
@@ -346,39 +347,14 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         from crew.multi_agent_crew import MultiAgentStudyAssistantCrew
 
         student_context = self.state.student_context or "No student context supplied."
-        if self.state.approved_actions:
-            actions_to_pass = []
-            for action in self.state.approved_actions:
-                if action.kind == "grade_manager_add":
-                    payload = dict(action.grade_manager_payload or {})
-                    if "module_query" not in payload:
-                        payload["module_query"] = action.course_title
-                    payload["confirmation_token"] = "CONFIRM_STUDY_PLAN_WRITE"
-                    actions_to_pass.append({
-                        "kind": action.kind,
-                        "course_title": action.course_title,
-                        "payload": payload,
-                    })
-                elif action.kind == "isis_enroll":
-                    payload = dict(action.isis_payload or {})
-                    payload["confirmation_token"] = "CONFIRM_PERMANENT_ISIS_ENROLLMENT"
-                    actions_to_pass.append({
-                        "kind": action.kind,
-                        "course_title": action.course_title,
-                        "payload": payload,
-                    })
-            
-            actions_context = (
-                "\n\n=== APPROVED ACTIONS TO EXECUTE ===\n"
-                "The student has explicitly APPROVED the following course actions for execution. "
-                "The Course Commitment Specialist MUST execute these actions by calling the write tools "
-                "with the exact arguments and the provided confirmation tokens. "
-                "Verify success, retrieve any course/module IDs, and report the execution outcomes in the final response.\n\n"
-                f"{json.dumps(actions_to_pass, ensure_ascii=False, indent=2)}\n"
+        approved_execution_actions = self._approved_actions_for_execution()
+        if approved_execution_actions:
+            student_context = (
+                f"{student_context}\n\n"
+                f"{_approved_action_execution_manifest(approved_execution_actions)}"
             )
-            student_context = f"{student_context}\n{actions_context}"
 
-        if self.state.approved_actions:
+        if approved_execution_actions:
             from crew.write_permissions import allow_confirmed_writes
             with allow_confirmed_writes():
                 result = MultiAgentStudyAssistantCrew(
@@ -414,6 +390,24 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             self.state.proposed_actions = self._remaining_proposals()
 
         return str(getattr(result, "raw", result))
+
+    def _approved_actions_for_execution(self) -> list[ProposedAction]:
+        thread = self.state.thread
+        if not thread or not self.state.approved_actions:
+            return []
+        action_by_id = {
+            action.action_id: action
+            for proposal in thread.active_proposals
+            for action in proposal.actions
+        }
+        execution_actions: list[ProposedAction] = []
+        for decision in self.state.approved_actions:
+            if not decision.approved:
+                continue
+            action = action_by_id.get(decision.action_id)
+            if action is not None:
+                execution_actions.append(action.model_copy(deep=True))
+        return execution_actions
 
     def _crew_kwargs(self) -> dict[str, Any]:
         return {
@@ -479,6 +473,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                                 "Interpret one chat turn with active course recommendation cards. "
                                 "The UI card state is the authorization gate: only actions explicitly accepted in the UI may be executed. "
                                 "Rejected cards must not be executed. Unsure cards must not be executed. "
+                                "If an accepted card has an action disabled by toggle, treat that action as intentionally disabled, not as a request for a replacement. "
                                 "Infer whether the user wants to apply accepted actions, apply only some and revise others, revise without applying, ask a question, discard the recommendation state, or needs clarification. "
                                 "If the user changes to an unrelated topic, set discard_active_proposals=true so the old course cards disappear. "
                                 "Do not invent action IDs; choose only from the provided active actions."
@@ -615,7 +610,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
 
     def _carry_forward_existing_proposals(self) -> None:
         thread = self.state.thread
-        self.state.proposed_actions = list(thread.active_proposals if thread else [])
+        self.state.proposed_actions = _prune_proposals(list(thread.active_proposals if thread else []))
 
     def _verify_and_update_executed_actions(self) -> list[ProposedAction]:
         thread = self.state.thread or load_chat_thread(self.state.profile_slug, thread_id=self.state.thread_id)
@@ -646,8 +641,8 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 status, result = _verify_grade_manager_addition(updated)
                 updated.status = status
                 updated.result = result
-            elif updated.kind == "isis_enroll":
-                status, result = _verify_isis_enrollment(updated)
+            elif updated.kind in {"isis_enroll", "isis_resolve"}:
+                status, result = _verify_isis_commitment(updated)
                 updated.status = status
                 updated.result = result
             else:
@@ -658,18 +653,14 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             executed.append(updated)
 
         thread.proposal_decisions.extend(self.state.approved_actions)
-        thread.active_proposals = [
-            proposal
-            for proposal in thread.active_proposals
-            if any(action.status in {"proposed", "approved", "needs_clarification"} for action in proposal.actions)
-        ]
+        thread.active_proposals = _prune_proposals(thread.active_proposals)
         save_chat_thread(thread)
         self.state.thread = thread
         return executed
 
     def _remaining_proposals(self) -> list[CourseProposal]:
         thread = self.state.thread
-        return list(thread.active_proposals if thread else [])
+        return _prune_proposals(list(thread.active_proposals if thread else []))
 
 
 
@@ -699,58 +690,200 @@ def _verify_grade_manager_addition(action: ProposedAction) -> tuple[str, str]:
         return "failed", f"Verification failed with error: {exc}"
 
 
-def _verify_isis_enrollment(action: ProposedAction) -> tuple[str, str]:
+def _verify_isis_commitment(action: ProposedAction) -> tuple[str, str]:
     payload = {key: value for key, value in dict(action.isis_payload or {}).items() if value not in (None, "")}
     course_id = str(payload.get("course_id") or "").strip()
-    
+    moses_number = str(payload.get("moses_module_number") or "").strip()
+
     from crew.isis_client import get_default_isis_client
+    from crew.isis_models import IsisCourseSelector
+    from crew.isis_resolver import IsisCourseResolver
+
     try:
         client = get_default_isis_client()
-        if not course_id:
-            return "failed", "Verification failed: No course_id provided for ISIS enrollment."
-        course_id_int = int(course_id)
+        if course_id and moses_number and course_id == moses_number:
+            return (
+                "needs_clarification",
+                (
+                    f"ISIS verification blocked: `{course_id}` is also the MOSES module number. "
+                    "A verified ISIS course ID or course/view.php URL is required."
+                ),
+            )
         enrolled_ids = {course.id for course in client.enrolled_course_refs()}
-        if course_id_int in enrolled_ids:
-            course_ref = client.course_ref_by_id(course_id_int)
-            return "executed", f"Verified: Enrolled in ISIS course '{course_ref.title}' ({course_id_int})."
-        else:
+        if course_id:
+            course_id_int = int(course_id)
+            if course_id_int in enrolled_ids:
+                course_ref = client.course_ref_by_id(course_id_int)
+                title = course_ref.title if course_ref else action.course_title
+                return "executed", f"Verified: Enrolled in ISIS course '{title}' ({course_id_int})."
             return "failed", f"Failed verification: ISIS course ID {course_id_int} not found in enrolled courses."
+
+        selector = IsisCourseSelector(
+            course_url=payload.get("course_url"),
+            course_query=payload.get("course_query") or action.course_title,
+            term_hint=payload.get("term_hint"),
+            expected_title=payload.get("expected_title") or action.course_title,
+        )
+        resolved = IsisCourseResolver(client).resolve(selector)
+        if not resolved.is_resolved or resolved.course is None:
+            reason = resolved.reason or "ISIS course could not be resolved unambiguously."
+            candidates = _format_isis_candidates(resolved.candidates)
+            if candidates:
+                reason = f"{reason}\n\nCandidate ISIS courses:\n{candidates}"
+            return "needs_clarification", reason
+        if resolved.course.id in enrolled_ids:
+            if action.isis_payload is not None:
+                action.isis_payload["course_id"] = resolved.course.id
+                action.isis_payload["course_url"] = resolved.course.url
+                action.isis_payload["isis_resolution_status"] = "resolved"
+            return "executed", f"Verified: Enrolled in ISIS course '{resolved.course.title}' ({resolved.course.id})."
+        return (
+            "failed",
+            (
+                f"Resolved ISIS course '{resolved.course.title}' ({resolved.course.id}), "
+                "but enrollment was not found after Course Commitment Specialist execution."
+            ),
+        )
     except Exception as exc:
         return "failed", f"Verification failed with error: {exc}"
 
 
+def _verify_isis_enrollment(action: ProposedAction) -> tuple[str, str]:
+    return _verify_isis_commitment(action)
+
+
+def _format_isis_candidates(candidates: list[Any]) -> str:
+    lines = []
+    for candidate in candidates[:8]:
+        title = getattr(candidate, "title", None) or getattr(candidate, "fullname", None) or "Unknown ISIS course"
+        term = getattr(candidate, "term_hint", None) or "term unknown"
+        course_id = getattr(candidate, "id", None)
+        lines.append(f"- `{course_id}` {title} ({term})")
+    return "\n".join(lines)
+
+
+def _approved_action_execution_manifest(actions: list[ProposedAction]) -> str:
+    manifest: list[dict[str, Any]] = []
+    for action in actions:
+        if action.kind == "grade_manager_add":
+            payload = {key: value for key, value in dict(action.grade_manager_payload or {}).items() if value not in (None, "")}
+            payload.setdefault("module_query", action.course_title)
+            payload["confirmation_token"] = STUDY_PLAN_CONFIRMATION_TOKEN
+            manifest.append(
+                {
+                    "action_id": action.action_id,
+                    "kind": action.kind,
+                    "course_title": action.course_title,
+                    "tool_name": "Add Module To Study Plan",
+                    "tool_arguments": payload,
+                    "execution_rule": "Call the tool once with exactly these arguments, then report the returned result.",
+                }
+            )
+        elif action.kind in {"isis_enroll", "isis_resolve"}:
+            source_payload = {key: value for key, value in dict(action.isis_payload or {}).items() if value not in (None, "")}
+            tool_payload = {
+                key: source_payload[key]
+                for key in ("course_id", "course_url", "course_query", "term_hint", "expected_title")
+                if source_payload.get(key) not in (None, "")
+            }
+            tool_payload.setdefault("course_query", action.course_title)
+            tool_payload.setdefault("expected_title", action.course_title)
+            tool_payload["confirmation_token"] = CONFIRMATION_TOKEN
+            manifest.append(
+                {
+                    "action_id": action.action_id,
+                    "kind": action.kind,
+                    "course_title": action.course_title,
+                    "tool_name": "Permanently Enroll In ISIS Course",
+                    "tool_arguments": tool_payload,
+                    "source_payload": {
+                        key: source_payload.get(key)
+                        for key in ("moses_module_number", "isis_resolution_status")
+                        if source_payload.get(key) not in (None, "")
+                    },
+                    "execution_rule": (
+                        "Call the permanent enrollment tool once with exactly these tool_arguments. "
+                        "For isis_resolve, the tool resolves by query/title/term first and enrolls only if unambiguous. "
+                        "If it returns ambiguous_course, not_found, invalid_selector, auth_failed, tool_failed, missing_isis_id, or refused, "
+                        "report ISIS as blocked with candidates/reason and do not claim enrollment success."
+                    ),
+                }
+            )
+
+    return (
+        "=== APPROVED_ACTION_EXECUTION_MANIFEST ===\n"
+        "The student explicitly accepted these enabled UI course-card actions. "
+        "This manifest is the only authorized write scope for this run.\n"
+        "The Orchestrator must delegate this exact manifest to the Course Commitment Specialist. "
+        "The Course Commitment Specialist must execute each item by calling the listed tool once with the exact tool_arguments. "
+        "Do not infer additional write actions. Do not execute declined, disabled, unsure, or merely proposed actions.\n\n"
+        f"{json.dumps(manifest, ensure_ascii=False, indent=2)}"
+    )
+
+
+def _prune_proposals(proposals: list[CourseProposal]) -> list[CourseProposal]:
+    return _merge_proposals(proposals, [])
 
 
 def _merge_proposals(existing_proposals: list[CourseProposal], new_proposals: list[CourseProposal]) -> list[CourseProposal]:
-    merged_proposals: list[CourseProposal] = []
-    seen_action_keys: set[tuple[str, str]] = set()
+    action_by_key: dict[tuple[str, str], tuple[CourseProposal, ProposedAction]] = {}
 
-    for prop in existing_proposals:
-        kept_actions = []
-        for action in prop.actions:
-            if action.status in {"approved", "proposed", "needs_clarification"}:
-                key = (action.kind, action.course_title)
-                if key not in seen_action_keys:
-                    kept_actions.append(action)
-                    seen_action_keys.add(key)
-        if kept_actions:
-            merged_proposals.append(prop.model_copy(update={"actions": kept_actions}))
+    for proposal in existing_proposals:
+        for action in proposal.actions:
+            if action.status not in ACTIVE_PROPOSAL_STATUSES:
+                continue
+            key = (_course_identity_for_action(action), action.kind)
+            action_by_key.setdefault(key, (proposal, action))
 
-    for prop in new_proposals:
-        new_actions = []
-        for action in prop.actions:
-            key = (action.kind, action.course_title)
-            if key not in seen_action_keys:
-                new_actions.append(action)
-                seen_action_keys.add(key)
-        if new_actions:
-            existing_prop = next((p for p in merged_proposals if p.title == prop.title), None)
-            if existing_prop:
-                existing_prop.actions.extend(new_actions)
-            else:
-                merged_proposals.append(prop.model_copy(update={"actions": new_actions}))
+    for proposal in new_proposals:
+        for action in proposal.actions:
+            if action.status not in ACTIVE_PROPOSAL_STATUSES:
+                continue
+            key = (_course_identity_for_action(action), action.kind)
+            existing = action_by_key.get(key)
+            if existing is not None and existing[1].status == "approved":
+                continue
+            action_by_key[key] = (proposal, action)
 
-    return merged_proposals
+    if not action_by_key:
+        return []
+    template = new_proposals[-1] if new_proposals else next(iter(action_by_key.values()))[0]
+    actions = [action for _, action in action_by_key.values()]
+    return [template.model_copy(update={"actions": actions}, deep=True)]
+
+
+def _course_identity_for_action(action: ProposedAction) -> str:
+    grade_payload = action.grade_manager_payload or {}
+    isis_payload = action.isis_payload or {}
+    moses_identity = (
+        grade_payload.get("moses_module_number")
+        or isis_payload.get("moses_module_number")
+        or _numeric_identity(grade_payload.get("module_query"))
+    )
+    if moses_identity:
+        return f"moses:{_identity_text(moses_identity)}"
+    title = _identity_text(action.course_title)
+    if title:
+        return f"title:{title}"
+    course_id = isis_payload.get("course_id")
+    if course_id:
+        return f"isis-id:{_identity_text(course_id)}"
+    course_url = isis_payload.get("course_url")
+    if course_url:
+        return f"isis-url:{_identity_text(course_url)}"
+    course_query = isis_payload.get("course_query")
+    if course_query:
+        return f"isis-query:{_identity_text(course_query)}"
+    return f"action:{action.action_id}"
+
+
+def _identity_text(value: object | None) -> str:
+    return " ".join(str(value or "").casefold().strip().split())
+
+
+def _numeric_identity(value: object | None) -> str | None:
+    text = str(value or "").strip()
+    return text if text.isdigit() else None
 
 
 def _proposal_state_json(proposals: list[CourseProposal]) -> str:
@@ -799,7 +932,16 @@ def _sanitize_decision_interpretation(
 
 def _fallback_decision_interpretation(state: StudyChatFlowState) -> UserDecisionInterpretation:
     approved_ids = [decision.action_id for decision in state.ui_decisions if decision.approved]
-    rejected_ids = [decision.action_id for decision in state.ui_decisions if not decision.approved]
+    disabled_ids = [
+        decision.action_id
+        for decision in state.ui_decisions
+        if not decision.approved and "disabled" in decision.feedback.casefold()
+    ]
+    rejected_ids = [
+        decision.action_id
+        for decision in state.ui_decisions
+        if not decision.approved and decision.action_id not in set(disabled_ids)
+    ]
     text = state.query.casefold()
 
     if _looks_like_discard_request(text):
@@ -811,7 +953,7 @@ def _fallback_decision_interpretation(state: StudyChatFlowState) -> UserDecision
             rationale="Fallback interpreter detected a request to leave the active recommendation flow.",
         )
 
-    if _looks_like_unrelated_new_topic(text) and not approved_ids and not rejected_ids:
+    if _looks_like_unrelated_new_topic(text) and not approved_ids and not rejected_ids and not disabled_ids:
         return UserDecisionInterpretation(
             intent="ask_question",
             discard_active_proposals=True,
@@ -830,7 +972,7 @@ def _fallback_decision_interpretation(state: StudyChatFlowState) -> UserDecision
         return UserDecisionInterpretation(
             intent="apply_partial_and_revise",
             approved_action_ids=approved_ids,
-            rejected_action_ids=rejected_ids,
+            rejected_action_ids=[*rejected_ids, *disabled_ids],
             revision_request=state.query,
             rationale="Accepted UI cards can be executed while declined cards are revised.",
         )
@@ -839,7 +981,7 @@ def _fallback_decision_interpretation(state: StudyChatFlowState) -> UserDecision
         return UserDecisionInterpretation(
             intent="apply_selected",
             approved_action_ids=approved_ids,
-            rejected_action_ids=rejected_ids,
+            rejected_action_ids=disabled_ids,
             rationale="Accepted UI cards are treated as the explicit authorization gate.",
         )
 

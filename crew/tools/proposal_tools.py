@@ -156,15 +156,77 @@ def record_course_proposals(proposals: list[CourseProposal]) -> None:
     current = _RECORDED_COURSE_PROPOSALS.get()
     if current is None:
         return
-    existing = {proposal.proposal_id for proposal in current}
     for proposal in proposals:
-        if proposal.proposal_id not in existing:
+        found_idx = -1
+        for idx, existing_p in enumerate(current):
+            if existing_p.proposal_id == proposal.proposal_id:
+                found_idx = idx
+                break
+        if found_idx >= 0:
+            current[found_idx] = proposal
+        else:
             current.append(proposal)
-            existing.add(proposal.proposal_id)
 
 
 def current_course_proposals() -> list[CourseProposal]:
     return list(_RECORDED_COURSE_PROPOSALS.get() or [])
+
+
+class ClearAllCourseProposalsTool(BaseTool):
+    name: str = "Clear All Course Proposals"
+    description: str = (
+        "Clear all active course proposals from the confirmation UI state. "
+        "Use this when the user requests to reset their plan, start over, "
+        "or when you want to replace all old recommendations with a fresh set."
+    )
+
+    def _run(self) -> str:
+        current = _RECORDED_COURSE_PROPOSALS.get()
+        if current is not None:
+            current.clear()
+
+        from crew.profile_context import get_active_profile_slug
+        from crew.chat_persistence import load_chat_thread, save_chat_thread
+        profile_slug = get_active_profile_slug() or "primary"
+        try:
+            thread = load_chat_thread(profile_slug)
+            thread.active_proposals = []
+            save_chat_thread(thread)
+            return "Successfully cleared all active course proposals."
+        except Exception as exc:
+            return f"Failed to clear course proposals: {exc}"
+
+
+class DeleteCourseProposalInput(BaseModel):
+    proposal_title: str = Field(..., description="Exact title of the proposal to delete.")
+
+
+class DeleteCourseProposalTool(BaseTool):
+    name: str = "Delete Course Proposal"
+    description: str = (
+        "Delete a specific active course proposal from the confirmation UI state by its title. "
+        "Use this to remove a specific outdated or incorrect proposal group."
+    )
+    args_schema: Type[BaseModel] = DeleteCourseProposalInput
+
+    def _run(self, proposal_title: str) -> str:
+        current = _RECORDED_COURSE_PROPOSALS.get()
+        if current is not None:
+            _RECORDED_COURSE_PROPOSALS.set([p for p in current if p.title != proposal_title])
+
+        from crew.profile_context import get_active_profile_slug
+        from crew.chat_persistence import load_chat_thread, save_chat_thread
+        profile_slug = get_active_profile_slug() or "primary"
+        try:
+            thread = load_chat_thread(profile_slug)
+            initial_len = len(thread.active_proposals)
+            thread.active_proposals = [p for p in thread.active_proposals if p.title != proposal_title]
+            if len(thread.active_proposals) == initial_len:
+                return f"No active proposal found with title '{proposal_title}'."
+            save_chat_thread(thread)
+            return f"Successfully deleted active course proposal '{proposal_title}'."
+        except Exception as exc:
+            return f"Failed to delete course proposal: {exc}"
 
 
 def _stable_action_id(kind: str, course_title: str, payload: dict[str, Any]) -> str:
@@ -192,3 +254,4 @@ def _ids_match(left: object | None, right: object | None) -> bool:
     if left is None or right is None:
         return False
     return str(left).strip() == str(right).strip()
+

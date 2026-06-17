@@ -33,6 +33,8 @@ from crew.tools.grademanager_tools import (
 )
 from crew.tools.proposal_tools import (
     ProposeCourseActionsTool,
+    ClearAllCourseProposalsTool,
+    DeleteCourseProposalTool,
     collect_course_proposals,
     current_course_proposals,
 )
@@ -45,6 +47,8 @@ from crew.tools.degree_regulations_tools import (
 
 COURSE_COMMITMENT_TOOLS = [
     ProposeCourseActionsTool(),
+    ClearAllCourseProposalsTool(),
+    DeleteCourseProposalTool(),
 ]
 
 __all__ = [
@@ -64,6 +68,8 @@ __all__ = [
     "ExtractRegelstudienplanTableTool",
     "ListDegreeRegulationPdfsTool",
     "ProposeCourseActionsTool",
+    "ClearAllCourseProposalsTool",
+    "DeleteCourseProposalTool",
     "SearchDegreeRegulationPdfsTool",
     "collect_course_proposals",
     "current_course_proposals",

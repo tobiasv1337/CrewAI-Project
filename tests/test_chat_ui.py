@@ -559,3 +559,47 @@ def test_live_workbench_agent_status_graceful_tool_failures():
     workbench = chat.live_workbench_from_events(events_running, completed=True)
     groups = {g["agent_label"]: g for g in workbench["groups"]}
     assert groups["MOSES Module Researcher"]["status"] == "ok"
+
+
+def test_course_decision_keys_are_unique_for_different_proposals():
+    proposal1 = build_course_proposal(
+        proposal_title="Option A",
+        proposal_summary="First suggestion.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Software Security Lab",
+                rationale="Matches the security focus.",
+                module_query="41240",
+                term="SS 26",
+                isis_course_id=48474,
+                include_grade_manager=True,
+                include_isis=True,
+            )
+        ],
+    )
+    proposal2 = build_course_proposal(
+        proposal_title="Option B",
+        proposal_summary="Second suggestion.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Software Security Lab",
+                rationale="Matches the security focus.",
+                module_query="41240",
+                term="SS 26",
+                isis_course_id=48474,
+                include_grade_manager=True,
+                include_isis=True,
+            )
+        ],
+    )
+
+    card1 = chat._course_cards_from_proposals([proposal1])[0]
+    card2 = chat._course_cards_from_proposals([proposal2])[0]
+
+    key1 = chat._course_decision_key("alice", card1)
+    key2 = chat._course_decision_key("alice", card2)
+
+    assert key1 != key2
+    assert chat._slugify(proposal1.proposal_id) in key1
+    assert chat._slugify(proposal2.proposal_id) in key2
+

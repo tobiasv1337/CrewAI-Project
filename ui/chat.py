@@ -1003,7 +1003,8 @@ def _format_course_card_decisions_context(decisions: list[dict[str, Any]]) -> st
 
 
 def _course_decision_key(profile_slug: str, card: dict[str, Any]) -> str:
-    return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{_slugify(str(card['course_title']))}"
+    proposal_id = card.get("proposal_id", "default")
+    return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{_slugify(proposal_id)}_{_slugify(str(card['course_title']))}"
 
 
 def _course_action_toggle_key(profile_slug: str, card: dict[str, Any], action_id: str) -> str:

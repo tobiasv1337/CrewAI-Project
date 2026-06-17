@@ -701,6 +701,76 @@ def test_bundled_partial_apply_removes_declined_course_and_keeps_new_suggestion(
     assert [action.kind for action in thread.active_proposals[0].actions] == ["grade_manager_add", "isis_resolve"]
 
 
+def test_conflicting_clarification_flag_does_not_block_clear_partial_revision(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    proposal = build_course_proposal(
+        proposal_title="Semester 1 Pflicht Modules",
+        proposal_summary="Initial mandatory modules.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Rechnerorganisation",
+                rationale="Accepted module.",
+                module_query="40019",
+                term="WS 26/27",
+            ),
+            ProposalCourseInput(
+                course_title="Rechnerorganisation Praktikum",
+                rationale="Student wants to defer this.",
+                module_query="40028",
+                term="WS 26/27",
+            ),
+        ],
+    )
+    append_turn(
+        "primary",
+        user_content="Plane mal mein erstes Semester.",
+        assistant_content="Please confirm.",
+        proposals=[proposal],
+        rolling_summary="Planning next semester.",
+    )
+
+    accepted_ids = [action.action_id for action in proposal.actions if action.course_title == "Rechnerorganisation"]
+    rejected_ids = [action.action_id for action in proposal.actions if action.course_title == "Rechnerorganisation Praktikum"]
+    ui_decisions = [
+        *[ActionDecision(action_id=action_id, approved=True) for action_id in accepted_ids],
+        *[ActionDecision(action_id=action_id, approved=False) for action_id in rejected_ids],
+    ]
+
+    import crew.study_chat_flow as flow_module
+
+    monkeypatch.setattr(flow_module, "_verify_grade_manager_addition", lambda action: ("executed", "Added."))
+    monkeypatch.setattr(flow_module, "_verify_isis_commitment", lambda action: ("executed", "Enrolled."))
+
+    calls = []
+    flow = _flow(
+        decision_interpreter=lambda state: UserDecisionInterpretation(
+            intent="revise_only",
+            approved_action_ids=accepted_ids,
+            rejected_action_ids=rejected_ids,
+            revision_request="Rechnerorganisation Praktikum später machen und ein anderes Modul im Wintersemester finden.",
+            needs_user_clarification=True,
+            rationale=(
+                "User rejected the Praktikum cards and asks for an alternative module. "
+                "Approved modules should be executed, but replacement options are needed."
+            ),
+        ),
+        runner_overrides={"recommendation": lambda flow: calls.append("recommendation") or "I will search alternatives."},
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Ich möchte Rechnerorganisation Praktikum später machen. Kann ich stattdessen ein anderes Modul jetzt im Wintersemester machen?",
+            profile_slug="primary",
+            ui_decisions=ui_decisions,
+        ).model_dump(mode="json")
+    )
+
+    assert flow.state.route == "recommendation"
+    assert flow.state.decision_interpretation.intent == "apply_partial_and_revise"
+    assert flow.state.decision_interpretation.needs_user_clarification is False
+    assert calls == ["recommendation"]
+    assert sorted(action.kind for action in flow.state.executed_actions) == ["grade_manager_add", "isis_resolve"]
+
+
 def test_disabled_isis_toggle_executes_study_plan_only_and_clears_disabled_action(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     proposal = build_course_proposal(

@@ -455,7 +455,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         if not thread or not thread.active_proposals:
             return None
         interpreter = self._decision_interpreter or self._interpret_decision_with_llm_or_fallback
-        return interpreter(self.state)
+        return _sanitize_decision_interpretation(interpreter(self.state), self.state)
 
     def _interpret_decision_with_llm_or_fallback(self, state: StudyChatFlowState) -> UserDecisionInterpretation:
         if self._runtime.use_llm_decision_interpreter and os.getenv("GWDG_API_KEY"):
@@ -927,7 +927,22 @@ def _sanitize_decision_interpretation(
     rejected_ui_ids = {decision.action_id for decision in state.ui_decisions if not decision.approved}
     approved_ids = [action_id for action_id in decision.approved_action_ids if action_id in active_ids and action_id in approved_ui_ids]
     rejected_ids = [action_id for action_id in decision.rejected_action_ids if action_id in active_ids and action_id in rejected_ui_ids]
-    return decision.model_copy(update={"approved_action_ids": approved_ids, "rejected_action_ids": rejected_ids})
+    update: dict[str, Any] = {"approved_action_ids": approved_ids, "rejected_action_ids": rejected_ids}
+    if approved_ids and rejected_ids and (decision.revision_request or state.query.strip()):
+        update.update(
+            {
+                "intent": "apply_partial_and_revise",
+                "revision_request": decision.revision_request or state.query.strip(),
+                "needs_user_clarification": False,
+                "rationale": (
+                    decision.rationale
+                    or "Accepted course-card actions can be executed while declined actions are revised."
+                ),
+            }
+        )
+    elif approved_ids and decision.needs_user_clarification and decision.intent in {"apply_selected", "unclear"}:
+        update.update({"intent": "apply_selected", "needs_user_clarification": False})
+    return decision.model_copy(update=update)
 
 
 def _fallback_decision_interpretation(state: StudyChatFlowState) -> UserDecisionInterpretation:

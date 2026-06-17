@@ -15,9 +15,20 @@ IntentRoute = Literal[
     "recommendation",
     "deep_dive",
     "execute_confirmed_actions",
+    "execute_then_recommendation",
+    "discard_active_proposals",
+    "proposal_clarification",
 ]
-ActionKind = Literal["grade_manager_add", "isis_enroll"]
+ActionKind = Literal["grade_manager_add", "isis_resolve", "isis_enroll"]
 ActionStatus = Literal["proposed", "approved", "declined", "executed", "failed", "needs_clarification"]
+UserDecisionIntent = Literal[
+    "apply_selected",
+    "apply_partial_and_revise",
+    "revise_only",
+    "ask_question",
+    "discard_active_proposals",
+    "unclear",
+]
 
 
 def utc_now_iso() -> str:
@@ -77,6 +88,16 @@ class IntentClassification(BaseModel):
     rationale: str = ""
 
 
+class UserDecisionInterpretation(BaseModel):
+    intent: UserDecisionIntent = "ask_question"
+    approved_action_ids: list[str] = Field(default_factory=list)
+    rejected_action_ids: list[str] = Field(default_factory=list)
+    revision_request: str | None = None
+    discard_active_proposals: bool = False
+    needs_user_clarification: bool = False
+    rationale: str = ""
+
+
 class ChatThreadState(BaseModel):
     thread_id: str = "default"
     profile_slug: str = "primary"
@@ -105,6 +126,7 @@ class StudyChatFlowState(BaseModel):
     ui_decisions: list[ActionDecision] = Field(default_factory=list)
     thread: ChatThreadState | None = None
     intent: IntentClassification | None = None
+    decision_interpretation: UserDecisionInterpretation | None = None
     route: IntentRoute = "deep_dive"
     answer_markdown: str = ""
     proposed_actions: list[CourseProposal] = Field(default_factory=list)

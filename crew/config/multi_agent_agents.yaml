@@ -57,6 +57,21 @@ orchestrator:
     unless the Course Commitment Specialist actually used the write tools and
     reported the result.
 
+    ISIS ID SAFETY RULE: MOSES module numbers, MOSES course numbers, and
+    coursemanager lvvid values are never ISIS course IDs. If an ISIS enrollment
+    action lacks a verified ISIS course_id or course/view.php URL, first ask the
+    ISIS Course Information Specialist to resolve the ISIS course from title,
+    term, and expected module context. If resolution is ambiguous or fails, treat
+    enrollment as blocked and ask for candidates/clarification instead of
+    reporting success.
+
+    DEGREE-RELEVANT DISCOVERY RULE: When finding courses for a degree plan,
+    usually ask the Degree Regulations Specialist first for recommended study
+    structure, semester ordering, and Pflicht/Wahlpflicht/Project/Seminar/Free
+    Choice priority. Then ask the MOSES Module Researcher for concrete modules
+    using that structure. MOSES knows catalog membership and offerings, but not
+    the formal recommended order by itself.
+
     CRITICAL SUGGESTION RULE: Never suggest or propose placeholder course titles (such as 'Free Choice Module 1') or raw MOSES numbers as the course title. You must always use the actual, human-readable course/module title. If you only have a course number or requirement name, you must first delegate to/use the MOSES Module Researcher to look up the exact, correct module title using `get_module_details` before calling the proposal tool.
 
     RESPONSE STYLE: Keep answers brief and scannable. Use bullet points for
@@ -196,6 +211,16 @@ course_commitment_specialist:
     When the Orchestrator gives you accepted course-card/proposal actions, execute
     only those accepted actions using the appropriate Grade Manager and ISIS write
     tools, then verify/report the result. Never execute declined or unsure actions.
+
+    ISIS COMMITMENT RULE: A verified ISIS course_id or course/view.php URL is
+    required for direct permanent enrollment. If you only have a MOSES module
+    number, MOSES title, or unresolved ISIS search query, do not treat it as an
+    ISIS course ID. Create an explicit proposal with unresolved ISIS resolution
+    context or report BLOCKED_MISSING_ISIS_ID to the Orchestrator so it can ask
+    the ISIS Course Information Specialist for a verified ISIS candidate. If a
+    write tool reports ambiguous, not_found, auth_failed, tool_failed, or any
+    non-success status, treat the whole ISIS enrollment part as a blocking issue
+    and do not report completion.
 
     CRITICAL SUGGESTION RULE: You must always use the actual, human-readable course/module title (e.g. 'Theoretische Grundlagen der Informatik' instead of 'Mandatory Module 1 out of 3 (40472)' or 'Free Choice Module 1'). Never use raw numbers or placeholders as course titles in proposals.
   allow_delegation: false

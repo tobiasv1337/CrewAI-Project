@@ -16,6 +16,7 @@ from crew.chat_models import (
     IntentClassification,
     ProposedAction,
     StudyChatFlowState,
+    UserDecisionInterpretation,
 )
 from crew.chat_persistence import append_turn, load_chat_thread, reset_chat_thread, save_chat_thread
 from crew.config.llm import get_default_llm
@@ -31,6 +32,7 @@ from crew.tools.proposal_tools import current_course_proposals
 
 FlowRunner = Callable[["StudyChatFlow"], str]
 Classifier = Callable[[StudyChatFlowState], IntentClassification]
+DecisionInterpreter = Callable[[StudyChatFlowState], UserDecisionInterpretation]
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class StudyChatFlowRuntime:
     planning_enabled: bool = False
     planning_llm_model: str | None = None
     use_llm_classifier: bool = True
+    use_llm_decision_interpreter: bool = True
 
 
 class StudyChatFlow(Flow[StudyChatFlowState]):
@@ -52,6 +55,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
 
     _runtime: StudyChatFlowRuntime = PrivateAttr(default_factory=StudyChatFlowRuntime)
     _classifier: Classifier | None = PrivateAttr(default=None)
+    _decision_interpreter: DecisionInterpreter | None = PrivateAttr(default=None)
     _runner_overrides: dict[str, FlowRunner] = PrivateAttr(default_factory=dict)
     _on_trace_event: Callable[[dict[str, Any]], None] | None = PrivateAttr(default=None)
 
@@ -60,6 +64,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         *,
         runtime: StudyChatFlowRuntime | None = None,
         classifier: Classifier | None = None,
+        decision_interpreter: DecisionInterpreter | None = None,
         runner_overrides: dict[str, FlowRunner] | None = None,
         on_trace_event: Callable[[dict[str, Any]], None] | None = None,
         **data: Any,
@@ -68,6 +73,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         super().__init__(**data)
         self._runtime = runtime or StudyChatFlowRuntime()
         self._classifier = classifier
+        self._decision_interpreter = decision_interpreter
         self._runner_overrides = dict(runner_overrides or {})
         self._on_trace_event = on_trace_event
 
@@ -108,12 +114,81 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             self.state.intent = intent
             self.state.route = "execute_confirmed_actions"
             if self._on_trace_event:
+                self._on_trace_event(
+                    {
+                        "event": "intent_classified",
+                        "intent": intent.model_dump(mode="json"),
+                        "status": "ok",
+                    }
+                )
+            return "execute_confirmed_actions"
+
+        decision = self._interpret_active_proposal_decision()
+        if decision is not None:
+            self.state.decision_interpretation = decision
+            if self._on_trace_event:
                 self._on_trace_event({
-                    "event": "intent_classified",
-                    "intent": intent.model_dump(mode="json"),
+                    "event": "proposal_decision_interpreted",
+                    "decision": decision.model_dump(mode="json"),
                     "status": "ok",
                 })
-            return "execute_confirmed_actions"
+
+            if decision.discard_active_proposals or decision.intent == "discard_active_proposals":
+                self._clear_active_proposals()
+                if decision.intent == "discard_active_proposals" and not _has_separate_user_question(self.state.query):
+                    intent = IntentClassification(
+                        route="discard_active_proposals",
+                        complexity="simple",
+                        required_sources=[],
+                        write_intent=False,
+                        rationale=decision.rationale or "User discarded the active course recommendation state.",
+                    )
+                    self.state.intent = intent
+                    self.state.route = intent.route
+                    return "discard_active_proposals"
+
+            if decision.needs_user_clarification or decision.intent == "unclear":
+                intent = IntentClassification(
+                    route="proposal_clarification",
+                    complexity="simple",
+                    required_sources=[],
+                    write_intent=False,
+                    rationale=decision.rationale or "The user's decision about active recommendations is unclear.",
+                )
+                self.state.intent = intent
+                self.state.route = intent.route
+                return "proposal_clarification"
+
+            if decision.intent in {"apply_selected", "apply_partial_and_revise"}:
+                self.state.approved_actions = self._action_decisions_from_interpretation(decision)
+                if self.state.approved_actions:
+                    route = "execute_then_recommendation" if decision.intent == "apply_partial_and_revise" else "execute_confirmed_actions"
+                    intent = IntentClassification(
+                        route=route,
+                        complexity="scoped",
+                        required_sources=(
+                            ["grade_manager", "isis"]
+                            if route == "execute_confirmed_actions"
+                            else ["degree_regulations", "grade_manager", "moses", "isis"]
+                        ),
+                        write_intent=True,
+                        rationale=decision.rationale or "User decision interpreter selected approved UI actions for execution.",
+                    )
+                    self.state.intent = intent
+                    self.state.route = route
+                    return route
+
+            if decision.intent == "revise_only":
+                intent = IntentClassification(
+                    route="recommendation",
+                    complexity="scoped",
+                    required_sources=["degree_regulations", "grade_manager", "moses"],
+                    write_intent=False,
+                    rationale=decision.rationale or "User asked to revise active course recommendations.",
+                )
+                self.state.intent = intent
+                self.state.route = "recommendation"
+                return "recommendation"
 
         classifier = self._classifier or self._classify_with_llm_or_heuristics
         intent = classifier(self.state)
@@ -167,6 +242,28 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             language=(self.state.intent.language if self.state.intent else "en"),
         )
 
+    @listen("execute_then_recommendation")
+    def run_execute_then_recommendation(self) -> None:
+        self.state.executed_actions = self._execute_action_decisions()
+        execution_answer = _format_execution_answer(
+            self.state.executed_actions,
+            language=(self.state.intent.language if self.state.intent else "en"),
+        )
+        recommendation_answer = self._run_route("recommendation")
+        self._adopt_recorded_or_existing_proposals()
+        self.state.answer_markdown = f"{execution_answer.rstrip()}\n\n{recommendation_answer.rstrip()}".strip()
+
+    @listen("discard_active_proposals")
+    def run_discard_active_proposals(self) -> None:
+        self._clear_active_proposals()
+        self.state.proposed_actions = []
+        self.state.answer_markdown = _format_discard_answer(self.state.decision_interpretation)
+
+    @listen("proposal_clarification")
+    def run_proposal_clarification(self) -> None:
+        self.state.proposed_actions = self._remaining_proposals()
+        self.state.answer_markdown = _format_proposal_clarification_answer(self.state.decision_interpretation)
+
     @listen(
         or_(
             run_simple_grade_manager,
@@ -176,6 +273,9 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             run_recommendation_route,
             run_deep_dive_route,
             run_confirmed_action_execution,
+            run_execute_then_recommendation,
+            run_discard_active_proposals,
+            run_proposal_clarification,
         )
     )
     def persist_turn(self) -> StudyChatFlowState:
@@ -250,7 +350,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             **self._crew_kwargs(),
             manager_model=self._runtime.manager_model,
             allow_temp_enrollment=self._runtime.allow_temp_enrollment,
-            planning_enabled=(self._runtime.planning_enabled or route == "deep_dive"),
+            planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
             planning_llm_model=self._runtime.planning_llm_model,
         ).crew().kickoff(
             inputs={
@@ -272,6 +372,23 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
 
     def _contextual_query(self) -> str:
         parts = [f"Current user message:\n{self.state.query}"]
+        if self.state.decision_interpretation:
+            parts.append(
+                "Interpreted course-recommendation decision:\n"
+                + json.dumps(self.state.decision_interpretation.model_dump(mode="json"), ensure_ascii=False, indent=2)
+            )
+        if self.state.executed_actions:
+            executed = [
+                {
+                    "action_id": action.action_id,
+                    "kind": action.kind,
+                    "course_title": action.course_title,
+                    "status": action.status,
+                    "result": action.result,
+                }
+                for action in self.state.executed_actions
+            ]
+            parts.append("Actions already executed in this turn:\n" + json.dumps(executed, ensure_ascii=False, indent=2))
         if self.state.conversation_context:
             parts.append(f"Conversation context:\n{self.state.conversation_context}")
         if self.state.thread and self.state.thread.active_proposals:
@@ -284,6 +401,80 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 proposal_lines.append(f"- {proposal.title}: {proposal.summary}\n{actions_str}")
             parts.append("Active proposal state:\n" + "\n".join(proposal_lines))
         return "\n\n".join(parts)
+
+    def _interpret_active_proposal_decision(self) -> UserDecisionInterpretation | None:
+        thread = self.state.thread
+        if not thread or not thread.active_proposals:
+            return None
+        interpreter = self._decision_interpreter or self._interpret_decision_with_llm_or_fallback
+        return interpreter(self.state)
+
+    def _interpret_decision_with_llm_or_fallback(self, state: StudyChatFlowState) -> UserDecisionInterpretation:
+        if self._runtime.use_llm_decision_interpreter and os.getenv("GWDG_API_KEY"):
+            try:
+                llm = get_default_llm(
+                    model=self._runtime.manager_model or self._runtime.model,
+                    temperature=0.0,
+                    top_p=self._runtime.top_p,
+                )
+                result = llm.call(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                "Interpret one chat turn with active course recommendation cards. "
+                                "The UI card state is the authorization gate: only actions explicitly accepted in the UI may be executed. "
+                                "Rejected cards must not be executed. Unsure cards must not be executed. "
+                                "Infer whether the user wants to apply accepted actions, apply only some and revise others, revise without applying, ask a question, discard the recommendation state, or needs clarification. "
+                                "If the user changes to an unrelated topic, set discard_active_proposals=true so the old course cards disappear. "
+                                "Do not invent action IDs; choose only from the provided active actions."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                f"Current message:\n{state.query}\n\n"
+                                f"Conversation context:\n{state.conversation_context}\n\n"
+                                f"Active proposals:\n{_proposal_state_json(state.thread.active_proposals if state.thread else [])}\n\n"
+                                f"UI card decisions:\n{_action_decisions_json(state.ui_decisions)}"
+                            ),
+                        },
+                    ],
+                    response_model=UserDecisionInterpretation,
+                )
+                if isinstance(result, UserDecisionInterpretation):
+                    return _sanitize_decision_interpretation(result, state)
+            except Exception as exc:
+                if self._runtime.verbose:
+                    print(f"WARNING: LLM decision interpreter failed ({type(exc).__name__}). Using fallback interpreter.")
+        return _fallback_decision_interpretation(state)
+
+    def _action_decisions_from_interpretation(self, decision: UserDecisionInterpretation) -> list[ActionDecision]:
+        thread = self.state.thread
+        if not thread:
+            return []
+        active_ids = {
+            action.action_id
+            for proposal in thread.active_proposals
+            for action in proposal.actions
+            if action.status == "approved"
+        }
+        requested = set(decision.approved_action_ids)
+        if not requested:
+            requested = active_ids
+        return [
+            ActionDecision(action_id=action_id, approved=True, feedback=decision.rationale)
+            for action_id in active_ids
+            if action_id in requested
+        ]
+
+    def _clear_active_proposals(self) -> None:
+        thread = self.state.thread or load_chat_thread(self.state.profile_slug, thread_id=self.state.thread_id)
+        if thread.active_proposals:
+            thread.active_proposals = []
+            save_chat_thread(thread)
+        self.state.thread = thread
+        self.state.proposed_actions = []
 
     def _classify_with_llm_or_heuristics(self, state: StudyChatFlowState) -> IntentClassification:
         """
@@ -399,7 +590,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 updated.result = decision.feedback or "Declined by user."
             elif updated.kind == "grade_manager_add":
                 updated = _execute_grade_manager_action(updated)
-            elif updated.kind == "isis_enroll":
+            elif updated.kind in {"isis_resolve", "isis_enroll"}:
                 updated = _execute_isis_action(updated)
             action.status = updated.status
             action.result = updated.result
@@ -450,6 +641,177 @@ def _merge_proposals(existing_proposals: list[CourseProposal], new_proposals: li
                 merged_proposals.append(prop.model_copy(update={"actions": new_actions}))
 
     return merged_proposals
+
+
+def _proposal_state_json(proposals: list[CourseProposal]) -> str:
+    compact = []
+    for proposal in proposals:
+        compact.append(
+            {
+                "proposal_id": proposal.proposal_id,
+                "title": proposal.title,
+                "summary": proposal.summary,
+                "actions": [
+                    {
+                        "action_id": action.action_id,
+                        "kind": action.kind,
+                        "course_title": action.course_title,
+                        "status": action.status,
+                        "grade_manager_payload": action.grade_manager_payload,
+                        "isis_payload": action.isis_payload,
+                    }
+                    for action in proposal.actions
+                ],
+            }
+        )
+    return json.dumps(compact, ensure_ascii=False, indent=2)
+
+
+def _action_decisions_json(decisions: list[ActionDecision]) -> str:
+    return json.dumps([decision.model_dump(mode="json") for decision in decisions], ensure_ascii=False, indent=2)
+
+
+def _sanitize_decision_interpretation(
+    decision: UserDecisionInterpretation,
+    state: StudyChatFlowState,
+) -> UserDecisionInterpretation:
+    active_ids = {
+        action.action_id
+        for proposal in (state.thread.active_proposals if state.thread else [])
+        for action in proposal.actions
+    }
+    approved_ui_ids = {decision.action_id for decision in state.ui_decisions if decision.approved}
+    rejected_ui_ids = {decision.action_id for decision in state.ui_decisions if not decision.approved}
+    approved_ids = [action_id for action_id in decision.approved_action_ids if action_id in active_ids and action_id in approved_ui_ids]
+    rejected_ids = [action_id for action_id in decision.rejected_action_ids if action_id in active_ids and action_id in rejected_ui_ids]
+    return decision.model_copy(update={"approved_action_ids": approved_ids, "rejected_action_ids": rejected_ids})
+
+
+def _fallback_decision_interpretation(state: StudyChatFlowState) -> UserDecisionInterpretation:
+    approved_ids = [decision.action_id for decision in state.ui_decisions if decision.approved]
+    rejected_ids = [decision.action_id for decision in state.ui_decisions if not decision.approved]
+    text = state.query.casefold()
+
+    if _looks_like_discard_request(text):
+        return UserDecisionInterpretation(
+            intent="discard_active_proposals",
+            approved_action_ids=[],
+            rejected_action_ids=rejected_ids,
+            discard_active_proposals=True,
+            rationale="Fallback interpreter detected a request to leave the active recommendation flow.",
+        )
+
+    if _looks_like_unrelated_new_topic(text) and not approved_ids and not rejected_ids:
+        return UserDecisionInterpretation(
+            intent="ask_question",
+            discard_active_proposals=True,
+            rationale="Fallback interpreter detected a new unrelated topic.",
+        )
+
+    if rejected_ids and not approved_ids:
+        return UserDecisionInterpretation(
+            intent="revise_only",
+            rejected_action_ids=rejected_ids,
+            revision_request=state.query,
+            rationale="Rejected UI cards should be revised, not executed.",
+        )
+
+    if approved_ids and (_looks_like_revision_request(text) or rejected_ids):
+        return UserDecisionInterpretation(
+            intent="apply_partial_and_revise",
+            approved_action_ids=approved_ids,
+            rejected_action_ids=rejected_ids,
+            revision_request=state.query,
+            rationale="Accepted UI cards can be executed while declined cards are revised.",
+        )
+
+    if approved_ids and not _looks_like_information_question(text):
+        return UserDecisionInterpretation(
+            intent="apply_selected",
+            approved_action_ids=approved_ids,
+            rejected_action_ids=rejected_ids,
+            rationale="Accepted UI cards are treated as the explicit authorization gate.",
+        )
+
+    return UserDecisionInterpretation(intent="ask_question", rationale="No execution decision was inferred.")
+
+
+def _looks_like_discard_request(text: str) -> bool:
+    return any(
+        token in text
+        for token in [
+            "cancel",
+            "discard",
+            "forget this",
+            "forget it",
+            "start over",
+            "new topic",
+            "stop recommendation",
+            "abbrechen",
+            "verwerfen",
+            "vergiss",
+            "neues thema",
+            "nicht weiter",
+        ]
+    )
+
+
+def _looks_like_unrelated_new_topic(text: str) -> bool:
+    course_terms = [
+        "course",
+        "module",
+        "study",
+        "semester",
+        "degree",
+        "isis",
+        "moses",
+        "grade",
+        "recommend",
+        "kurs",
+        "modul",
+        "studium",
+        "semester",
+        "empfehl",
+        "einschreib",
+    ]
+    if any(term in text for term in course_terms):
+        return False
+    unrelated_terms = ["weather", "wetter", "news", "joke", "recipe", "song", "movie", "film"]
+    return any(term in text for term in unrelated_terms)
+
+
+def _looks_like_revision_request(text: str) -> bool:
+    return any(
+        token in text
+        for token in [
+            "replace",
+            "exchange",
+            "swap",
+            "different",
+            "alternative",
+            "revise",
+            "change",
+            "tausche",
+            "ersetze",
+            "anders",
+            "alternative",
+            "wechsel",
+            "ändere",
+            "aendere",
+        ]
+    )
+
+
+def _looks_like_information_question(text: str) -> bool:
+    stripped = text.strip()
+    if "?" in stripped:
+        return True
+    return stripped.startswith(("what ", "why ", "how ", "when ", "where ", "wer ", "was ", "wie ", "warum ", "wann ", "wo "))
+
+
+def _has_separate_user_question(query: str) -> bool:
+    text = query.casefold()
+    return _looks_like_unrelated_new_topic(text) or _looks_like_information_question(text)
 
 
 def _normalize_commitment_route(intent: IntentClassification, query: str) -> IntentClassification:
@@ -565,14 +927,55 @@ def _execute_grade_manager_action(action: ProposedAction) -> ProposedAction:
 
 def _execute_isis_action(action: ProposedAction) -> ProposedAction:
     payload = {key: value for key, value in dict(action.isis_payload or {}).items() if value not in (None, "")}
+    moses_number = str(payload.get("moses_module_number") or "").strip()
+    course_id = str(payload.get("course_id") or "").strip()
+    if course_id and moses_number and course_id == moses_number:
+        return action.model_copy(
+            update={
+                "status": "needs_clarification",
+                "result": (
+                    f"ISIS enrollment blocked: `{course_id}` is also the MOSES module number. "
+                    "A verified ISIS course ID or URL is required before enrollment."
+                ),
+            }
+        )
     if not any(payload.get(key) for key in ("course_id", "course_query", "course_url")):
         return action.model_copy(update={"status": "needs_clarification", "result": "No ISIS course id, query, or URL was provided."})
-    result = PermanentlyEnrollInIsisCourseTool()._run(
+    payload.pop("moses_module_number", None)
+    payload.pop("isis_resolution_status", None)
+    outcome = PermanentlyEnrollInIsisCourseTool().run_structured(
         **payload,
         confirmation_token=CONFIRMATION_TOKEN,
     )
-    status = "executed" if result.startswith("Permanently enrolled") or result.startswith("Already enrolled") else "failed"
+    status = (
+        "executed"
+        if outcome.ok
+        else (
+            "needs_clarification"
+            if outcome.status in {"missing_isis_id", "ambiguous_course", "not_found", "invalid_selector"}
+            else "failed"
+        )
+    )
+    result = outcome.reason or f"ISIS enrollment status: {outcome.status}"
+    if outcome.candidates:
+        candidate_lines = [
+            f"- `{candidate.id}` {candidate.title} ({candidate.term_hint or 'term unknown'})"
+            for candidate in outcome.candidates[:8]
+        ]
+        result = f"{result}\n\nCandidate ISIS courses:\n" + "\n".join(candidate_lines)
     return action.model_copy(update={"status": status, "result": result})
+
+
+def _format_discard_answer(decision: UserDecisionInterpretation | None) -> str:
+    if decision and decision.rationale:
+        return "I cleared the active course recommendations. You can continue with the new topic."
+    return "I cleared the active course recommendations."
+
+
+def _format_proposal_clarification_answer(decision: UserDecisionInterpretation | None) -> str:
+    if decision and decision.rationale:
+        return f"I need one clarification before changing the selected course actions: {decision.rationale}"
+    return "I need one clarification before changing the selected course actions."
 
 
 def _format_execution_answer(actions: list[ProposedAction], *, language: str) -> str:

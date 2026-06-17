@@ -411,6 +411,22 @@ def test_get_my_isis_grades_overview_tool(monkeypatch):
     assert "2.0" in output
 
 
+def test_permanent_enrollment_structured_resolves_query_and_enrolls(monkeypatch):
+    client = FakeToolClient()
+    monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)
+
+    outcome = isis_tools.PermanentlyEnrollInIsisCourseTool().run_structured(
+        course_query="Machine Learning 2",
+        term_hint="WiSe 2026/27",
+        expected_title="Machine Learning 2",
+        confirmation_token=isis_tools.CONFIRMATION_TOKEN,
+    )
+
+    assert outcome.status == "enrolled"
+    assert outcome.course_id == 48000
+    assert client.enrol_calls == [48000]
+
+
 def test_search_isis_courses_smart_fallback(monkeypatch):
     client = FakeToolClient()
     monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)
@@ -457,4 +473,3 @@ def test_get_assignments_and_assessments_includes_quizzes_and_questionnaires(mon
     assert "questionnaires" in output_assess
     assert "Fake Course Survey" in output_assess
     assert "due: 2026-07-31 00:59" in output_assess
-

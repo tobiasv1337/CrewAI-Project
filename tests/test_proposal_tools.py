@@ -36,6 +36,36 @@ def test_proposal_tool_records_explicit_ui_actions_only_inside_collection_contex
     assert proposal.actions[0].action_id == proposal.actions[0].action_id
 
 
+def test_proposal_tool_creates_isis_resolution_action_when_id_is_unverified():
+    tool = ProposeCourseActionsTool()
+
+    with collect_course_proposals() as proposals:
+        tool._run(
+            proposal_title="Unresolved ISIS option",
+            proposal_summary="ISIS still needs a real Moodle course id.",
+            courses=[
+                {
+                    "course_title": "Systemprogrammierung",
+                    "rationale": "Required course.",
+                    "evidence": ["MOSES module 40441"],
+                    "module_query": "40441",
+                    "term": "SS 26",
+                    "include_grade_manager": True,
+                    "include_isis": True,
+                    "isis_course_id": 40441,
+                    "isis_course_query": "Systemprogrammierung",
+                }
+            ],
+        )
+
+    assert len(proposals) == 1
+    actions = proposals[0].actions
+    assert [action.kind for action in actions] == ["grade_manager_add", "isis_resolve"]
+    assert actions[1].isis_payload["course_id"] is None
+    assert actions[1].isis_payload["moses_module_number"] == "40441"
+    assert actions[1].isis_payload["course_query"] == "Systemprogrammierung"
+
+
 def test_proposal_tool_does_not_record_without_context():
     tool = ProposeCourseActionsTool()
     output = tool._run(

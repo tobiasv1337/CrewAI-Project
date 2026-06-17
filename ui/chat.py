@@ -143,11 +143,6 @@ def render_chat_page() -> None:
         run_prompt = prompt.strip()
         if run_prompt:
             proposal_decisions = _collect_course_card_decisions(profile_slug, thread.active_proposals)
-            approved_actions = (
-                _action_decisions_from_course_card_decisions(proposal_decisions)
-                if _is_apply_selected_prompt(run_prompt)
-                else []
-            )
             ui_decisions = _action_decisions_from_course_card_decisions(proposal_decisions)
             st.session_state[PENDING_PROMPT_KEY] = {
                 "profile_slug": profile_slug,
@@ -155,7 +150,7 @@ def render_chat_page() -> None:
                 "display_prompt": run_prompt,
                 "proposal_decisions": proposal_decisions,
                 "ui_decisions": [d.model_dump(mode="json") for d in ui_decisions],
-                "approved_actions": [decision.model_dump(mode="json") for decision in approved_actions],
+                "approved_actions": [],
             }
             st.session_state["nm_clear_proposals_flag"] = True
             st.rerun()
@@ -897,7 +892,7 @@ def _render_course_choice_card(profile_slug: str, card: dict[str, Any]) -> None:
                 st.session_state[decision_key] = decision
                 st.rerun()
 
-    action_toggle_actions = [action for action in card["actions"] if action.kind in {"grade_manager_add", "isis_enroll"}]
+    action_toggle_actions = [action for action in card["actions"] if action.kind in {"grade_manager_add", "isis_resolve", "isis_enroll"}]
     if len(action_toggle_actions) > 1:
         toggle_cols = st.columns(len(action_toggle_actions), gap="small")
         for col, action in zip(toggle_cols, action_toggle_actions):
@@ -924,7 +919,7 @@ def _course_card_metadata(card: dict[str, Any]) -> list[tuple[str, str]]:
             term = term or payload.get("term")
             area = area or payload.get("area")
             module = module or payload.get("module_query")
-        elif action.kind == "isis_enroll":
+        elif action.kind in {"isis_resolve", "isis_enroll"}:
             payload = action.isis_payload or {}
             term = term or payload.get("term_hint")
             isis_id = isis_id or payload.get("course_id")
@@ -1006,31 +1001,6 @@ def _format_course_card_decisions_context(decisions: list[dict[str, Any]]) -> st
     return "Structured course-card decision payload from the UI:\n" + json.dumps(compact, ensure_ascii=False, indent=2)
 
 
-def _is_apply_selected_prompt(prompt: str) -> bool:
-    normalized = re.sub(r"\s+", " ", prompt.casefold()).strip(" .!?:;")
-    return normalized in {
-        "apply",
-        "apply selected",
-        "apply selected courses",
-        "confirm",
-        "confirm selected",
-        "confirm selected courses",
-        "execute",
-        "execute selected",
-        "submit selected",
-        "go ahead",
-        "do it",
-        "looks good",
-        "passt",
-        "übernehmen",
-        "uebernehmen",
-        "bestätigen",
-        "bestaetigen",
-        "ausführen",
-        "ausfuehren",
-    }
-
-
 def _course_decision_key(profile_slug: str, card: dict[str, Any]) -> str:
     return f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_{_slugify(str(card['course_title']))}"
 
@@ -1062,6 +1032,8 @@ def _render_legacy_proposals_panel(profile_slug: str, proposals: list[Any]) -> N
 def _action_kind_label(kind: str) -> str:
     if kind == "grade_manager_add":
         return "Study Plan"
+    if kind == "isis_resolve":
+        return "ISIS Resolve + Enroll"
     if kind == "isis_enroll":
         return "ISIS Enrollment"
     return str(kind).replace("_", " ").title()
@@ -1070,6 +1042,8 @@ def _action_kind_label(kind: str) -> str:
 def _action_kind_short_label(kind: str) -> str:
     if kind == "grade_manager_add":
         return "Study Plan"
+    if kind == "isis_resolve":
+        return "ISIS"
     if kind == "isis_enroll":
         return "ISIS"
     return str(kind).replace("_", " ").title()
@@ -1078,7 +1052,7 @@ def _action_kind_short_label(kind: str) -> str:
 def _action_kind_class(kind: str) -> str:
     if kind == "grade_manager_add":
         return "grade-manager"
-    if kind == "isis_enroll":
+    if kind in {"isis_resolve", "isis_enroll"}:
         return "isis"
     return "other"
 

@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from datetime import datetime
 import json
 import re
+import threading
 import time
 from typing import Any, Literal, Type
 
@@ -27,6 +28,7 @@ from core.terms import default_term_index, format_term_label, parse_term_label
 MAX_SEARCH_RESULTS = 50
 MAX_OUTPUT_ITEMS = 50
 CONFIRMATION_TOKEN = "CONFIRM_PERMANENT_ISIS_ENROLLMENT"
+_PERMANENT_ENROLLMENT_LOCK = threading.RLock()
 
 
 class IsisToolInput(BaseModel):
@@ -118,6 +120,28 @@ class PermanentEnrollInput(CourseReadInput):
         ...,
         description=f"Must be exactly {CONFIRMATION_TOKEN} after explicit user confirmation.",
     )
+
+
+class PermanentEnrollmentOutcome(BaseModel):
+    status: Literal[
+        "enrolled",
+        "already_enrolled",
+        "missing_isis_id",
+        "ambiguous_course",
+        "not_found",
+        "invalid_selector",
+        "auth_failed",
+        "tool_failed",
+        "refused",
+    ]
+    course_id: int | None = None
+    title: str | None = None
+    reason: str = ""
+    candidates: list[IsisCourseRef] = Field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.status in {"enrolled", "already_enrolled"}
 
 
 class _BaseIsisTool(BaseTool):
@@ -460,31 +484,62 @@ class PermanentlyEnrollInIsisCourseTool(_BaseIsisTool):
     args_schema: Type[BaseModel] = PermanentEnrollInput
 
     def _run(self, **kwargs: Any) -> str:
+        return _format_permanent_enrollment_outcome(self.run_structured(**kwargs))
+
+    def run_structured(self, **kwargs: Any) -> PermanentEnrollmentOutcome:
         token = kwargs.pop("confirmation_token", "")
         if token != CONFIRMATION_TOKEN:
-            return (
-                "Permanent ISIS enrollment was refused. The confirmation_token must be exactly "
-                f"`{CONFIRMATION_TOKEN}` after explicit user confirmation."
+            return PermanentEnrollmentOutcome(
+                status="refused",
+                reason=(
+                    "Permanent ISIS enrollment was refused. The confirmation_token must be exactly "
+                    f"`{CONFIRMATION_TOKEN}` after explicit user confirmation."
+                ),
             )
-        client = self._client()
-        selector = self._selector(**kwargs)
-        resolved = resolve_and_read(
-            client=client,
-            selector=selector,
-            operation="permanent_enrollment_precheck",
-            reader=lambda course_id: {"already_enrolled": course_id in {course.id for course in client.enrolled_course_refs()}},
-            allow_temp_enrollment=False,
-        )
-        if isinstance(resolved, IsisResolvedCourse):
-            return _format_resolution(resolved)
-        course = resolved.course
-        if resolved.data.get("already_enrolled"):
-            return f"Already enrolled in ISIS course `{course.id}`: {course.title}."
-        try:
-            client.self_enrol_course(course.id)
-        except Exception as exc:
-            return f"Permanent self-enrollment failed for ISIS course `{course.id}` ({course.title}): {exc}"
-        return f"Permanently enrolled in ISIS course `{course.id}`: {course.title}."
+        with _PERMANENT_ENROLLMENT_LOCK:
+            try:
+                client = self._client()
+                selector = self._selector(**kwargs)
+            except Exception as exc:
+                return PermanentEnrollmentOutcome(status="invalid_selector", reason=str(exc))
+
+            try:
+                resolved = resolve_and_read(
+                    client=client,
+                    selector=selector,
+                    operation="permanent_enrollment_precheck",
+                    reader=lambda course_id: {"already_enrolled": course_id in {course.id for course in client.enrolled_course_refs()}},
+                    allow_temp_enrollment=False,
+                )
+            except Exception as exc:
+                return PermanentEnrollmentOutcome(status=_exception_status(exc), reason=str(exc))
+
+            if isinstance(resolved, IsisResolvedCourse):
+                return _outcome_from_resolution(resolved)
+
+            course = resolved.course
+            if resolved.data.get("already_enrolled"):
+                return PermanentEnrollmentOutcome(
+                    status="already_enrolled",
+                    course_id=course.id,
+                    title=course.title,
+                    reason=f"Already enrolled in ISIS course `{course.id}`: {course.title}.",
+                )
+            try:
+                client.self_enrol_course(course.id)
+            except Exception as exc:
+                return PermanentEnrollmentOutcome(
+                    status=_exception_status(exc),
+                    course_id=course.id,
+                    title=course.title,
+                    reason=f"Permanent self-enrollment failed for ISIS course `{course.id}` ({course.title}): {exc}",
+                )
+            return PermanentEnrollmentOutcome(
+                status="enrolled",
+                course_id=course.id,
+                title=course.title,
+                reason=f"Permanently enrolled in ISIS course `{course.id}`: {course.title}.",
+            )
 
 
 def make_isis_read_only_tools(*, allow_temp_enrollment: bool = False) -> list[BaseTool]:
@@ -935,6 +990,54 @@ def _format_resolution(result: IsisResolvedCourse) -> str:
         lines.append("Candidates:")
         lines.append("")
         lines.append(_format_course_refs("Candidate ISIS courses", result.candidates))
+    return "\n".join(lines).rstrip()
+
+
+def _outcome_from_resolution(result: IsisResolvedCourse) -> PermanentEnrollmentOutcome:
+    if result.status == "ambiguous":
+        return PermanentEnrollmentOutcome(
+            status="ambiguous_course",
+            reason=result.reason or "Multiple ISIS courses matched the selector.",
+            candidates=result.candidates,
+        )
+    if result.status == "not_found":
+        return PermanentEnrollmentOutcome(
+            status="not_found",
+            reason=result.reason or "No matching ISIS course was found.",
+            candidates=result.candidates,
+        )
+    if result.status == "invalid":
+        return PermanentEnrollmentOutcome(
+            status="invalid_selector",
+            reason=result.reason or "The ISIS course selector was invalid.",
+            candidates=result.candidates,
+        )
+    return PermanentEnrollmentOutcome(
+        status="not_found",
+        reason=result.reason or "No resolvable ISIS course was returned.",
+        candidates=result.candidates,
+    )
+
+
+def _exception_status(exc: Exception) -> Literal["auth_failed", "tool_failed"]:
+    text = str(exc).casefold()
+    if any(token in text for token in ("credential", "login", "authentication", "unauthorized", "forbidden", "session")):
+        return "auth_failed"
+    return "tool_failed"
+
+
+def _format_permanent_enrollment_outcome(outcome: PermanentEnrollmentOutcome) -> str:
+    if outcome.status == "enrolled":
+        return outcome.reason or f"Permanently enrolled in ISIS course `{outcome.course_id}`: {outcome.title}."
+    if outcome.status == "already_enrolled":
+        return outcome.reason or f"Already enrolled in ISIS course `{outcome.course_id}`: {outcome.title}."
+    lines = [f"# Permanent ISIS enrollment: {outcome.status}", "", outcome.reason or "The enrollment did not complete."]
+    if outcome.course_id:
+        lines.extend(["", f"- ISIS course ID: `{outcome.course_id}`"])
+    if outcome.title:
+        lines.append(f"- Title: {outcome.title}")
+    if outcome.candidates:
+        lines.extend(["", _format_course_refs("Candidate ISIS courses", outcome.candidates)])
     return "\n".join(lines).rstrip()
 
 

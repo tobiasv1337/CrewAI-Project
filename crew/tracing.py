@@ -130,6 +130,7 @@ class ToolTraceRecorder:
         self._next_event_id = 1
         self._started_perf = perf_counter()
         self._event_lock = threading.Lock()
+        self._trace_lock = threading.Lock()
         self._event_bus: Any | None = None
         self._event_bus_handlers: list[tuple[type[Any], Callable[..., Any]]] = []
         self._installed = False
@@ -175,8 +176,11 @@ class ToolTraceRecorder:
 
     def before_tool_call(self, context: ToolCallHookContext) -> bool | None:
         started_at = utc_now()
+        with self._trace_lock:
+            call_id = self._next_call_id
+            self._next_call_id += 1
         call = {
-            "call_id": self._next_call_id,
+            "call_id": call_id,
             "tool_name": context.tool_name,
             "tool_input": safe_jsonable(context.tool_input),
             "agent_role": getattr(context.agent, "role", None),
@@ -184,9 +188,10 @@ class ToolTraceRecorder:
             "task_description": preview_text(getattr(context.task, "description", None), 500),
             "started_at": started_at,
             "started_perf": perf_counter(),
+            "thread_id": threading.get_ident(),
         }
-        self._next_call_id += 1
-        self._pending.append(call)
+        with self._trace_lock:
+            self._pending.append(call)
         self._emit_event(
             {
                 "event": "tool_start",
@@ -229,7 +234,6 @@ class ToolTraceRecorder:
             "finished_at": finished_at,
             "duration_ms": self._duration_ms(pending),
         }
-        self._append_jsonl(record)
         summary = ToolCallSummary(
             call_id=int(record["call_id"]),
             tool_name=str(record["tool_name"]),
@@ -245,7 +249,9 @@ class ToolTraceRecorder:
             status=status_for_tool_output(str(record["tool_name"]), output_preview),
             badges=badges_for_tool_output(str(record["tool_name"]), output_preview),
         )
-        self.tool_calls.append(summary)
+        with self._trace_lock:
+            self._append_jsonl(record)
+            self.tool_calls.append(summary)
         self._emit_event(
             {
                 "event": "tool_finish",
@@ -389,9 +395,14 @@ class ToolTraceRecorder:
         )
 
     def _pop_pending(self, tool_name: str) -> dict[str, Any]:
-        for index in range(len(self._pending) - 1, -1, -1):
-            if self._pending[index].get("tool_name") == tool_name:
-                return self._pending.pop(index)
+        thread_id = threading.get_ident()
+        with self._trace_lock:
+            for index, item in enumerate(self._pending):
+                if item.get("tool_name") == tool_name and item.get("thread_id") == thread_id:
+                    return self._pending.pop(index)
+            for index, item in enumerate(self._pending):
+                if item.get("tool_name") == tool_name:
+                    return self._pending.pop(index)
         return {}
 
     def _duration_ms(self, pending: dict[str, Any]) -> int | None:

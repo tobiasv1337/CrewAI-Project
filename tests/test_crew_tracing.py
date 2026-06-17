@@ -106,6 +106,41 @@ def test_capture_tool_traces_emits_live_events_and_workbench(tmp_path):
     assert summary["workbench"]["groups"][0]["tool_calls"][0]["status"] == "ok"
 
 
+def test_trace_pairing_preserves_fifo_for_same_tool_calls(tmp_path):
+    with capture_tool_traces(
+        enabled=True,
+        query="Resolve several ISIS courses",
+        model="devstral",
+        logs_root=tmp_path,
+        run_id="same-tool-pairing",
+    ) as recorder:
+        first = SimpleNamespace(
+            tool_name="Permanently Enroll In ISIS Course",
+            tool_input={"course_query": "Systemprogrammierung"},
+            tool=None,
+            agent=SimpleNamespace(role="TU Berlin Course Commitment Specialist"),
+            task=SimpleNamespace(name="study_assistant_task", description="Task description"),
+            tool_result="First result",
+        )
+        second = SimpleNamespace(
+            tool_name="Permanently Enroll In ISIS Course",
+            tool_input={"course_query": "Digitale Systeme"},
+            tool=None,
+            agent=SimpleNamespace(role="TU Berlin Course Commitment Specialist"),
+            task=SimpleNamespace(name="study_assistant_task", description="Task description"),
+            tool_result="Second result",
+        )
+
+        recorder.before_tool_call(first)
+        recorder.before_tool_call(second)
+        recorder.after_tool_call(first)
+        recorder.after_tool_call(second)
+
+    calls = recorder.ordered_tool_calls
+    assert [call.tool_input["course_query"] for call in calls] == ["Systemprogrammierung", "Digitale Systeme"]
+    assert [call.output_preview for call in calls] == ["First result", "Second result"]
+
+
 def test_degree_regulations_tools_are_labeled_for_workbench():
     call = tool_call_summary_from_event(
         {

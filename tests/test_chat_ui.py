@@ -370,7 +370,7 @@ def test_course_card_decisions_default_to_unsure_and_respect_action_toggles():
     assert action_decisions[0].approved is True
 
 
-def test_apply_selected_prompt_is_intentional_and_decision_context_is_compact():
+def test_decision_context_is_compact():
     decisions = [
         {
             "course_title": "Software Security Lab",
@@ -382,8 +382,6 @@ def test_apply_selected_prompt_is_intentional_and_decision_context_is_compact():
         }
     ]
 
-    assert chat._is_apply_selected_prompt("apply selected")
-    assert not chat._is_apply_selected_prompt("I am unsure, suggest an alternative")
     context = chat._format_course_card_decisions_context(decisions)
     assert "Software Security Lab" in context
     assert '"decision": "reject"' in context

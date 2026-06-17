@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 import html
 import os
 import re
+import threading
 import time
 from typing import Any, Iterator
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
@@ -562,12 +563,18 @@ def _int_or_none(value: object | None) -> int | None:
 
 
 _CLIENT_VAR: ContextVar[MoodleRestClient | None] = ContextVar("isis_client", default=None)
+_ENV_CLIENT: MoodleRestClient | None = None
+_ENV_CLIENT_LOCK = threading.RLock()
 
 
 def get_default_isis_client() -> MoodleRestClient:
+    global _ENV_CLIENT
     client = _CLIENT_VAR.get()
     if client is None:
-        client = MoodleRestClient.from_env()
+        with _ENV_CLIENT_LOCK:
+            if _ENV_CLIENT is None:
+                _ENV_CLIENT = MoodleRestClient.from_env()
+            client = _ENV_CLIENT
         _CLIENT_VAR.set(client)
     return client
 
@@ -577,7 +584,10 @@ def set_default_isis_client(client: MoodleRestClient) -> None:
 
 
 def reset_default_isis_client() -> None:
+    global _ENV_CLIENT
     _CLIENT_VAR.set(None)
+    with _ENV_CLIENT_LOCK:
+        _ENV_CLIENT = None
 
 
 @contextmanager

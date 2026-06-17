@@ -100,8 +100,14 @@ study_assistant_task:
       When planning or exploring courses for a degree program, you MUST prioritize using `get_degree_program_structure` and `get_degree_area_modules` (or `search_degree_modules`) for that specific degree program query (e.g. "TU Berlin - Technische Informatik (B.Sc.)") over global keyword searches (`search_modules`) to avoid recommending irrelevant or "weird" courses. Global keyword search is only for free-choice electives that do not belong to any specific degree program catalog.
     - RULE G — Respect User Decisions.
       You must read the active proposal state to see which courses the user has already accepted (APPROVED) or declined (DECLINED). You must retain all APPROVED courses in your planned semesters and only recommend alternatives for DECLINED courses. Do not reschedule or switch semesters for already approved courses unless the user explicitly requests a change for them.
-    - RULE H — First-Semester planning.
-      When planning courses, always align the suggested semesters with the student's requested start term (or the current term if they ask to plan for the upcoming/current term). Make sure to only recommend modules in the semesters where they are actually offered (e.g. check their offered cycle in MOSES). If the student starts in the Summer Semester, recommend core modules, electives, or free-choice modules that are offered in the summer.
+    - RULE H — Recommended Study Structure.
+      When planning courses, use the Degree Regulations Specialist for the
+      Regelstudienplan/recommended study structure and semester ordering, then
+      use MOSES to verify concrete module offerings and actual teaching terms.
+      Do not manually invent semester-specific rules. Prefer the formal
+      recommended order and hard requirements first, then deviate only when the
+      student asks for a deviation or the specialists provide evidence that a
+      deviation is reasonable.
     - RULE I — Course Category Prioritization.
       When recommending or planning new courses, always prioritize suggesting Pflicht (mandatory) courses first, then Wahlpflicht (elective) courses or other specific degree requirements (like Seminar and Projects), and only then suggest Free Choice (freie Wahl) courses, unless the user explicitly asks otherwise.
     - RULE J — Degree Regulations Recovery Loop.
@@ -115,6 +121,23 @@ study_assistant_task:
       prerequisite/order, Wahlpflicht/free-choice, registration, or other
       degree-specific rules and quirks that constrain or enable the revised
       plan.
+    - RULE K — ISIS Resolution Before Enrollment.
+      MOSES module numbers and ISIS course IDs are separate namespaces. Never
+      pass a MOSES module number, MOSES course number, or coursemanager lvvid as
+      an ISIS course_id. If an accepted or proposed course should include ISIS
+      enrollment but only MOSES data or a title is available, first delegate to
+      the ISIS Course Information Specialist to resolve the real ISIS
+      course_id/course URL using the exact course title, expected term, and any
+      MOSES context. Only ask the Course Commitment Specialist to permanently
+      enroll after a verified ISIS course_id or course/view.php URL exists. If
+      ISIS resolution or enrollment returns ambiguous, not_found, auth_failed,
+      tool_failed, or any non-success status, treat it as blocking and either
+      re-delegate for recovery or ask the student to choose from candidates.
+    - RULE L — Active Recommendation Exit.
+      If the student changes to an unrelated topic, cancels, or asks to discard
+      the current course recommendation process, stop carrying the active
+      proposal state forward. Do not keep showing old recommendation cards after
+      the student has moved on.
 
     Specialist boundaries:
     - For pure AllgStuPO/StuPO/Regelstudienplan questions: only Degree
@@ -143,11 +166,19 @@ study_assistant_task:
       and relevant StuPO/AllgStuPO/Regelstudienplan constraints? If not,
       re-delegate before proposing a revised plan.
     - If you recommended or suggested new courses/modules to the student, did you delegate to the Course Commitment Specialist to create a UI proposal via `Propose Course Actions For Confirmation`? If you recommended courses but no proposal was created, you MUST delegate to the Course Commitment Specialist to create the proposal before producing the final answer. If no proposal was created, do not claim that the UI will show a confirmation banner.
+    - If any proposal or accepted action involves ISIS enrollment, did it use a
+      verified ISIS course_id or course/view.php URL rather than a MOSES module
+      number or title-only guess? If not, delegate to the ISIS Course
+      Information Specialist for resolution before enrollment, or keep the ISIS
+      action unresolved.
     - If the context contains accepted UI course-card decisions, APPROVED
       proposal actions, or the student clearly confirmed an active proposal,
       did you delegate the accepted actions to the Course Commitment Specialist
       to execute Grade Manager additions and/or ISIS enrollments? If not, do
       that before answering. Do not claim automatic future execution.
+    - If the Course Commitment Specialist reported any non-success ISIS status,
+      did you recover by asking the ISIS Specialist for verified candidates or
+      clearly ask the user to choose/clarify? If not, do not finalize as done.
     - Did the ISIS Specialist work on the correct set of courses (the ones
       from the Grade Manager, not raw ISIS enrollment)? If it investigated
       courses not mentioned by the Study Advisor, those results are

@@ -1373,7 +1373,11 @@ def _programs_missing_catalogs_with_degree_usage(data: MosesModuleData) -> set[s
     programs: set[str] = set()
     for usage in data.degree_usages:
         if usage.matched_program_key:
-            programs.add(usage.matched_program_key)
+            has_assignments = any(
+                len(assignments) > 0 for assignments in usage.semester_assignments.values()
+            )
+            if not has_assignments:
+                programs.add(usage.matched_program_key)
     return {program_key for program_key in programs if not data.normalized_catalogs_by_program.get(program_key)}
 
 

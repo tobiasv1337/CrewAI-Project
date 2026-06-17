@@ -1,4 +1,7 @@
-from core.terms import build_term_label, canonical_term_label, next_term_label, ordered_terms
+from datetime import date
+
+from core.terms import build_term_label, canonical_term_label, format_term_label, next_term_label, ordered_terms, term_index_for_date
+from crew.semester_context import semester_reference_context
 
 
 def test_ordered_terms_supports_newest_first_with_unknown_last():
@@ -32,6 +35,23 @@ def test_canonical_term_label_normalizes_parseable_inputs() -> None:
 def test_next_term_label_uses_latest_known_term_or_default() -> None:
     assert next_term_label(["WS 24/25", "SS 25", "WS 25/26"]) == "SS 26"
     assert canonical_term_label(next_term_label(["Unknown", None])) is not None
+
+
+def test_term_index_for_date_tracks_current_semester_boundaries() -> None:
+    assert format_term_label(term_index_for_date(date(2026, 6, 17))) == "SS 26"
+    assert format_term_label(term_index_for_date(date(2026, 10, 1))) == "WS 26/27"
+    assert format_term_label(term_index_for_date(date(2027, 3, 31))) == "WS 26/27"
+    assert format_term_label(term_index_for_date(date(2027, 4, 1))) == "SS 27"
+
+
+def test_semester_reference_context_disambiguates_current_and_upcoming_terms() -> None:
+    context = semester_reference_context(date(2026, 6, 17))
+
+    assert "Current date: 2026-06-17" in context
+    assert "Current semester: SS 26 / SoSe 2026" in context
+    assert "Next/upcoming semester: WS 26/27 / WiSe 2026/27" in context
+    assert "dieses Semester" in context
+    assert "nächstes Semester" in context
 
 
 def test_ordered_terms_can_union_module_and_session_terms() -> None:

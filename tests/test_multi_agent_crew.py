@@ -53,7 +53,7 @@ def test_orchestrator_prompt_includes_degree_regulations_recovery_loop(monkeypat
     assert "before finalizing a workaround or proposal" in task_description
 
 
-def test_orchestrator_prompt_executes_accepted_actions_via_course_commitment(monkeypatch):
+def test_orchestrator_prompt_keeps_irreversible_writes_in_flow(monkeypatch):
     import crew.multi_agent_crew as crew_module
 
     monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
@@ -65,11 +65,12 @@ def test_orchestrator_prompt_executes_accepted_actions_via_course_commitment(mon
     task_description = study_crew.tasks_config["study_assistant_task"]["description"]
 
     assert "APPROVED ACTION EXECUTION RULE" in orchestrator_backstory
-    assert "accepted UI course-card decisions" in orchestrator_backstory
-    assert "delegate to the Course Commitment Specialist" in orchestrator_backstory
-    assert "Never execute declined or unsure actions" in commitment_backstory
-    assert "Accepted UI course-card decisions and APPROVED proposal actions count as explicit confirmation" in task_description
-    assert "Do not claim automatic future execution" in task_description
+    assert "Flow, not the hierarchical Crew" in orchestrator_backstory
+    assert "agents must create UI proposals only" in orchestrator_backstory
+    assert "You do not have Grade Manager or ISIS write tools" in commitment_backstory
+    assert "Never execute declined, unsure, or merely proposed actions" in commitment_backstory
+    assert "No specialist in this hierarchical crew permanently changes Grade Manager" in task_description
+    assert "The Course Commitment Specialist does not execute irreversible writes" in task_description
 
 
 def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeypatch):
@@ -130,8 +131,8 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     commitment_tool_names = [tool.name for tool in commitment.tools]
     assert commitment_tool_names == [tool.name for tool in COURSE_COMMITMENT_TOOLS]
     assert "Propose Course Actions For Confirmation" in commitment_tool_names
-    assert "Add Module To Study Plan" in commitment_tool_names
-    assert "Permanently Enroll In ISIS Course" in commitment_tool_names
+    assert "Add Module To Study Plan" not in commitment_tool_names
+    assert "Permanently Enroll In ISIS Course" not in commitment_tool_names
 
 
 def test_multi_agent_crew_can_enable_planning_without_default_openai(monkeypatch):

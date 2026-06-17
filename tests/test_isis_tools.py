@@ -6,6 +6,7 @@ from crew.isis_client import MoodleApiError
 from crew.isis_models import IsisCourseRef
 from crew.tools import ISIS_READ_ONLY_TOOLS, ISIS_WRITE_TOOLS, make_isis_read_only_tools
 from crew.tools import isis_tools
+from crew.write_permissions import allow_confirmed_writes
 
 
 class FakeToolClient:
@@ -281,6 +282,14 @@ def test_permanent_enrollment_requires_confirmation(monkeypatch):
     assert "refused" in output
     assert client.enrol_calls == []
 
+    output = isis_tools.PermanentlyEnrollInIsisCourseTool()._run(
+        course_id=48000,
+        confirmation_token=isis_tools.CONFIRMATION_TOKEN,
+    )
+
+    assert "confirmed Flow execution scope is required" in output
+    assert client.enrol_calls == []
+
 
 def test_json_limited_structural_pruning():
     small_data = {"key": "value", "list": [1, 2, 3]}
@@ -415,12 +424,13 @@ def test_permanent_enrollment_structured_resolves_query_and_enrolls(monkeypatch)
     client = FakeToolClient()
     monkeypatch.setattr(isis_tools, "get_default_isis_client", lambda: client)
 
-    outcome = isis_tools.PermanentlyEnrollInIsisCourseTool().run_structured(
-        course_query="Machine Learning 2",
-        term_hint="WiSe 2026/27",
-        expected_title="Machine Learning 2",
-        confirmation_token=isis_tools.CONFIRMATION_TOKEN,
-    )
+    with allow_confirmed_writes():
+        outcome = isis_tools.PermanentlyEnrollInIsisCourseTool().run_structured(
+            course_query="Machine Learning 2",
+            term_hint="WiSe 2026/27",
+            expected_title="Machine Learning 2",
+            confirmation_token=isis_tools.CONFIRMATION_TOKEN,
+        )
 
     assert outcome.status == "enrolled"
     assert outcome.course_id == 48000

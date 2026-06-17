@@ -22,6 +22,7 @@ from crew.isis_client import (
 )
 from crew.isis_models import IsisCourseRef, IsisCourseSelector, IsisDateHit, IsisReadResult, IsisResolvedCourse, clean_text
 from crew.isis_resolver import resolve_and_read
+from crew.write_permissions import confirmed_writes_enabled
 from core.terms import default_term_index, format_term_label, parse_term_label
 
 
@@ -494,6 +495,14 @@ class PermanentlyEnrollInIsisCourseTool(_BaseIsisTool):
                 reason=(
                     "Permanent ISIS enrollment was refused. The confirmation_token must be exactly "
                     f"`{CONFIRMATION_TOKEN}` after explicit user confirmation."
+                ),
+            )
+        if not confirmed_writes_enabled():
+            return PermanentEnrollmentOutcome(
+                status="refused",
+                reason=(
+                    "Permanent ISIS enrollment was refused: confirmed Flow execution scope "
+                    "is required after UI approval."
                 ),
             )
         with _PERMANENT_ENROLLMENT_LOCK:

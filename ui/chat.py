@@ -22,6 +22,7 @@ from crew.chat_models import ActionDecision, ChatMessage, CourseProposal
 from crew.chat_persistence import clear_chat_thread, load_chat_thread, reset_chat_thread, save_chat_thread
 from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL
 from crew.isis_client import IsisCredentials, MoodleRestClient, login_via_playwright_sync
+from crew.semester_context import semester_reference_context
 from crew.tools.proposal_tools import ProposalCourseInput, build_course_proposal
 from crew.tracing import TraceWorkbench, load_trace_workbench
 from main import MultiAgentStudyAssistantRunResult, run_study_assistant_query
@@ -2229,6 +2230,7 @@ def build_student_context(profile_slug: str) -> str:
             f"Relevant degree programs: {', '.join(relevant_programs) if relevant_programs else 'none inferred'}",
             f"Loaded modules in UI state: {len(modules)}",
             f"State counts: Completed={completed}, In Progress={in_progress}, Planned={planned}",
+            semester_reference_context(),
             "Use Grade Manager tools as the source of truth for full module details.",
         ]
     )

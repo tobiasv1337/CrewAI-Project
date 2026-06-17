@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from typing import Iterable, List, Optional, Tuple
 
 from .models import ModuleOffering
@@ -94,11 +94,16 @@ def advance_term_label(label: Optional[str], steps: int = 1) -> Optional[str]:
     return format_term_label(idx + steps)
 
 
+def term_index_for_date(day: date | datetime) -> int:
+    if day.month >= 10:
+        return day.year * 2
+    if day.month <= 3:
+        return (day.year - 1) * 2
+    return day.year * 2 - 1
+
+
 def default_term_index() -> int:
-    now = datetime.now()
-    if 10 <= now.month or now.month <= 3:
-        return (now.year - 1) * 2
-    return now.year * 2 - 1
+    return term_index_for_date(datetime.now())
 
 
 def next_term_label(terms: Iterable[Optional[str]]) -> str:

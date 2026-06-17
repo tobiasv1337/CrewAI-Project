@@ -21,6 +21,7 @@ from crew.chat_models import (
 from crew.chat_persistence import append_turn, load_chat_thread, reset_chat_thread, save_chat_thread
 from crew.config.llm import get_default_llm
 from crew.runtime import ensure_crewai_storage_writable
+from crew.semester_context import semester_reference_context
 from crew.tools.grademanager_tools import (
     STUDY_PLAN_CONFIRMATION_TOKEN,
     add_module_to_study_plan,
@@ -28,6 +29,7 @@ from crew.tools.grademanager_tools import (
 )
 from crew.tools.isis_tools import CONFIRMATION_TOKEN, PermanentlyEnrollInIsisCourseTool
 from crew.tools.proposal_tools import current_course_proposals
+from crew.write_permissions import allow_confirmed_writes
 
 
 FlowRunner = Callable[["StudyChatFlow"], str]
@@ -371,7 +373,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         }
 
     def _contextual_query(self) -> str:
-        parts = [f"Current user message:\n{self.state.query}"]
+        parts = [f"Current user message:\n{self.state.query}", semester_reference_context()]
         if self.state.decision_interpretation:
             parts.append(
                 "Interpreted course-recommendation decision:\n"
@@ -571,30 +573,31 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             for action in proposal.actions
         }
         executed: list[ProposedAction] = []
-        for decision in self.state.approved_actions:
-            action = action_by_id.get(decision.action_id)
-            if action is None:
-                executed.append(
-                    ProposedAction(
-                        action_id=decision.action_id,
-                        kind="grade_manager_add",
-                        course_title="Unknown action",
-                        status="failed",
-                        result="No active proposal action matched this decision.",
+        with allow_confirmed_writes():
+            for decision in self.state.approved_actions:
+                action = action_by_id.get(decision.action_id)
+                if action is None:
+                    executed.append(
+                        ProposedAction(
+                            action_id=decision.action_id,
+                            kind="grade_manager_add",
+                            course_title="Unknown action",
+                            status="failed",
+                            result="No active proposal action matched this decision.",
+                        )
                     )
-                )
-                continue
-            updated = action.model_copy(deep=True)
-            if not decision.approved:
-                updated.status = "declined"
-                updated.result = decision.feedback or "Declined by user."
-            elif updated.kind == "grade_manager_add":
-                updated = _execute_grade_manager_action(updated)
-            elif updated.kind in {"isis_resolve", "isis_enroll"}:
-                updated = _execute_isis_action(updated)
-            action.status = updated.status
-            action.result = updated.result
-            executed.append(updated)
+                    continue
+                updated = action.model_copy(deep=True)
+                if not decision.approved:
+                    updated.status = "declined"
+                    updated.result = decision.feedback or "Declined by user."
+                elif updated.kind == "grade_manager_add":
+                    updated = _execute_grade_manager_action(updated)
+                elif updated.kind in {"isis_resolve", "isis_enroll"}:
+                    updated = _execute_isis_action(updated)
+                action.status = updated.status
+                action.result = updated.result
+                executed.append(updated)
 
         thread.proposal_decisions.extend(self.state.approved_actions)
         thread.active_proposals = [

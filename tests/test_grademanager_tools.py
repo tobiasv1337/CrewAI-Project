@@ -5,6 +5,7 @@ from core.models import Module, ModuleOffering, ModuleState, MosesModuleData
 from core.providers.tu_berlin import moses as moses_provider
 from crew.profile_context import use_grade_manager_profile
 from crew.tools import grademanager_tools
+from crew.write_permissions import allow_confirmed_writes
 
 
 CS_PROGRAM = "TU Berlin - Computer Science (M.Sc.)"
@@ -276,19 +277,29 @@ def test_add_module_to_study_plan_is_confirmation_gated_and_writes(monkeypatch, 
     assert "write refused" in refused
     assert len(persistence.load_modules("primary")) == 1
 
-    mismatch = grademanager_tools.add_module_to_study_plan(
-        module_query="40967",
-        term="SS 27",
-        confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
-    )
-    assert "does not match" in mismatch
-    assert len(persistence.load_modules("primary")) == 1
-
-    added = grademanager_tools.add_module_to_study_plan(
+    refused_without_flow_scope = grademanager_tools.add_module_to_study_plan(
         module_query="40967",
         term="WS 26/27",
         confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
     )
+    assert "confirmed Flow execution scope is required" in refused_without_flow_scope
+    assert len(persistence.load_modules("primary")) == 1
+
+    with allow_confirmed_writes():
+        mismatch = grademanager_tools.add_module_to_study_plan(
+            module_query="40967",
+            term="SS 27",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
+    assert "does not match" in mismatch
+    assert len(persistence.load_modules("primary")) == 1
+
+    with allow_confirmed_writes():
+        added = grademanager_tools.add_module_to_study_plan(
+            module_query="40967",
+            term="WS 26/27",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
 
     modules = persistence.load_modules("primary")
     assert "Added `Machine Learning 2`" in added
@@ -299,11 +310,12 @@ def test_add_module_to_study_plan_is_confirmation_gated_and_writes(monkeypatch, 
     assert new_module.term == "WS 26/27"
     assert new_module.moses_number == "40967"
 
-    duplicate = grademanager_tools.add_module_to_study_plan(
-        module_query="40967",
-        term="WS 26/27",
-        confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
-    )
+    with allow_confirmed_writes():
+        duplicate = grademanager_tools.add_module_to_study_plan(
+            module_query="40967",
+            term="WS 26/27",
+            confirmation_token=grademanager_tools.STUDY_PLAN_CONFIRMATION_TOKEN,
+        )
     assert "already present" in duplicate
     assert len(persistence.load_modules("primary")) == 2
 
@@ -327,7 +339,7 @@ def test_add_module_to_study_plan_writes_context_selected_profile_only(monkeypat
         lambda *args, **kwargs: _fake_moses_result(),
     )
 
-    with use_grade_manager_profile("alice"):
+    with use_grade_manager_profile("alice"), allow_confirmed_writes():
         added = grademanager_tools.add_module_to_study_plan(
             module_query="40967",
             term="WS 26/27",

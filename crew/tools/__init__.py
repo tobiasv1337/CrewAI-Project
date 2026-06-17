@@ -45,8 +45,6 @@ from crew.tools.degree_regulations_tools import (
 
 COURSE_COMMITMENT_TOOLS = [
     ProposeCourseActionsTool(),
-    *GRADE_MANAGER_WRITE_TOOLS,
-    *ISIS_WRITE_TOOLS,
 ]
 
 __all__ = [

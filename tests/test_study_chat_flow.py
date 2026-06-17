@@ -83,7 +83,11 @@ def test_non_llm_classifier_routes_to_deep_dive_with_warning(monkeypatch, tmp_pa
 
     def deep_runner(flow):
         calls.append("deep")
-        assert "Current user message" in flow._contextual_query()
+        contextual_query = flow._contextual_query()
+        assert "Current user message" in contextual_query
+        assert "Semester reference context:" in contextual_query
+        assert "Current semester:" in contextual_query
+        assert "Next/upcoming semester:" in contextual_query
         return "Scoped deadlines from active Grade Manager courses."
 
     flow = _flow(runner_overrides={"deep_dive": deep_runner})
@@ -335,8 +339,10 @@ def test_confirmed_grade_manager_action_passes_exact_confirmation_token(monkeypa
     seen = {}
 
     import crew.study_chat_flow as flow_module
+    from crew.write_permissions import confirmed_writes_enabled
 
     def fake_add(**kwargs):
+        assert confirmed_writes_enabled()
         seen.update(kwargs)
         return "Added `Machine Learning 2` (6 LP) to profile `Primary Test Student`."
 
@@ -399,6 +405,51 @@ def test_natural_language_confirmation_uses_interpreter_not_phrase_list(monkeypa
     assert flow.state.decision_interpretation.intent == "apply_selected"
     assert flow.state.executed_actions[0].status == "executed"
     assert load_chat_thread("primary").active_proposals == []
+
+
+def test_chat_confirmation_without_ui_acceptance_does_not_execute(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    proposal = build_course_proposal(
+        proposal_title="Displayed plan",
+        proposal_summary="One course.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Machine Learning 2",
+                rationale="Fits ML preference.",
+                module_query="40967",
+                term="WS 26/27",
+            )
+        ],
+    )
+    append_turn(
+        "primary",
+        user_content="Suggest courses.",
+        assistant_content="Please confirm.",
+        proposals=[proposal],
+        rolling_summary="Planning next semester.",
+    )
+
+    import crew.study_chat_flow as flow_module
+
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_grade_manager_action",
+        lambda action: (_ for _ in ()).throw(AssertionError("write executed without UI approval")),
+    )
+
+    flow = _flow(
+        classifier=_classifier_for("recommendation", required_sources=["degree_regulations", "grade_manager", "moses"]),
+        runner_overrides={"recommendation": lambda flow: "I still need the UI card approval before adding anything."},
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Klingt gut!",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    assert flow.state.executed_actions == []
+    assert load_chat_thread("primary").active_proposals[0].actions[0].status == "proposed"
 
 
 def test_partial_apply_and_revise_executes_approved_subset_then_runs_recommendation(monkeypatch, tmp_path):

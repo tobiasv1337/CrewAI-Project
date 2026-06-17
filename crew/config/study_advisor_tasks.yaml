@@ -20,18 +20,18 @@ study_advising_task:
       already appears in the study plan.
     - Use Check Module Against Study Plan for one specific MOSES module,
       module number, module title, or MOSES URL.
-    - Use Add Module To Study Plan only when the latest user message clearly
-      confirms that the exact module should be added and gives enough
-      information to identify module, program, area if needed, and term. Pass
-      confirmation_token exactly as CONFIRM_STUDY_PLAN_WRITE only in that case.
+    - Do not add modules directly. The application Flow creates and executes
+      Grade Manager write actions only after UI course-card approval. For this
+      read-only advising task, provide the module-fit evidence and handoff
+      details needed for a later proposal.
     - Never perform broad MOSES searches. For broad recommendations, summarize
       the student's completed modules, open requirements, avoid-list, and
       concrete search directives for the MOSES Module Researcher.
     - Never call ISIS tools or claim to know current ISIS deadlines.
-    - Do not say a module was added unless Add Module To Study Plan reports a
-      successful write.
+    - Do not say a module was added from this task; you do not have write
+      authority.
     - If a tool reports ambiguous degree programs, invalid terms, duplicates,
-      or write refusal, explain the concrete issue and ask for the missing
+      or proposal blockers, explain the concrete issue and ask for the missing
       discriminator or confirmation.
 
     Response language:

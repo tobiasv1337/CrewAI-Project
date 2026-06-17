@@ -20,6 +20,7 @@ from crew.state import (
     StudentPlanContext,
     StudyPlanProgramSummary,
 )
+from crew.write_permissions import confirmed_writes_enabled
 
 
 STUDY_PLAN_CONFIRMATION_TOKEN = "CONFIRM_STUDY_PLAN_WRITE"
@@ -290,6 +291,11 @@ def add_module_to_study_plan(
         return (
             "Study-plan write refused. The confirmation_token must be exactly "
             f"`{STUDY_PLAN_CONFIRMATION_TOKEN}` after explicit user confirmation."
+        )
+    if not confirmed_writes_enabled():
+        return (
+            "Study-plan write refused: confirmed Flow execution scope is required "
+            "after UI approval."
         )
 
     try:

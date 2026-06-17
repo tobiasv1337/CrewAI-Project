@@ -476,13 +476,19 @@ def update_module_in_study_plan(
         )
 
     try:
-        existing.term = target_term_label
-        existing.area = new_area
-        existing.state = new_state
-        existing.program_key = resolved_program
+        # _select_existing_module may return a model_copy() virtual copy when the
+        # module has extra_registrations. We must mutate the canonical original in
+        # `modules` directly (matched by id) so that save_modules() actually sees
+        # the change and writes it to disk.
+        canonical = next((m for m in modules if m.id == existing.id), existing)
+        canonical.term = target_term_label
+        canonical.area = new_area
+        canonical.state = new_state
+        canonical.program_key = resolved_program
         persistence.save_modules(modules, profile.slug)
     except Exception as exc:
         return f"Study-plan write failed while saving: {exc}"
+
 
     return (
         f"Updated `{existing.name}` in profile `{profile.display_name}` from "
@@ -535,7 +541,8 @@ def remove_module_from_study_plan(
         return f"Study-plan write refused: {exc}"
 
     try:
-        modules.remove(existing)
+        canonical = next((m for m in modules if m.id == existing.id), existing)
+        modules.remove(canonical)
         persistence.save_modules(modules, profile.slug)
     except Exception as exc:
         return f"Study-plan write failed while saving: {exc}"

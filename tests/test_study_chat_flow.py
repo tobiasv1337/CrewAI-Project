@@ -650,3 +650,87 @@ def test_ui_decisions_update_action_status_and_merge_proposals(monkeypatch, tmp_
     action_by_title = {a.course_title: a for a in actions}
     assert action_by_title["Course A"].status == "approved"
     assert action_by_title["Course C"].status == "proposed"
+
+
+def test_isis_candidates_persisted_to_next_turn(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    from core.models import MosesModuleData, MosesIsisCandidate
+    from crew.state import record_moses_module_artifact
+    from crew.chat_persistence import load_chat_thread
+
+    # Mock details fetch runner that records artifacts during kickoff
+    def moses_runner(flow):
+        data = MosesModuleData(
+            number="40966",
+            version=2,
+            title="Machine Learning 1",
+            credits=6.0,
+            validity="WS 2024/25 onwards",
+            responsible_person="Prof. Ada",
+            grading_mode="Graded",
+            exam_type="Written exam",
+            teaching_languages=["English"],
+            faculty="Faculty IV",
+            institute="Institute of Software Engineering",
+            department="Machine Learning",
+            semester_count="1 Semester",
+            start_semesters=["Winter semester"],
+            module_elements=[],
+            isis_candidates=[
+                MosesIsisCandidate(
+                    course_id=47025,
+                    course_url="https://isis.tu-berlin.de/course/view.php?id=47025",
+                    course_title="[SoSe 2026] Machine Learning 1",
+                    term_hint="SoSe 2026",
+                    module_title="Machine Learning 1",
+                    fallback_search_terms=[],
+                    confidence="high",
+                    status="resolved",
+                )
+            ],
+            workload_items=[],
+            workload_total="180h",
+            exam_elements=[],
+            normalized_catalogs_by_program={},
+        )
+        record_moses_module_artifact(data)
+        return "I found Machine Learning 1."
+
+    flow = _flow(
+        classifier=_classifier_for("simple_moses", required_sources=["moses"]),
+        runner_overrides={"simple_moses": moses_runner},
+    )
+
+    from crew.state import collect_moses_state_artifacts
+    with collect_moses_state_artifacts():
+        flow.kickoff(
+            inputs=StudyChatFlowState(
+                query="Search ML1 on MOSES",
+                profile_slug="primary",
+            ).model_dump(mode="json")
+        )
+
+    # 1. Verify it was persisted to the thread's isis_context on disk
+    thread = load_chat_thread("primary")
+    assert thread.isis_context is not None
+    assert len(thread.isis_context.preferred_course_candidates) == 1
+    assert thread.isis_context.preferred_course_candidates[0].course_id == 47025
+
+    # 2. Run next turn and check if isis_context_json is pre-populated
+    flow2 = _flow(
+        classifier=_classifier_for("simple_isis", required_sources=["isis"]),
+        runner_overrides={"simple_isis": lambda f: "Enrollment done"}
+    )
+    flow2.kickoff(
+        inputs=StudyChatFlowState(
+            query="Now enroll me please",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+    
+    assert flow2.state.isis_context_json != "{}"
+    import json
+    context_data = json.loads(flow2.state.isis_context_json)
+    assert "preferred_course_candidates" in context_data
+    assert context_data["preferred_course_candidates"][0]["course_id"] == 47025
+

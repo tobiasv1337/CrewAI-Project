@@ -834,8 +834,18 @@ def _merge_proposals(existing_proposals: list[CourseProposal], new_proposals: li
     if not action_by_key:
         return []
     template = new_proposals[-1] if new_proposals else next(iter(action_by_key.values()))[0]
-    actions = [action for _, action in action_by_key.values()]
+    # Second dedup pass: collapse actions with the same normalized course_title + family.
+    # This catches the case where the LLM proposed the same module twice with different
+    # module_query formats (MOSES number vs. full name).
+    title_family_seen: dict[tuple[str, str], ProposedAction] = {}
+    for _, action in action_by_key.values():
+        tk = (_identity_text(action.course_title), _action_family(action))
+        prev = title_family_seen.get(tk)
+        if prev is None or _action_merge_priority(action) >= _action_merge_priority(prev):
+            title_family_seen[tk] = action
+    actions = list(title_family_seen.values())
     return [template.model_copy(update={"actions": actions}, deep=True)]
+
 
 
 def _action_family(action: ProposedAction) -> str:
@@ -862,13 +872,22 @@ def _action_merge_priority(action: ProposedAction) -> int:
 def _course_identity_for_action(action: ProposedAction) -> str:
     grade_payload = action.grade_manager_payload or {}
     isis_payload = action.isis_payload or {}
-    moses_identity = (
+    # Prefer the numeric MOSES module number as the stable identity key.
+    # Also accept a non-numeric moses_module_number (e.g. full module name)
+    # so that two actions for the same course aren't treated as different
+    # even when one uses the number and the other uses the title.
+    moses_number_raw = (
         grade_payload.get("moses_module_number")
         or isis_payload.get("moses_module_number")
-        or _numeric_identity(grade_payload.get("module_query"))
     )
-    if moses_identity:
-        return f"moses:{_identity_text(moses_identity)}"
+    if moses_number_raw:
+        numeric = _numeric_identity(moses_number_raw)
+        # Always use the numeric form as the canonical key when available
+        return f"moses:{_identity_text(numeric or moses_number_raw)}"
+    # Fall back: use the numeric part of module_query if it looks like a MOSES id
+    module_query_numeric = _numeric_identity(grade_payload.get("module_query"))
+    if module_query_numeric:
+        return f"moses:{_identity_text(module_query_numeric)}"
     title = _identity_text(action.course_title)
     if title:
         return f"title:{title}"
@@ -882,6 +901,7 @@ def _course_identity_for_action(action: ProposedAction) -> str:
     if course_query:
         return f"isis-query:{_identity_text(course_query)}"
     return f"action:{action.action_id}"
+
 
 
 def _identity_text(value: object | None) -> str:
@@ -1207,6 +1227,33 @@ def _execute_grade_manager_action(action: ProposedAction) -> ProposedAction:
     return action.model_copy(update={"status": status, "result": f"{result}\n\nVerification:\n{verification}"})
 
 
+def _coerce_module_state(value: str | None, fallback: str = "Planned") -> str:
+    """Map German, legacy, or invalid state strings to a valid ModuleState value."""
+    if not value:
+        return fallback
+    _ALIASES: dict[str, str] = {
+        # German translations
+        "geplant": "Planned",
+        "abgeschlossen": "Completed",
+        "abgeschossen": "Completed",
+        "laufend": "In Progress",
+        "in bearbeitung": "In Progress",
+        "kandidat": "Possible Candidate",
+        "möglicher kandidat": "Possible Candidate",
+        # English non-standard
+        "enrolled": "Planned",
+        "in_progress": "In Progress",
+        "possible candidate": "Possible Candidate",
+        "completed": "Completed",
+        "planned": "Planned",
+        "in progress": "In Progress",
+    }
+    normalized = value.strip().casefold()
+    if normalized in _ALIASES:
+        return _ALIASES[normalized]
+    return fallback
+
+
 def _execute_grade_manager_update_action(action: ProposedAction) -> ProposedAction:
     payload = dict(action.grade_manager_payload or {})
     module_query = str(payload.get("module_query") or action.course_title).strip()
@@ -1220,9 +1267,9 @@ def _execute_grade_manager_update_action(action: ProposedAction) -> ProposedActi
         program_key=payload.get("program_key"),
         current_term=payload.get("current_term"),
         current_area=payload.get("current_area"),
-        current_state=payload.get("current_state") or "Planned",
+        current_state=_coerce_module_state(payload.get("current_state"), fallback="Planned"),
         target_area=payload.get("target_area") or payload.get("area"),
-        target_state=payload.get("target_state"),
+        target_state=_coerce_module_state(payload.get("target_state"), fallback=None) if payload.get("target_state") else None,
         allow_offering_mismatch=bool(payload.get("allow_offering_mismatch", False)),
         allow_non_planned=bool(payload.get("allow_non_planned", False)),
         confirmation_token=STUDY_PLAN_CONFIRMATION_TOKEN,
@@ -1246,7 +1293,7 @@ def _execute_grade_manager_remove_action(action: ProposedAction) -> ProposedActi
         program_key=payload.get("program_key"),
         current_term=payload.get("current_term") or payload.get("term"),
         current_area=payload.get("current_area") or payload.get("area"),
-        current_state=payload.get("current_state") or "Planned",
+        current_state=_coerce_module_state(payload.get("current_state"), fallback="Planned"),
         allow_non_planned=bool(payload.get("allow_non_planned", False)),
         confirmation_token=STUDY_PLAN_CONFIRMATION_TOKEN,
     )

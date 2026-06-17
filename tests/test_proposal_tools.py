@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import crew.runtime
 from core import persistence
-from core.models import Module, ModuleState
+from core.models import MosesIsisCandidate, MosesModuleData, Module, ModuleOffering, ModuleState
 from crew.chat_persistence import append_turn, load_chat_thread
 from crew.profile_context import use_grade_manager_profile
+from crew.state import collect_moses_state_artifacts, record_moses_module_artifact
 from crew.tools.proposal_tools import (
     ClearAllCourseProposalsTool,
     DeleteCourseProposalTool,
@@ -116,6 +117,52 @@ def test_proposal_tool_defaults_to_bundled_study_plan_and_isis_resolution(monkey
     assert actions[0].grade_manager_payload["module_query"] == "40017"
     assert actions[1].isis_payload["course_query"] == "Einführung in die Programmierung"
     assert actions[1].isis_payload["isis_resolution_status"] == "unresolved"
+
+
+def test_proposal_tool_reuses_verified_moses_isis_candidate(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    data = MosesModuleData(
+        number="40017",
+        version=3,
+        title="Einführung in die Programmierung",
+        credits=6,
+        offered_in=ModuleOffering.WINTER_ONLY,
+        isis_candidates=[
+            MosesIsisCandidate(
+                course_id=48017,
+                course_url="https://isis.tu-berlin.de/course/view.php?id=48017",
+                course_title="[WiSe 2026/27] Einführung in die Programmierung",
+                term_hint="WiSe 2026/27",
+                module_title="Einführung in die Programmierung",
+                module_element_title="Vorlesung",
+                fallback_search_terms=["Einführung in die Programmierung"],
+                confidence="high",
+                status="resolved",
+            )
+        ],
+    )
+
+    with collect_moses_state_artifacts():
+        record_moses_module_artifact(data)
+        proposal = build_course_proposal(
+            proposal_title="First semester plan",
+            proposal_summary="Bundled Study Manager and ISIS action.",
+            courses=[
+                ProposalCourseInput(
+                    course_title="Einführung in die Programmierung",
+                    rationale="Mandatory first-semester course.",
+                    module_query="40017",
+                    term="WS 26/27",
+                    area="Mandatory",
+                )
+            ],
+        )
+
+    actions = proposal.actions
+    assert [action.kind for action in actions] == ["grade_manager_add", "isis_enroll"]
+    assert actions[1].isis_payload["course_id"] == 48017
+    assert actions[1].isis_payload["course_url"] == "https://isis.tu-berlin.de/course/view.php?id=48017"
+    assert actions[1].isis_payload["isis_resolution_status"] == "resolved"
 
 
 def test_proposal_tool_turns_existing_module_with_new_term_into_update(monkeypatch, tmp_path):

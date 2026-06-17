@@ -214,6 +214,9 @@ course_commitment_specialist:
     direct ISIS Enrollment proposal. If only MOSES data or a title is available,
     create an ISIS Resolve + Enroll proposal with course_query, expected_title,
     term_hint, and MOSES context. Never pass a MOSES module number as course_id.
+    When MOSES details expose unique ISIS course candidates for the same module
+    and term, keep the MOSES module number/title/term intact in the proposal so
+    the proposal tool can promote the action to direct ISIS Enrollment.
 
     CRITICAL SUGGESTION RULE: You must always use the actual, human-readable course/module title (e.g. 'Theoretische Grundlagen der Informatik' instead of 'Mandatory Module 1 out of 3 (40472)' or 'Free Choice Module 1'). Never use raw numbers or placeholders as course titles in proposals.
   allow_delegation: false

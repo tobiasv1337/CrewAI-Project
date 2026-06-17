@@ -437,6 +437,68 @@ def test_approved_actions_execute_deterministically_without_crew_manifest(monkey
     assert load_chat_thread("primary").active_proposals == []
 
 
+def test_bundled_confirmation_prunes_non_actionable_isis_no_match(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    proposal = build_course_proposal(
+        proposal_title="Confirmed bundled plan",
+        proposal_summary="One course.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Future Mandatory Course",
+                rationale="Fits the planned semester.",
+                module_query="41111",
+                term="WS 26/27",
+                area="Mandatory",
+                include_grade_manager=True,
+                include_isis=True,
+            )
+        ],
+    )
+    append_turn(
+        "primary",
+        user_content="Suggest courses.",
+        assistant_content="Please confirm.",
+        proposals=[proposal],
+        rolling_summary="Planning next semester.",
+    )
+
+    import crew.study_chat_flow as flow_module
+
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Added to Study Manager."}),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_isis_action",
+        lambda action: action.model_copy(
+            update={
+                "status": "failed",
+                "result": "No matching ISIS course was found by enrolled-course lookup or global ISIS search.",
+            }
+        ),
+    )
+
+    decisions = [ActionDecision(action_id=action.action_id, approved=True) for action in proposal.actions]
+    flow = _flow()
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Add them",
+            profile_slug="primary",
+            approved_actions=decisions,
+        ).model_dump(mode="json")
+    )
+
+    assert [(action.kind, action.status) for action in flow.state.executed_actions] == [
+        ("grade_manager_add", "executed"),
+        ("isis_resolve", "failed"),
+    ]
+    assert "Future Mandatory Course" in flow.state.answer_markdown
+    assert "Study Manager add" in flow.state.answer_markdown
+    assert load_chat_thread("primary").active_proposals == []
+
+
 def test_natural_language_confirmation_uses_interpreter_not_phrase_list(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     proposal = build_course_proposal(
@@ -994,6 +1056,26 @@ def test_isis_enrollment_blocks_moses_id_used_as_isis_id():
 
     assert result.status == "needs_clarification"
     assert "MOSES module number" in result.result
+
+
+def test_isis_action_status_only_keeps_recoverable_no_match_active():
+    from types import SimpleNamespace
+    from crew.isis_models import IsisCourseRef
+    import crew.study_chat_flow as flow_module
+
+    assert flow_module._isis_action_status_from_outcome(
+        SimpleNamespace(ok=False, status="not_found", candidates=[])
+    ) == "failed"
+    assert flow_module._isis_action_status_from_outcome(
+        SimpleNamespace(
+            ok=False,
+            status="not_found",
+            candidates=[IsisCourseRef(id=48001, fullname="[WiSe 2026/27] Course")],
+        )
+    ) == "needs_clarification"
+    assert flow_module._isis_action_status_from_outcome(
+        SimpleNamespace(ok=False, status="ambiguous_course", candidates=[])
+    ) == "needs_clarification"
 
 
 def test_isis_resolve_verification_accepts_unambiguous_enrollment(monkeypatch):

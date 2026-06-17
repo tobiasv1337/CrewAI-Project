@@ -16,7 +16,7 @@ from crew.isis_models import (
     clean_text,
     parse_isis_course_id_from_url,
 )
-from core.terms import parse_term_label
+from core.terms import format_term_label, parse_term_label
 
 
 # Moodle errorcode returned when self-enrollment requires a password/key
@@ -273,7 +273,12 @@ def resolve_and_read(
 
 
 def _query_variants(query: str, expected_title: str | None, term_hint: str | None) -> list[str]:
-    values = [query, expected_title, f"{query} {term_hint}" if term_hint else None, f"{expected_title} {term_hint}" if expected_title and term_hint else None]
+    title_values = _title_query_variants(query, expected_title)
+    term_values = _term_query_variants(term_hint)
+    values: list[str | None] = [*title_values]
+    for title in title_values[:4]:
+        for term in term_values[:4]:
+            values.append(f"{title} {term}" if title and term else None)
     variants: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -281,7 +286,82 @@ def _query_variants(query: str, expected_title: str | None, term_hint: str | Non
         if text and text.lower() not in seen:
             seen.add(text.lower())
             variants.append(text)
+        if len(variants) >= 16:
+            break
     return variants
+
+
+def _title_query_variants(query: str, expected_title: str | None) -> list[str]:
+    values: list[str | None] = [query, expected_title]
+    for value in [query, expected_title]:
+        ascii_value = _german_ascii_fold(value)
+        if ascii_value != clean_text(value):
+            values.append(ascii_value)
+        compact = _remove_title_stopwords(value)
+        if compact and compact != clean_text(value):
+            values.append(compact)
+        compact_ascii = _german_ascii_fold(compact)
+        if compact_ascii and compact_ascii != compact:
+            values.append(compact_ascii)
+    return _dedupe_clean(values)
+
+
+def _term_query_variants(term_hint: str | None) -> list[str]:
+    term = clean_text(term_hint)
+    if not term:
+        return []
+    values = [term]
+    idx = parse_term_label(term)
+    if idx is not None:
+        canonical = format_term_label(idx)
+        values.append(canonical)
+        if idx % 2 == 0:
+            year = idx // 2
+            values.extend(
+                [
+                    f"WiSe {year}/{str((year + 1) % 100).zfill(2)}",
+                    f"Wintersemester {year}/{str((year + 1) % 100).zfill(2)}",
+                    f"{year}/{str((year + 1) % 100).zfill(2)}",
+                ]
+            )
+        else:
+            year = (idx + 1) // 2
+            values.extend([f"SoSe {year}", f"Sommersemester {year}", str(year)])
+    return _dedupe_clean(values)
+
+
+def _dedupe_clean(values: list[str | None]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = clean_text(value)
+        key = text.casefold()
+        if text and key not in seen:
+            seen.add(key)
+            result.append(text)
+    return result
+
+
+def _german_ascii_fold(value: object | None) -> str:
+    text = clean_text(value)
+    return (
+        text.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("Ä", "Ae")
+        .replace("Ö", "Oe")
+        .replace("Ü", "Ue")
+        .replace("ß", "ss")
+    )
+
+
+def _remove_title_stopwords(value: object | None) -> str:
+    text = clean_text(value)
+    if not text:
+        return ""
+    stopwords = {"und", "and", "für", "fuer", "for", "der", "die", "das", "the"}
+    tokens = [token for token in re.split(r"\s+", text) if token.casefold() not in stopwords]
+    return " ".join(tokens)
 
 
 def _rank_courses(

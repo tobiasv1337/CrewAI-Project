@@ -4,7 +4,7 @@ import pytest
 
 from crew.isis_client import MoodleApiError
 from crew.isis_models import IsisCourseRef, IsisCourseSelector
-from crew.isis_resolver import IsisCourseResolver, ReadOnlyCourseAccess
+from crew.isis_resolver import IsisCourseResolver, ReadOnlyCourseAccess, _query_variants
 
 
 class FakeClient:
@@ -190,6 +190,19 @@ def test_resolver_bypass_active_semester_hint():
 
     assert result.status == "ambiguous"
     assert {course.id for course in result.candidates} == {2020, 4040}
+
+
+def test_query_variants_include_term_aliases_and_ascii_title_fallbacks():
+    variants = _query_variants(
+        "Einführung in die Programmierung",
+        "Einführung in die Programmierung",
+        "WS 26/27",
+    )
+
+    assert "Einführung in die Programmierung" in variants
+    assert "Einfuehrung in die Programmierung" in variants
+    assert any("WiSe 2026/27" in variant for variant in variants)
+    assert any("Wintersemester 2026/27" in variant for variant in variants)
 
 
 def test_selector_allows_multiple_consistent_locators():

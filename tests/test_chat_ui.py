@@ -433,6 +433,25 @@ def test_clear_active_course_proposals_removes_widgets_and_card_state(monkeypatc
     assert toggle_key not in st.session_state
 
 
+def test_clear_all_course_card_state_removes_stale_profile_decisions_only(monkeypatch, tmp_path):
+    _setup_chat_profiles(monkeypatch, tmp_path)
+    stale_decision = f"{chat.PROPOSAL_DECISION_PREFIX}_alice_moses_40017"
+    stale_toggle = f"{chat.PROPOSAL_DECISION_PREFIX}_alice_moses_40017_isis-resolve_enabled"
+    other_profile_decision = f"{chat.PROPOSAL_DECISION_PREFIX}_bob_moses_40017"
+    unrelated_key = "chat_temperature_alice"
+    st.session_state[stale_decision] = "accept"
+    st.session_state[stale_toggle] = False
+    st.session_state[other_profile_decision] = "accept"
+    st.session_state[unrelated_key] = 0.2
+
+    chat._clear_all_course_card_state("alice")
+
+    assert stale_decision not in st.session_state
+    assert stale_toggle not in st.session_state
+    assert st.session_state[other_profile_decision] == "accept"
+    assert st.session_state[unrelated_key] == 0.2
+
+
 def test_profile_chat_history_and_isis_session_are_scoped(monkeypatch, tmp_path):
     _setup_chat_profiles(monkeypatch, tmp_path)
     chat._append_message("alice", {"role": "user", "content": "Alice question"})

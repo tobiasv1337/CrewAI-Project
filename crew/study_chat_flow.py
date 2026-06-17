@@ -794,6 +794,9 @@ def _verify_isis_commitment(action: ProposedAction) -> tuple[str, str]:
             candidates = _format_isis_candidates(resolved.candidates)
             if candidates:
                 reason = f"{reason}\n\nCandidate ISIS courses:\n{candidates}"
+                return "needs_clarification", reason
+            if resolved.status == "not_found":
+                return "failed", reason
             return "needs_clarification", reason
         if resolved.course.id in enrolled_ids:
             if action.isis_payload is not None:
@@ -1294,15 +1297,7 @@ def _execute_isis_action(action: ProposedAction) -> ProposedAction:
         **payload,
         confirmation_token=CONFIRMATION_TOKEN,
     )
-    status = (
-        "executed"
-        if outcome.ok
-        else (
-            "needs_clarification"
-            if outcome.status in {"missing_isis_id", "ambiguous_course", "not_found", "invalid_selector"}
-            else "failed"
-        )
-    )
+    status = _isis_action_status_from_outcome(outcome)
     result = outcome.reason or f"ISIS enrollment status: {outcome.status}"
     if outcome.candidates:
         candidate_lines = [
@@ -1311,6 +1306,18 @@ def _execute_isis_action(action: ProposedAction) -> ProposedAction:
         ]
         result = f"{result}\n\nCandidate ISIS courses:\n" + "\n".join(candidate_lines)
     return action.model_copy(update={"status": status, "result": result})
+
+
+def _isis_action_status_from_outcome(outcome: Any) -> str:
+    if getattr(outcome, "ok", False):
+        return "executed"
+    status = str(getattr(outcome, "status", "") or "")
+    candidates = list(getattr(outcome, "candidates", []) or [])
+    if status in {"ambiguous_course", "missing_isis_id"}:
+        return "needs_clarification"
+    if status == "not_found" and candidates:
+        return "needs_clarification"
+    return "failed"
 
 
 def _format_discard_answer(decision: UserDecisionInterpretation | None) -> str:
@@ -1330,19 +1337,55 @@ def _format_execution_answer(actions: list[ProposedAction], *, language: str) ->
         lines = ["## Bestätigte Aktionen", ""]
         if not actions:
             return "Ich habe keine bestätigten Aktionen erhalten."
-        for action in actions:
-            lines.append(f"- **{action.course_title}** (`{action.kind}`): {action.status}")
-            if action.result:
-                lines.append(f"  {action.result.splitlines()[0]}")
+        for course_title, course_actions in _actions_grouped_by_course(actions):
+            lines.append(f"- **{course_title}**")
+            for action in course_actions:
+                lines.append(f"  - {_action_kind_label_de(action.kind)}: `{action.status}`")
+                if action.result:
+                    lines.append(f"    {action.result.splitlines()[0]}")
         return "\n".join(lines)
     lines = ["## Confirmed Actions", ""]
     if not actions:
         return "I did not receive any confirmed actions to execute."
-    for action in actions:
-        lines.append(f"- **{action.course_title}** (`{action.kind}`): {action.status}")
-        if action.result:
-            lines.append(f"  {action.result.splitlines()[0]}")
+    for course_title, course_actions in _actions_grouped_by_course(actions):
+        lines.append(f"- **{course_title}**")
+        for action in course_actions:
+            lines.append(f"  - {_action_kind_label_en(action.kind)}: `{action.status}`")
+            if action.result:
+                lines.append(f"    {action.result.splitlines()[0]}")
     return "\n".join(lines)
+
+
+def _actions_grouped_by_course(actions: list[ProposedAction]) -> list[tuple[str, list[ProposedAction]]]:
+    grouped: dict[str, list[ProposedAction]] = {}
+    order: list[str] = []
+    for action in actions:
+        title = action.course_title or "Course action"
+        if title not in grouped:
+            grouped[title] = []
+            order.append(title)
+        grouped[title].append(action)
+    return [(title, grouped[title]) for title in order]
+
+
+def _action_kind_label_en(kind: str) -> str:
+    return {
+        "grade_manager_add": "Study Manager add",
+        "grade_manager_update": "Study Manager update",
+        "grade_manager_remove": "Study Manager remove",
+        "isis_resolve": "ISIS resolve/enroll",
+        "isis_enroll": "ISIS enroll",
+    }.get(kind, kind.replace("_", " "))
+
+
+def _action_kind_label_de(kind: str) -> str:
+    return {
+        "grade_manager_add": "Study Manager hinzufügen",
+        "grade_manager_update": "Study Manager aktualisieren",
+        "grade_manager_remove": "Study Manager entfernen",
+        "isis_resolve": "ISIS auflösen/einschreiben",
+        "isis_enroll": "ISIS einschreiben",
+    }.get(kind, kind.replace("_", " "))
 
 
 def _conversation_context(thread: ChatThreadState) -> str:

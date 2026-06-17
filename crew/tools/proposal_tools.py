@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from difflib import SequenceMatcher
 from hashlib import sha1
 from typing import Any, Literal, Type
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from crew.chat_models import CourseProposal, ProposedAction
 from crew.tools import grademanager_tools
+from core.terms import parse_term_label
 
 
 _RECORDED_COURSE_PROPOSALS: ContextVar[list[CourseProposal] | None] = ContextVar(
@@ -119,19 +121,32 @@ def build_course_proposal(
                     )
                 )
         if course.include_isis:
-            verified_id = course.verified_isis_course_id or course.isis_course_id
-            verified_url = course.verified_isis_course_url or course.isis_course_url
+            inferred_candidate = _best_recorded_isis_candidate(course, moses_query)
+            verified_id = course.verified_isis_course_id or course.isis_course_id or (
+                inferred_candidate.course_id if inferred_candidate is not None else None
+            )
+            verified_url = course.verified_isis_course_url or course.isis_course_url or (
+                inferred_candidate.course_url if inferred_candidate is not None else None
+            )
             is_moses_id = _ids_match(verified_id, course.moses_module_number or course.module_query)
             status = str(course.isis_resolution_status or "").casefold().strip()
             has_verified_locator = bool((verified_id and not is_moses_id) or verified_url) and (
-                status == "resolved" or course.verified_isis_course_id is not None or course.verified_isis_course_url is not None or course.isis_course_id is not None
+                status == "resolved"
+                or course.verified_isis_course_id is not None
+                or course.verified_isis_course_url is not None
+                or course.isis_course_id is not None
+                or inferred_candidate is not None
             )
             payload = {
                 "course_id": verified_id if has_verified_locator else None,
-                "course_query": course.isis_course_query or course.course_title,
+                "course_query": course.isis_course_query
+                or (inferred_candidate.course_title if inferred_candidate is not None else None)
+                or course.course_title,
                 "course_url": verified_url if has_verified_locator else None,
-                "term_hint": course.isis_term_hint or course.term,
-                "expected_title": course.course_title,
+                "term_hint": course.isis_term_hint
+                or (inferred_candidate.term_hint if inferred_candidate is not None else None)
+                or course.term,
+                "expected_title": (inferred_candidate.module_title if inferred_candidate is not None else None) or course.course_title,
                 "moses_module_number": course.moses_module_number or _numeric_text(course.module_query),
                 "isis_resolution_status": "resolved" if has_verified_locator else "unresolved",
             }
@@ -361,3 +376,73 @@ def _ids_match(left: object | None, right: object | None) -> bool:
     if left is None or right is None:
         return False
     return str(left).strip() == str(right).strip()
+
+
+def _identity_text(value: object | None) -> str:
+    return " ".join(str(value or "").casefold().strip().split())
+
+
+def _best_recorded_isis_candidate(course: ProposalCourseInput, moses_query: str):
+    """Use MOSES detail artifacts collected earlier in this run to avoid avoidable ISIS re-searches."""
+    try:
+        from crew.state import _MOSES_STATE_ARTIFACTS
+    except Exception:
+        return None
+
+    artifacts = _MOSES_STATE_ARTIFACTS.get() or []
+    if not artifacts:
+        return None
+
+    moses_number = course.moses_module_number or _numeric_text(course.module_query) or _numeric_text(moses_query)
+    target_term = course.isis_term_hint or course.term
+    target_term_idx = parse_term_label(target_term) if target_term else None
+    scored = []
+    for artifact in artifacts:
+        module = artifact.module
+        module_match = False
+        if moses_number and str(module.number) == str(moses_number):
+            module_match = True
+        elif _similarity(course.course_title, module.title) >= 0.88:
+            module_match = True
+        elif course.module_query and _similarity(str(course.module_query), module.title) >= 0.88:
+            module_match = True
+        if not module_match:
+            continue
+
+        for candidate in artifact.isis_candidates:
+            if candidate.status != "resolved" or candidate.course_id is None:
+                continue
+            candidate_term_idx = parse_term_label(candidate.term_hint) if candidate.term_hint else None
+            if target_term_idx is not None and candidate_term_idx is not None and target_term_idx != candidate_term_idx:
+                continue
+            if target_term_idx is not None and candidate_term_idx is None:
+                continue
+            score = 1.0
+            if candidate_term_idx is not None and target_term_idx == candidate_term_idx:
+                score += 0.4
+            score += max(
+                _similarity(course.course_title, candidate.module_title),
+                _similarity(course.course_title, candidate.course_title),
+            )
+            scored.append((score, candidate))
+
+    if not scored:
+        return None
+    scored.sort(key=lambda item: (-item[0], item[1].course_id or 0))
+    best_score, best = scored[0]
+    close = [candidate for score, candidate in scored if score >= best_score - 0.05]
+    if len({candidate.course_id for candidate in close}) > 1:
+        return None
+    return best
+
+
+def _similarity(left: object | None, right: object | None) -> float:
+    left_text = _identity_text(left)
+    right_text = _identity_text(right)
+    if not left_text or not right_text:
+        return 0.0
+    if left_text == right_text:
+        return 1.0
+    if left_text in right_text or right_text in left_text:
+        return 0.95
+    return SequenceMatcher(None, left_text, right_text).ratio()

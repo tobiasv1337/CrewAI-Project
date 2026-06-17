@@ -237,10 +237,12 @@ def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
         if col_new.button("New chat", type="secondary", key=f"chat_new_{profile_slug}", use_container_width=True):
             reset_chat_thread(profile_slug)
             _set_profile_messages(profile_slug, [])
+            _clear_all_course_card_state(profile_slug)
             st.rerun()
         if col_clear.button("Clear persisted chat", type="secondary", key=f"chat_clear_{profile_slug}", use_container_width=True):
             clear_chat_thread(profile_slug)
             _set_profile_messages(profile_slug, [])
+            _clear_all_course_card_state(profile_slug)
             st.rerun()
 
     trace_mode = str(st.session_state.get(f"chat_trace_mode_{profile_slug}") or "Preview")
@@ -492,8 +494,11 @@ def _run_and_render_assistant_turn(
                 "trace_dir": str(result.trace_dir) if result.trace_dir else None,
                 "metadata": {"workbench": workbench, "agent_dialogue": agent_dialogue} if workbench else {},
             }
+            previous_proposals = list(load_chat_thread(profile_slug).active_proposals)
             course_proposals = resolve_course_proposals(result, workbench)
             _update_or_append_assistant_message(profile_slug, assistant_message, proposals=course_proposals)
+            if result.executed_actions:
+                _clear_course_card_state(profile_slug, previous_proposals)
 
             proposals = _proposal_dicts(course_proposals)
             if proposals:
@@ -2382,6 +2387,13 @@ def _clear_course_card_state(profile_slug: str, proposals: list[Any]) -> None:
             keys.add(_course_action_toggle_key(profile_slug, card, action.action_id))
     for key in keys:
         st.session_state.pop(key, None)
+
+
+def _clear_all_course_card_state(profile_slug: str) -> None:
+    prefix = f"{PROPOSAL_DECISION_PREFIX}_{profile_slug}_"
+    for key in list(st.session_state.keys()):
+        if str(key).startswith(prefix):
+            st.session_state.pop(key, None)
 
 
 def _chat_store() -> dict[str, list[dict[str, Any]]]:

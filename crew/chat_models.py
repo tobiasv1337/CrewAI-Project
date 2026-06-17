@@ -20,7 +20,6 @@ IntentRoute = Literal[
     "execute_confirmed_actions",
     "execute_then_recommendation",
     "discard_active_proposals",
-    "proposal_clarification",
 ]
 ActionKind = Literal[
     "grade_manager_add",

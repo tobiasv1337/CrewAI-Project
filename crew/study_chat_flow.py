@@ -159,17 +159,8 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                     self.state.route = intent.route
                     return "discard_active_proposals"
 
-            if decision.needs_user_clarification or decision.intent == "unclear":
-                intent = IntentClassification(
-                    route="proposal_clarification",
-                    complexity="simple",
-                    required_sources=[],
-                    write_intent=False,
-                    rationale=decision.rationale or "The user's decision about active recommendations is unclear.",
-                )
-                self.state.intent = intent
-                self.state.route = intent.route
-                return "proposal_clarification"
+            # If the decision is unclear or needs clarification, fall through to
+            # the normal intent classifier so the crew can properly answer the query.
 
             if decision.intent in {"apply_selected", "apply_partial_and_revise"}:
                 self.state.approved_actions = self._action_decisions_from_interpretation(decision)
@@ -246,11 +237,6 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         self.state.proposed_actions = []
         self.state.answer_markdown = _format_discard_answer(self.state.decision_interpretation)
 
-    @listen("proposal_clarification")
-    def run_proposal_clarification(self) -> None:
-        self.state.proposed_actions = self._remaining_proposals()
-        self.state.answer_markdown = _format_proposal_clarification_answer(self.state.decision_interpretation)
-
     @listen(
         or_(
             run_simple_grade_manager,
@@ -260,7 +246,6 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             run_recommendation_route,
             run_deep_dive_route,
             run_discard_active_proposals,
-            run_proposal_clarification,
         )
     )
     def persist_turn(self) -> StudyChatFlowState:
@@ -1320,10 +1305,6 @@ def _format_discard_answer(decision: UserDecisionInterpretation | None) -> str:
     return "I cleared the active course recommendations."
 
 
-def _format_proposal_clarification_answer(decision: UserDecisionInterpretation | None) -> str:
-    if decision and decision.rationale:
-        return f"I need one clarification before changing the selected course actions: {decision.rationale}"
-    return "I need one clarification before changing the selected course actions."
 
 
 def _format_execution_answer(actions: list[ProposedAction], *, language: str) -> str:

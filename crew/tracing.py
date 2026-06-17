@@ -868,7 +868,7 @@ def source_system_for_tool(tool_name: str) -> str:
     text = tool_name.casefold()
     if "study plan" in text or "degree requirement" in text:
         return "Grade Manager"
-    if "propose course actions" in text or "confirmation" in text:
+    if "propose course actions" in text or "confirmation" in text or "commitment" in text:
         return "Course Commitment"
     if "degree regulation" in text or "regelstudienplan" in text or "stupo" in text:
         return "Degree Regulations"

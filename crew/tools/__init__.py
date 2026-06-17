@@ -40,6 +40,11 @@ from crew.tools.proposal_tools import (
     collect_course_proposals,
     current_course_proposals,
 )
+from crew.tools.commitment_tools import (
+    COURSE_COMMITMENT_EXECUTION_TOOLS,
+    ExecuteApprovedCourseCommitmentsTool,
+    ListApprovedCourseCommitmentActionsTool,
+)
 from crew.tools.degree_regulations_tools import (
     DEGREE_REGULATIONS_TOOLS,
     ExtractRegelstudienplanTableTool,
@@ -51,11 +56,14 @@ COURSE_COMMITMENT_TOOLS = [
     ProposeCourseActionsTool(),
     ClearAllCourseProposalsTool(),
     DeleteCourseProposalTool(),
+    ListApprovedCourseCommitmentActionsTool(),
+    ExecuteApprovedCourseCommitmentsTool(),
 ]
 
 __all__ = [
     "CONFIRMATION_TOKEN",
     "COURSE_COMMITMENT_TOOLS",
+    "COURSE_COMMITMENT_EXECUTION_TOOLS",
     "DEGREE_REGULATIONS_TOOLS",
     "ISIS_READ_ONLY_TOOLS",
     "ISIS_TOOLS",
@@ -72,6 +80,8 @@ __all__ = [
     "ProposeCourseActionsTool",
     "ClearAllCourseProposalsTool",
     "DeleteCourseProposalTool",
+    "ListApprovedCourseCommitmentActionsTool",
+    "ExecuteApprovedCourseCommitmentsTool",
     "SearchDegreeRegulationPdfsTool",
     "collect_course_proposals",
     "current_course_proposals",

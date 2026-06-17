@@ -162,6 +162,24 @@ def test_degree_regulations_tools_are_labeled_for_workbench():
     assert [item["active"] for item in workbench.source_flow] == [False, False, True, False, False, True]
 
 
+def test_commitment_execution_tool_is_labeled_for_workbench():
+    call = tool_call_summary_from_event(
+        {
+            "call_id": 1,
+            "tool_name": "Execute Approved Course Commitment Actions",
+            "tool_input": {"action_ids": []},
+            "output_preview": "# Approved course commitment execution",
+            "output_chars": 38,
+            "agent_role": "TU Berlin Course Commitment Specialist",
+            "duration_ms": 90,
+        }
+    )
+
+    assert call.agent_label == "Course Commitment Specialist"
+    assert call.source_system == "Course Commitment"
+    assert call.badges == ["Course Commitment"]
+
+
 def test_capture_tool_traces_emits_lifecycle_events(tmp_path):
     events = []
 

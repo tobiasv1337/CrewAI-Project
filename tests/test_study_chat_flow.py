@@ -499,6 +499,68 @@ def test_bundled_confirmation_prunes_non_actionable_isis_no_match(monkeypatch, t
     assert load_chat_thread("primary").active_proposals == []
 
 
+def test_bundled_confirmation_clears_accepted_card_when_isis_needs_clarification(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    proposal = build_course_proposal(
+        proposal_title="Confirmed bundled plan",
+        proposal_summary="One course.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Rechnerorganisation",
+                rationale="Mandatory module.",
+                module_query="40019",
+                term="WS 26/27",
+                area="Mandatory",
+                include_grade_manager=True,
+                include_isis=True,
+            )
+        ],
+    )
+    append_turn(
+        "primary",
+        user_content="Suggest courses.",
+        assistant_content="Please confirm.",
+        proposals=[proposal],
+        rolling_summary="Planning next semester.",
+    )
+
+    import crew.study_chat_flow as flow_module
+
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "executed", "result": "Added to Study Manager."}),
+    )
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_isis_action",
+        lambda action: action.model_copy(
+            update={
+                "status": "needs_clarification",
+                "result": (
+                    "No matching ISIS course was found by enrolled-course lookup or global ISIS search.\n\n"
+                    "Candidate ISIS courses:\n"
+                    "- `45172` [WiSe 2025/26] Rechnerorganisation"
+                ),
+            }
+        ),
+    )
+
+    decisions = [ActionDecision(action_id=action.action_id, approved=True) for action in proposal.actions]
+    flow = _flow()
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Add it",
+            profile_slug="primary",
+            approved_actions=decisions,
+        ).model_dump(mode="json")
+    )
+
+    assert "Candidate ISIS courses" in flow.state.answer_markdown
+    assert "`45172`" in flow.state.answer_markdown
+    assert load_chat_thread("primary").active_proposals == []
+
+
 def test_natural_language_confirmation_uses_interpreter_not_phrase_list(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     proposal = build_course_proposal(

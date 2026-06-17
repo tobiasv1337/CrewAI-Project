@@ -72,7 +72,7 @@ def test_orchestrator_prompt_requires_regulations_for_semester_specific_plicht(m
     assert "did the Degree Regulations Specialist provide the semester mapping" in task_description
 
 
-def test_orchestrator_prompt_keeps_confirmed_writes_in_deterministic_flow(monkeypatch):
+def test_orchestrator_prompt_routes_confirmed_writes_through_guarded_commitment_tools(monkeypatch):
     import crew.multi_agent_crew as crew_module
 
     monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
@@ -84,11 +84,11 @@ def test_orchestrator_prompt_keeps_confirmed_writes_in_deterministic_flow(monkey
     task_description = study_crew.tasks_config["study_assistant_task"]["description"]
 
     assert "CONFIRMED ACTION RULE" in orchestrator_backstory
-    assert "executed deterministically by" in orchestrator_backstory
+    assert "guarded action-id tools" in orchestrator_backstory
     assert "agents create UI proposals only" in orchestrator_backstory
-    assert "do not execute Grade Manager writes" in commitment_backstory
-    assert "Never execute declined, unsure, or merely proposed actions" in commitment_backstory
-    assert "surrounding Flow" in task_description
+    assert "execute Grade Manager writes and permanent ISIS enrollment only through" in commitment_backstory
+    assert "Never execute declined" in commitment_backstory
+    assert "guarded action-id tools" in task_description
 
 
 def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeypatch):
@@ -150,6 +150,8 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     expected_commitment_tools = [tool.name for tool in COURSE_COMMITMENT_TOOLS]
     assert commitment_tool_names == expected_commitment_tools
     assert "Propose Course Actions For Confirmation" in commitment_tool_names
+    assert "List Approved Course Commitment Actions" in commitment_tool_names
+    assert "Execute Approved Course Commitment Actions" in commitment_tool_names
     assert "Add Module To Study Plan" not in commitment_tool_names
     assert "Update Module In Study Plan" not in commitment_tool_names
     assert "Remove Module From Study Plan" not in commitment_tool_names

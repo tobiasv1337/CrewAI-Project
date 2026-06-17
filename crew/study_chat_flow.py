@@ -31,7 +31,6 @@ from crew.tools.grademanager_tools import (
 )
 from crew.tools.isis_tools import CONFIRMATION_TOKEN, PermanentlyEnrollInIsisCourseTool
 from crew.tools.proposal_tools import current_course_proposals
-from crew.write_permissions import allow_confirmed_writes
 
 
 FlowRunner = Callable[["StudyChatFlow"], str]
@@ -389,31 +388,24 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         return execution_actions
 
     def _execute_approved_actions(self, actions: list[ProposedAction]) -> list[ProposedAction]:
-        executed: list[ProposedAction] = []
-        with allow_confirmed_writes():
-            for action in actions:
-                if action.kind == "grade_manager_add":
-                    executed.append(_execute_grade_manager_action(action))
-                elif action.kind == "grade_manager_update":
-                    executed.append(_execute_grade_manager_update_action(action))
-                elif action.kind == "grade_manager_remove":
-                    executed.append(_execute_grade_manager_remove_action(action))
-                elif action.kind in {"isis_enroll", "isis_resolve"}:
-                    executed.append(_execute_isis_action(action))
-                else:
-                    executed.append(
-                        action.model_copy(
-                            update={
-                                "status": "failed",
-                                "result": f"Unknown action kind: {action.kind}",
-                            }
-                        )
-                    )
+        from crew.commitment_agent import run_course_commitment_execution_agent
+
+        executed = run_course_commitment_execution_agent(
+            actions,
+            model=self._runtime.model,
+            temperature=self._runtime.temperature,
+            top_p=self._runtime.top_p,
+            verbose=self._runtime.verbose,
+            cache=self._runtime.cache,
+            agent_enabled=(self._runtime.use_llm_classifier or self._runtime.use_llm_decision_interpreter),
+            on_trace_event=self._on_trace_event,
+        )
         self._record_executed_actions(executed)
         return executed
 
     def _record_executed_actions(self, executed: list[ProposedAction]) -> None:
         thread = self.state.thread or load_chat_thread(self.state.profile_slug, thread_id=self.state.thread_id)
+        executed_action_ids = {action.action_id for action in executed}
         action_by_id = {
             action.action_id: action
             for proposal in thread.active_proposals
@@ -441,6 +433,8 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
 
         decisions_to_record = self.state.ui_decisions or self.state.approved_actions
         thread.proposal_decisions.extend(decisions_to_record)
+        for proposal in thread.active_proposals:
+            proposal.actions = [action for action in proposal.actions if action.action_id not in executed_action_ids]
         thread.active_proposals = _prune_proposals(thread.active_proposals)
         save_chat_thread(thread)
         self.state.thread = thread
@@ -1341,8 +1335,7 @@ def _format_execution_answer(actions: list[ProposedAction], *, language: str) ->
             lines.append(f"- **{course_title}**")
             for action in course_actions:
                 lines.append(f"  - {_action_kind_label_de(action.kind)}: `{action.status}`")
-                if action.result:
-                    lines.append(f"    {action.result.splitlines()[0]}")
+                lines.extend(_action_result_preview_lines(action))
         return "\n".join(lines)
     lines = ["## Confirmed Actions", ""]
     if not actions:
@@ -1351,9 +1344,21 @@ def _format_execution_answer(actions: list[ProposedAction], *, language: str) ->
         lines.append(f"- **{course_title}**")
         for action in course_actions:
             lines.append(f"  - {_action_kind_label_en(action.kind)}: `{action.status}`")
-            if action.result:
-                lines.append(f"    {action.result.splitlines()[0]}")
+            lines.extend(_action_result_preview_lines(action))
     return "\n".join(lines)
+
+
+def _action_result_preview_lines(action: ProposedAction) -> list[str]:
+    result = action.result or ""
+    lines = [line for line in result.splitlines() if line.strip()]
+    if not lines:
+        return []
+    include_details = action.status == "needs_clarification" or "Candidate ISIS courses:" in result
+    selected = lines[:10] if include_details else lines[:1]
+    preview = [f"    {line}" for line in selected]
+    if len(lines) > len(selected):
+        preview.append("    ...")
+    return preview
 
 
 def _actions_grouped_by_course(actions: list[ProposedAction]) -> list[tuple[str, list[ProposedAction]]]:

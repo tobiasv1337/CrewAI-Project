@@ -68,8 +68,9 @@ study_assistant_task:
       deadlines, announcements, forums, grades, materials, assessments, or
       calendar dates to the ISIS Course Information Specialist.
     - Delegate explicit UI course proposals to the Course Commitment Specialist.
-      Confirmed Grade Manager and ISIS writes are executed deterministically by
-      the surrounding Flow after explicit UI approval, not by crew agents.
+      Confirmed Grade Manager and ISIS writes are executed by the Course
+      Commitment Specialist through guarded action-id tools after explicit UI
+      approval.
 
     Hard sequencing rules:
     - RULE 0 — Regulation PDFs define formal degree constraints.
@@ -149,7 +150,9 @@ study_assistant_task:
       unambiguous. If ISIS resolution or enrollment returns
       ambiguous, not_found, auth_failed, tool_failed, invalid_selector,
       missing_isis_id, refused, or any non-success status, treat it as blocking
-      and ask the student to choose from candidates or clarify.
+      and ask the student to choose from candidates or clarify. The Course
+      Commitment Specialist's guarded execution tool is the only write path
+      after the UI accepts action IDs.
     - RULE L — Active Recommendation Exit.
       If the student changes to an unrelated topic, cancels, or asks to discard
       the current course recommendation process, stop carrying the active
@@ -164,8 +167,9 @@ study_assistant_task:
       Specialist.
     - For pure progress/degree questions: only Study Advisor.
     - For recommendation banners: only Course Commitment Specialist.
-    - For study-plan writes and permanent ISIS enrollment: only the deterministic
-      Flow after explicit UI approval.
+    - For study-plan writes and permanent ISIS enrollment: only the Course
+      Commitment Specialist's guarded action-id execution tools after explicit
+      UI approval.
     - Keep source boundaries explicit. Regulation PDF facts ≠ MOSES facts ≠
       ISIS facts ≠ Grade Manager facts. Do not let one source substitute for
       another.
@@ -192,8 +196,8 @@ study_assistant_task:
     - If any proposal or accepted action involves ISIS enrollment, did it avoid
       using a MOSES module number as an ISIS course_id? Verified ISIS id/url is
       best. If only title/term/MOSES context is available, the proposal must be
-      an unresolved ISIS Resolve + Enroll action, and deterministic Flow execution
-      will resolve/enroll after UI approval instead of guessing.
+      an unresolved ISIS Resolve + Enroll action, and Course Commitment guarded
+      execution will resolve/enroll after UI approval instead of guessing.
     - If the context contains "Actions already executed in this turn", did you
       accurately summarize those execution results and avoid re-proposing the
       same completed actions? If not, correct your answer.
@@ -201,7 +205,7 @@ study_assistant_task:
       "Actions already executed in this turn" block, did you avoid claiming
       that Grade Manager additions or ISIS enrollments happened? If not,
       correct your answer.
-    - If any ISIS proposal or deterministic execution result has a non-success
+    - If any ISIS proposal or guarded execution result has a non-success
       status, did you recover by asking the ISIS Specialist for verified
       candidates or clearly ask the user to choose/clarify? If not, do not
       finalize as done.
@@ -233,7 +237,8 @@ study_assistant_task:
       return their evidence.
     - Delegate to Course Commitment Specialist with the exact course list when
       a UI proposal must be created or revised. Do not ask specialists to execute
-      approved actions; the Flow handles confirmed writes.
+      approved actions; only the Course Commitment Specialist's guarded action-id
+      tools handle confirmed writes after UI approval.
     Then loop back to Phase 3 for another review pass.
 
 

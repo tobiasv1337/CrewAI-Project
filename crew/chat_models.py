@@ -5,6 +5,9 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from crew.state import IsisLookupContext
+
+
 
 MessageRole = Literal["user", "assistant", "system"]
 IntentRoute = Literal[
@@ -106,6 +109,7 @@ class ChatThreadState(BaseModel):
     active_proposals: list[CourseProposal] = Field(default_factory=list)
     proposal_decisions: list[ActionDecision] = Field(default_factory=list)
     trace_artifacts: list[dict[str, str]] = Field(default_factory=list)
+    isis_context: IsisLookupContext = Field(default_factory=IsisLookupContext)
     updated_at: str = Field(default_factory=utc_now_iso)
 
     def recent_messages_text(self, limit: int = 8) -> str:

@@ -101,6 +101,14 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 save_chat_thread(thread)
 
         self.state.thread = thread
+        if thread.isis_context:
+            from crew.state import _merge_isis_contexts
+            supplied = json.loads(self.state.isis_context_json or "{}")
+            merged = _merge_isis_contexts(inferred=thread.isis_context, supplied=supplied)
+            if merged:
+                self.state.isis_context_json = json.dumps(merged.model_dump(mode="json"), ensure_ascii=False)
+                thread.isis_context = merged
+                save_chat_thread(thread)
         self.state.conversation_context = _conversation_context(thread)
 
     @router(ingest_turn)
@@ -295,6 +303,18 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             rolling_summary=summary,
             thread_id=self.state.thread_id,
         )
+        from crew.state import _MOSES_STATE_ARTIFACTS, _moses_state_from_artifacts, _merge_isis_contexts
+        artifacts = _MOSES_STATE_ARTIFACTS.get() or []
+        if artifacts:
+            _, new_isis_context = _moses_state_from_artifacts(answer_markdown="", artifacts=artifacts)
+            merged = _merge_isis_contexts(
+                inferred=new_isis_context,
+                supplied=self.state.thread.isis_context.model_dump(mode="json") if self.state.thread.isis_context else None
+            )
+            if merged:
+                self.state.thread.isis_context = merged
+                self.state.isis_context_json = json.dumps(merged.model_dump(mode="json"), ensure_ascii=False)
+                save_chat_thread(self.state.thread)
         return self.state
 
     def _run_route(self, route: str) -> str:

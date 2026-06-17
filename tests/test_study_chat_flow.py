@@ -274,7 +274,7 @@ def test_recommendation_route_uses_explicit_proposal_tool(monkeypatch, tmp_path)
 
     assert flow.state.intent.route == "recommendation"
     assert flow.state.proposed_actions[0].title == "ML-heavy next semester"
-    assert [action.kind for action in flow.state.proposed_actions[0].actions] == ["grade_manager_add", "isis_resolve"]
+    assert [action.kind for action in flow.state.proposed_actions[0].actions] == ["grade_manager_add"]
 
 
 def test_follow_up_replacement_keeps_recommendation_route(monkeypatch, tmp_path):
@@ -389,7 +389,7 @@ def test_approved_actions_execute_deterministically_without_crew_manifest(monkey
                 module_query="41240",
                 term="WS 26/27",
                 area="Elective",
-                isis_course_id=48474,
+                verified_isis_course_id=48474,
                 include_grade_manager=True,
                 include_isis=True,
             )
@@ -437,8 +437,18 @@ def test_approved_actions_execute_deterministically_without_crew_manifest(monkey
     assert load_chat_thread("primary").active_proposals == []
 
 
-def test_bundled_confirmation_prunes_non_actionable_isis_no_match(monkeypatch, tmp_path):
+def test_unavailable_isis_is_omitted_before_confirmation(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
+    import crew.tools.proposal_tools as proposal_module
+
+    monkeypatch.setattr(
+        proposal_module,
+        "_resolve_isis_for_proposal",
+        lambda payload: proposal_module._IsisPreflightResult(
+            status="not_found",
+            reason="No matching ISIS course was found by enrolled-course lookup or global ISIS search.",
+        ),
+    )
     proposal = build_course_proposal(
         proposal_title="Confirmed bundled plan",
         proposal_summary="One course.",
@@ -492,7 +502,6 @@ def test_bundled_confirmation_prunes_non_actionable_isis_no_match(monkeypatch, t
 
     assert [(action.kind, action.status) for action in flow.state.executed_actions] == [
         ("grade_manager_add", "executed"),
-        ("isis_resolve", "failed"),
     ]
     assert "Future Mandatory Course" in flow.state.answer_markdown
     assert "Study Manager add" in flow.state.answer_markdown
@@ -511,6 +520,7 @@ def test_bundled_confirmation_clears_accepted_card_when_isis_needs_clarification
                 module_query="40019",
                 term="WS 26/27",
                 area="Mandatory",
+                verified_isis_course_id=45172,
                 include_grade_manager=True,
                 include_isis=True,
             )
@@ -722,12 +732,14 @@ def test_bundled_partial_apply_removes_declined_course_and_keeps_new_suggestion(
                 rationale="Keep this.",
                 module_query="11111",
                 term="WS 26/27",
+                verified_isis_course_id=10111,
             ),
             ProposalCourseInput(
                 course_title="Course B",
                 rationale="Remove this.",
                 module_query="22222",
                 term="WS 26/27",
+                verified_isis_course_id=10222,
             ),
         ],
     )
@@ -761,6 +773,7 @@ def test_bundled_partial_apply_removes_declined_course_and_keeps_new_suggestion(
                 rationale="Replacement for Course B.",
                 module_query="33333",
                 term="WS 26/27",
+                verified_isis_course_id=10333,
             )
         ],
     )
@@ -783,12 +796,12 @@ def test_bundled_partial_apply_removes_declined_course_and_keeps_new_suggestion(
     )
 
     assert [action.course_title for action in flow.state.executed_actions] == ["Course A", "Course A"]
-    assert sorted(action.kind for action in flow.state.executed_actions) == ["grade_manager_add", "isis_resolve"]
+    assert sorted(action.kind for action in flow.state.executed_actions) == ["grade_manager_add", "isis_enroll"]
 
     thread = load_chat_thread("primary")
     active_titles = {action.course_title for proposal in thread.active_proposals for action in proposal.actions}
     assert active_titles == {"Course C"}
-    assert [action.kind for action in thread.active_proposals[0].actions] == ["grade_manager_add", "isis_resolve"]
+    assert [action.kind for action in thread.active_proposals[0].actions] == ["grade_manager_add", "isis_enroll"]
 
 
 def test_conflicting_clarification_flag_does_not_block_clear_partial_revision(monkeypatch, tmp_path):
@@ -802,12 +815,14 @@ def test_conflicting_clarification_flag_does_not_block_clear_partial_revision(mo
                 rationale="Accepted module.",
                 module_query="40019",
                 term="WS 26/27",
+                verified_isis_course_id=45119,
             ),
             ProposalCourseInput(
                 course_title="Rechnerorganisation Praktikum",
                 rationale="Student wants to defer this.",
                 module_query="40028",
                 term="WS 26/27",
+                verified_isis_course_id=45128,
             ),
         ],
     )
@@ -866,7 +881,7 @@ def test_conflicting_clarification_flag_does_not_block_clear_partial_revision(mo
     assert flow.state.decision_interpretation.intent == "apply_partial_and_revise"
     assert flow.state.decision_interpretation.needs_user_clarification is False
     assert calls == ["recommendation"]
-    assert sorted(action.kind for action in flow.state.executed_actions) == ["grade_manager_add", "isis_resolve"]
+    assert sorted(action.kind for action in flow.state.executed_actions) == ["grade_manager_add", "isis_enroll"]
 
 
 def test_disabled_isis_toggle_executes_study_plan_only_and_clears_disabled_action(monkeypatch, tmp_path):
@@ -880,6 +895,7 @@ def test_disabled_isis_toggle_executes_study_plan_only_and_clears_disabled_actio
                 rationale="Keep only in study plan.",
                 module_query="11111",
                 term="WS 26/27",
+                verified_isis_course_id=10111,
             )
         ],
     )
@@ -905,7 +921,7 @@ def test_disabled_isis_toggle_executes_study_plan_only_and_clears_disabled_actio
     )
 
     grade_action = next(action for action in proposal.actions if action.kind == "grade_manager_add")
-    isis_action = next(action for action in proposal.actions if action.kind == "isis_resolve")
+    isis_action = next(action for action in proposal.actions if action.kind == "isis_enroll")
 
     flow = _flow(runner_overrides={"recommendation": lambda flow: "Study plan updated."})
     flow.kickoff(
@@ -1344,7 +1360,7 @@ def test_merge_replaces_stale_proposal_actions_by_course_identity(monkeypatch, t
 
     assert len(merged) == 1
     assert merged[0].title == "Updated recommendations"
-    assert [action.kind for action in merged[0].actions] == ["grade_manager_add", "isis_resolve"]
+    assert [action.kind for action in merged[0].actions] == ["grade_manager_add"]
     assert merged[0].actions[0].grade_manager_payload["area"] == "Elective"
 
 
@@ -1353,7 +1369,7 @@ def test_merge_replaces_isis_resolve_with_verified_enroll(monkeypatch, tmp_path)
     import crew.study_chat_flow as flow_module
 
     old_proposal = build_course_proposal(
-        proposal_title="Old unresolved ISIS",
+        proposal_title="Old suggestion",
         proposal_summary="Old suggestion.",
         courses=[
             ProposalCourseInput(

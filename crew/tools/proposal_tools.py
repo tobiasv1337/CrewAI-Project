@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from hashlib import sha1
 from typing import Any, Literal, Type
@@ -19,6 +20,18 @@ _RECORDED_COURSE_PROPOSALS: ContextVar[list[CourseProposal] | None] = ContextVar
     "recorded_course_proposals",
     default=None,
 )
+ISIS_UNAVAILABLE_PREFIX = "ISIS enrollment not included:"
+
+
+@dataclass(frozen=True)
+class _IsisPreflightResult:
+    status: str
+    reason: str
+    course_id: int | None = None
+    course_url: str | None = None
+    course_title: str | None = None
+    term_hint: str | None = None
+    candidates: list[str] = field(default_factory=list)
 
 
 class ProposalCourseInput(BaseModel):
@@ -71,8 +84,10 @@ class ProposeCourseActionsTool(BaseTool):
     name: str = "Propose Course Actions For Confirmation"
     description: str = (
         "Create explicit UI confirmation proposals for specific course actions. "
-        "For course commitments, propose Grade Manager + ISIS together by default; "
-        "use include_isis=false only when the user explicitly asks for study-plan-only. "
+        "For course commitments, check ISIS availability and propose Grade Manager + ISIS "
+        "only when an unambiguous ISIS course is available for the requested term; otherwise "
+        "create a Study Manager-only proposal and report that ISIS enrollment is not available yet. "
+        "Use include_isis=false when the user explicitly asks for study-plan-only. "
         "Use this only when you intentionally want the Streamlit UI to show recommendation banners. "
         "This tool does not write to Grade Manager or ISIS."
     )
@@ -90,10 +105,14 @@ class ProposeCourseActionsTool(BaseTool):
             source_agent="Course Commitment Specialist",
         )
         record_course_proposals([proposal])
-        return (
+        output = (
             f"Prepared UI confirmation proposal `{proposal.title}` with "
             f"{len(proposal.actions)} action(s) across {len(validated)} course(s)."
         )
+        notices = _isis_unavailable_notices(proposal.evidence)
+        if notices:
+            output += "\n" + "\n".join(f"- {notice}" for notice in notices)
+        return output
 
 
 def build_course_proposal(
@@ -105,6 +124,7 @@ def build_course_proposal(
 ) -> CourseProposal:
     actions: list[ProposedAction] = []
     evidence: list[str] = []
+    isis_notices: list[str] = []
     for course in courses:
         evidence.extend(course.evidence)
         moses_query = course.moses_module_number or course.module_query or course.course_title
@@ -121,50 +141,16 @@ def build_course_proposal(
                     )
                 )
         if course.include_isis:
-            inferred_candidate = _best_recorded_isis_candidate(course, moses_query)
-            verified_id = course.verified_isis_course_id or course.isis_course_id or (
-                inferred_candidate.course_id if inferred_candidate is not None else None
-            )
-            verified_url = course.verified_isis_course_url or course.isis_course_url or (
-                inferred_candidate.course_url if inferred_candidate is not None else None
-            )
-            is_moses_id = _ids_match(verified_id, course.moses_module_number or course.module_query)
-            status = str(course.isis_resolution_status or "").casefold().strip()
-            has_verified_locator = bool((verified_id and not is_moses_id) or verified_url) and (
-                status == "resolved"
-                or course.verified_isis_course_id is not None
-                or course.verified_isis_course_url is not None
-                or course.isis_course_id is not None
-                or inferred_candidate is not None
-            )
-            payload = {
-                "course_id": verified_id if has_verified_locator else None,
-                "course_query": course.isis_course_query
-                or (inferred_candidate.course_title if inferred_candidate is not None else None)
-                or course.course_title,
-                "course_url": verified_url if has_verified_locator else None,
-                "term_hint": course.isis_term_hint
-                or (inferred_candidate.term_hint if inferred_candidate is not None else None)
-                or course.term,
-                "expected_title": (inferred_candidate.module_title if inferred_candidate is not None else None) or course.course_title,
-                "moses_module_number": course.moses_module_number or _numeric_text(course.module_query),
-                "isis_resolution_status": "resolved" if has_verified_locator else "unresolved",
-            }
-            kind = "isis_enroll" if has_verified_locator else "isis_resolve"
-            actions.append(
-                ProposedAction(
-                    action_id=_stable_action_id(kind, course.course_title, payload),
-                    kind=kind,
-                    course_title=course.course_title,
-                    evidence=[course.rationale, *course.evidence],
-                    isis_payload=payload,
-                )
-            )
+            isis_action, notice = _isis_action_or_notice(course, moses_query)
+            if isis_action is not None:
+                actions.append(isis_action)
+            if notice:
+                isis_notices.append(notice)
     return CourseProposal(
         proposal_id=_stable_action_id("proposal", proposal_title, {"courses": [course.course_title for course in courses]}),
         title=proposal_title,
-        summary=proposal_summary,
-        evidence=_dedupe(evidence),
+        summary=_summary_with_isis_notices(proposal_summary, isis_notices),
+        evidence=_dedupe([*evidence, *isis_notices]),
         actions=actions,
         source_agent=source_agent,
     )
@@ -260,6 +246,153 @@ class DeleteCourseProposalTool(BaseTool):
 def _stable_action_id(kind: str, course_title: str, payload: dict[str, Any]) -> str:
     material = repr((kind, course_title, sorted((key, str(value)) for key, value in payload.items() if value is not None)))
     return f"{kind}-{sha1(material.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _isis_action_or_notice(course: ProposalCourseInput, moses_query: str) -> tuple[ProposedAction | None, str | None]:
+    inferred_candidate = _best_recorded_isis_candidate(course, moses_query)
+    status = str(course.isis_resolution_status or "").casefold().strip()
+    locator_id = course.verified_isis_course_id or course.isis_course_id or (
+        inferred_candidate.course_id if inferred_candidate is not None else None
+    )
+    locator_url = course.verified_isis_course_url or course.isis_course_url or (
+        inferred_candidate.course_url if inferred_candidate is not None else None
+    )
+    is_moses_id = _ids_match(locator_id, course.moses_module_number or course.module_query)
+    has_verified_locator = bool((locator_id and not is_moses_id) or locator_url) and (
+        status == "resolved"
+        or course.verified_isis_course_id is not None
+        or course.verified_isis_course_url is not None
+        or inferred_candidate is not None
+    )
+    payload = {
+        "course_id": locator_id if has_verified_locator else None,
+        "course_query": course.isis_course_query
+        or (inferred_candidate.course_title if inferred_candidate is not None else None)
+        or course.course_title,
+        "course_url": locator_url if has_verified_locator else None,
+        "term_hint": course.isis_term_hint
+        or (inferred_candidate.term_hint if inferred_candidate is not None else None)
+        or course.term,
+        "expected_title": (inferred_candidate.module_title if inferred_candidate is not None else None) or course.course_title,
+        "moses_module_number": course.moses_module_number or _numeric_text(course.module_query),
+        "isis_resolution_status": "resolved" if has_verified_locator else "unresolved",
+    }
+    if has_verified_locator:
+        return _isis_action(course, "isis_enroll", payload), None
+
+    preflight_payload = {
+        **payload,
+        "course_id": None if is_moses_id else locator_id,
+        "course_url": locator_url,
+    }
+    preflight = _resolve_isis_for_proposal(preflight_payload)
+    if preflight.status == "resolved" and preflight.course_id is not None:
+        resolved_payload = {
+            **payload,
+            "course_id": preflight.course_id,
+            "course_url": preflight.course_url,
+            "course_query": preflight.course_title or payload.get("course_query"),
+            "term_hint": preflight.term_hint or payload.get("term_hint"),
+            "isis_resolution_status": "resolved",
+        }
+        return _isis_action(course, "isis_enroll", resolved_payload), None
+    return None, _isis_unavailable_notice(course, preflight)
+
+
+def _isis_action(course: ProposalCourseInput, kind: str, payload: dict[str, Any]) -> ProposedAction:
+    return ProposedAction(
+        action_id=_stable_action_id(kind, course.course_title, payload),
+        kind=kind,
+        course_title=course.course_title,
+        evidence=[course.rationale, *course.evidence],
+        isis_payload=payload,
+    )
+
+
+def _resolve_isis_for_proposal(payload: dict[str, Any]) -> _IsisPreflightResult:
+    try:
+        from crew.isis_client import current_scoped_isis_client
+        from crew.isis_models import IsisCourseSelector
+        from crew.isis_resolver import IsisCourseResolver
+
+        client = current_scoped_isis_client()
+        if client is None:
+            return _IsisPreflightResult(
+                status="unavailable",
+                reason="No active ISIS session is available for proposal-time course lookup.",
+            )
+        selector = IsisCourseSelector(
+            course_id=payload.get("course_id"),
+            course_url=payload.get("course_url"),
+            course_query=payload.get("course_query"),
+            term_hint=payload.get("term_hint"),
+            expected_title=payload.get("expected_title"),
+        )
+        resolved = IsisCourseResolver(client).resolve(selector)
+    except Exception as exc:
+        return _IsisPreflightResult(
+            status="unavailable",
+            reason=f"ISIS availability lookup could not be completed: {exc}",
+        )
+
+    if resolved.is_resolved and resolved.course is not None:
+        course = resolved.course
+        return _IsisPreflightResult(
+            status="resolved",
+            reason=resolved.reason or "Resolved from ISIS availability lookup.",
+            course_id=course.id,
+            course_url=course.url or f"https://isis.tu-berlin.de/course/view.php?id={course.id}",
+            course_title=course.title,
+            term_hint=course.term_hint,
+            candidates=[_format_isis_candidate(course)],
+        )
+    return _IsisPreflightResult(
+        status=resolved.status,
+        reason=resolved.reason or "No unambiguous ISIS course was available for the requested selector.",
+        candidates=[_format_isis_candidate(candidate) for candidate in resolved.candidates[:5]],
+    )
+
+
+def _isis_unavailable_notice(course: ProposalCourseInput, preflight: _IsisPreflightResult) -> str:
+    term = course.isis_term_hint or course.term or "the requested term"
+    if preflight.status == "ambiguous":
+        reason = f"multiple ISIS courses matched `{course.course_title}` for `{term}`, so no safe automatic enrollment action was added"
+    elif preflight.status == "not_found":
+        reason = f"no ISIS course for `{course.course_title}` was available for `{term}`"
+    elif preflight.status == "invalid":
+        reason = f"the ISIS selector for `{course.course_title}` was invalid"
+    else:
+        reason = f"ISIS availability for `{course.course_title}` could not be verified"
+    detail = preflight.reason.strip()
+    notice = f"{ISIS_UNAVAILABLE_PREFIX} {reason}. Study Manager enrollment only is proposed."
+    if detail:
+        notice = f"{notice} Detail: {detail}"
+    if preflight.candidates:
+        notice = f"{notice} Candidate ISIS courses: {'; '.join(preflight.candidates)}"
+    return notice
+
+
+def _format_isis_candidate(candidate: Any) -> str:
+    course_id = getattr(candidate, "id", None)
+    title = getattr(candidate, "title", None) or getattr(candidate, "fullname", None) or "Unknown ISIS course"
+    term = getattr(candidate, "term_hint", None) or "term unknown"
+    return f"`{course_id}` {title} ({term})"
+
+
+def _summary_with_isis_notices(summary: str, notices: list[str]) -> str:
+    if not notices:
+        return summary
+    suffix = (
+        " ISIS enrollment is not included for course(s) where no unambiguous ISIS course "
+        "is currently available; those cards propose Study Manager enrollment only."
+    )
+    if suffix.strip() in summary:
+        return summary
+    return summary.rstrip() + suffix
+
+
+def _isis_unavailable_notices(evidence: list[str]) -> list[str]:
+    return [item for item in evidence if str(item).startswith(ISIS_UNAVAILABLE_PREFIX)]
 
 
 def _grade_manager_action_payload(

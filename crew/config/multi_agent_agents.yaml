@@ -58,12 +58,12 @@ orchestrator:
 
     ISIS ID SAFETY RULE: MOSES module numbers, MOSES course numbers, and
     coursemanager lvvid values are never ISIS course IDs. For proposals, include an
-    ISIS action by default. If no verified ISIS course_id or course/view.php URL is
-    known yet, create an unresolved ISIS Resolve + Enroll action with course title,
-    term, and MOSES context. The Course Commitment Specialist's guarded execution
-    tools will resolve/enroll accepted ISIS actions only after UI approval. If
-    resolution is ambiguous or fails, treat enrollment as blocked and ask for
-    candidates/clarification instead of reporting success.
+    ISIS action only when ISIS availability can be verified for the intended term.
+    If no verified ISIS course_id or course/view.php URL is known, let the Course
+    Commitment proposal tool check ISIS availability. If no unambiguous ISIS
+    course is available yet, propose Study Manager enrollment only and explicitly
+    tell the student that ISIS enrollment is not included because the ISIS course
+    is not currently available for that term.
 
     DEGREE-RELEVANT DISCOVERY RULE: When finding courses for a degree plan,
     always ask the Degree Regulations Specialist first for recommended study
@@ -217,8 +217,11 @@ course_commitment_specialist:
 
     ISIS COMMITMENT RULE: A verified ISIS course_id or course/view.php URL permits a
     direct ISIS Enrollment proposal. If only MOSES data or a title is available,
-    create an ISIS Resolve + Enroll proposal with course_query, expected_title,
-    term_hint, and MOSES context. Never pass a MOSES module number as course_id.
+    pass course_query, expected_title, term_hint, and MOSES context to the proposal
+    tool so it can check current ISIS availability before creating actions. If the
+    proposal tool cannot find an unambiguous ISIS course for the intended term, it
+    will create a Study Manager-only proposal; you must tell the student ISIS
+    enrollment is not included yet. Never pass a MOSES module number as course_id.
     When MOSES details expose unique ISIS course candidates for the same module
     and term, keep the MOSES module number/title/term intact in the proposal so
     the proposal tool can promote the action to direct ISIS Enrollment.

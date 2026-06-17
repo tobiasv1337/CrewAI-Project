@@ -579,6 +579,11 @@ def get_default_isis_client() -> MoodleRestClient:
     return client
 
 
+def current_scoped_isis_client() -> MoodleRestClient | None:
+    """Return the explicitly scoped ISIS client without falling back to env login."""
+    return _CLIENT_VAR.get()
+
+
 def set_default_isis_client(client: MoodleRestClient) -> None:
     _CLIENT_VAR.set(client)
 

@@ -47,7 +47,7 @@ def test_proposal_tool_records_explicit_ui_actions_only_inside_collection_contex
                     "area": "Elective",
                     "include_grade_manager": True,
                     "include_isis": True,
-                    "isis_course_id": 48000,
+                    "verified_isis_course_id": 48000,
                 }
             ],
         )
@@ -62,12 +62,22 @@ def test_proposal_tool_records_explicit_ui_actions_only_inside_collection_contex
     assert proposal.actions[0].action_id == proposal.actions[0].action_id
 
 
-def test_proposal_tool_creates_isis_resolution_action_when_id_is_unverified(monkeypatch, tmp_path):
+def test_proposal_tool_omits_isis_action_when_id_is_unverified_and_course_unavailable(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
+    import crew.tools.proposal_tools as proposal_module
+
+    monkeypatch.setattr(
+        proposal_module,
+        "_resolve_isis_for_proposal",
+        lambda payload: proposal_module._IsisPreflightResult(
+            status="not_found",
+            reason="No matching ISIS course was found.",
+        ),
+    )
     tool = ProposeCourseActionsTool()
 
     with collect_course_proposals() as proposals:
-        tool._run(
+        output = tool._run(
             proposal_title="Unresolved ISIS option",
             proposal_summary="ISIS still needs a real Moodle course id.",
             courses=[
@@ -87,14 +97,23 @@ def test_proposal_tool_creates_isis_resolution_action_when_id_is_unverified(monk
 
     assert len(proposals) == 1
     actions = proposals[0].actions
-    assert [action.kind for action in actions] == ["grade_manager_add", "isis_resolve"]
-    assert actions[1].isis_payload["course_id"] is None
-    assert actions[1].isis_payload["moses_module_number"] == "40441"
-    assert actions[1].isis_payload["course_query"] == "Systemprogrammierung"
+    assert [action.kind for action in actions] == ["grade_manager_add"]
+    assert "ISIS enrollment is not included" in proposals[0].summary
+    assert "ISIS enrollment not included" in output
 
 
-def test_proposal_tool_defaults_to_bundled_study_plan_and_isis_resolution(monkeypatch, tmp_path):
+def test_proposal_tool_defaults_to_study_plan_only_when_isis_course_unavailable(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
+    import crew.tools.proposal_tools as proposal_module
+
+    monkeypatch.setattr(
+        proposal_module,
+        "_resolve_isis_for_proposal",
+        lambda payload: proposal_module._IsisPreflightResult(
+            status="not_found",
+            reason="No matching ISIS course was found.",
+        ),
+    )
     tool = ProposeCourseActionsTool()
 
     with collect_course_proposals() as proposals:
@@ -113,10 +132,46 @@ def test_proposal_tool_defaults_to_bundled_study_plan_and_isis_resolution(monkey
         )
 
     actions = proposals[0].actions
-    assert [action.kind for action in actions] == ["grade_manager_add", "isis_resolve"]
+    assert [action.kind for action in actions] == ["grade_manager_add"]
     assert actions[0].grade_manager_payload["module_query"] == "40017"
-    assert actions[1].isis_payload["course_query"] == "Einführung in die Programmierung"
-    assert actions[1].isis_payload["isis_resolution_status"] == "unresolved"
+    assert "Study Manager enrollment only is proposed" in proposals[0].evidence[-1]
+
+
+def test_proposal_tool_adds_isis_enroll_when_preflight_resolves_course(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    import crew.tools.proposal_tools as proposal_module
+
+    monkeypatch.setattr(
+        proposal_module,
+        "_resolve_isis_for_proposal",
+        lambda payload: proposal_module._IsisPreflightResult(
+            status="resolved",
+            reason="Resolved from ISIS global course search.",
+            course_id=48017,
+            course_url="https://isis.tu-berlin.de/course/view.php?id=48017",
+            course_title="[WiSe 2026/27] Einführung in die Programmierung",
+            term_hint="WiSe 2026/27",
+        ),
+    )
+
+    proposal = build_course_proposal(
+        proposal_title="Bundled option",
+        proposal_summary="Default course commitment.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Einführung in die Programmierung",
+                rationale="Mandatory course.",
+                module_query="40017",
+                term="WS 26/27",
+                area="Mandatory",
+            )
+        ],
+    )
+
+    actions = proposal.actions
+    assert [action.kind for action in actions] == ["grade_manager_add", "isis_enroll"]
+    assert actions[1].isis_payload["course_id"] == 48017
+    assert actions[1].isis_payload["isis_resolution_status"] == "resolved"
 
 
 def test_proposal_tool_reuses_verified_moses_isis_candidate(monkeypatch, tmp_path):

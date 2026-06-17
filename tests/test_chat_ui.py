@@ -300,7 +300,7 @@ def test_resolve_course_proposals_rebuilds_explicit_proposal_tool_call(monkeypat
                                     "version": 3,
                                     "term": "SS 26",
                                     "area": "Elective",
-                                    "isis_course_id": 48474,
+                                    "verified_isis_course_id": 48474,
                                     "isis_course_query": "Software Security Lab",
                                     "isis_course_url": "https://isis.tu-berlin.de/course/view.php?id=48474",
                                     "isis_term_hint": "SS 26",
@@ -338,7 +338,7 @@ def test_course_card_decisions_default_to_unsure_and_respect_action_toggles(monk
                 module_query="41240",
                 term="SS 26",
                 area="Elective",
-                isis_course_id=48474,
+                verified_isis_course_id=48474,
                 include_grade_manager=True,
                 include_isis=True,
             )
@@ -406,7 +406,7 @@ def test_clear_active_course_proposals_removes_widgets_and_card_state(monkeypatc
                 rationale="Matches the security focus.",
                 module_query="41240",
                 term="SS 26",
-                isis_course_id=48474,
+                verified_isis_course_id=48474,
                 include_grade_manager=True,
                 include_isis=True,
             )
@@ -596,7 +596,7 @@ def test_course_cards_collapse_same_course_across_proposals(monkeypatch, tmp_pat
                 rationale="Matches the security focus.",
                 module_query="41240",
                 term="SS 26",
-                isis_course_id=48474,
+                verified_isis_course_id=48474,
                 include_grade_manager=True,
                 include_isis=True,
             )
@@ -611,7 +611,7 @@ def test_course_cards_collapse_same_course_across_proposals(monkeypatch, tmp_pat
                 rationale="Matches the security focus.",
                 module_query="41240",
                 term="SS 26",
-                isis_course_id=48474,
+                verified_isis_course_id=48474,
                 include_grade_manager=True,
                 include_isis=True,
             )

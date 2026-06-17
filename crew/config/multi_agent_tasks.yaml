@@ -95,7 +95,7 @@ study_assistant_task:
       from the Study Advisor's output so MOSES can look up real catalog data
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal and execution actions.
-      Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Course proposals should include Grade Manager + ISIS by default: use Study Plan + ISIS Enrollment when a verified ISIS id/url exists, and Study Plan + ISIS Resolve + Enroll when ISIS is not verified yet. Do NOT ask another specialist to call a write tool.
+      Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Course proposals should include Study Manager enrollment by default. Include ISIS enrollment only when the proposal tool can verify an unambiguous ISIS course for the intended term, either from a verified ISIS id/url, a unique MOSES-to-ISIS candidate, or current ISIS lookup. If the ISIS course is not available yet, the proposal must be Study Manager-only and your answer must tell the student that ISIS enrollment is not included yet. Do NOT ask another specialist to call a write tool.
       If the MOSES Module Researcher returned ISIS course candidates from MOSES detail data, pass the MOSES module number/title/term accurately to the Course Commitment Specialist. The proposal tool can reuse unique verified MOSES-to-ISIS candidates and turn them into direct ISIS Enrollment actions.
       If the context contains "Actions already executed in this turn", summarize those execution results exactly and do not re-run the same actions. If active course-card actions are APPROVED or DECLINED but not listed as executed, retain approved actions and revise declined actions only when the user requested replacement, but do not claim that Grade Manager writes or ISIS enrollments happened.
     - RULE D — Study Advisor cannot discover new modules in the catalog.
@@ -143,16 +143,17 @@ study_assistant_task:
       MOSES module numbers and ISIS course IDs are separate namespaces. Never
       pass a MOSES module number, MOSES course number, or coursemanager lvvid as
       an ISIS course_id. For proposals, if a course should include ISIS
-      enrollment but only MOSES data or a title is available, create an unresolved
-      ISIS Resolve + Enroll action with exact course title, expected term, and
-      MOSES context instead of inventing an ISIS id. After the user accepts such
-      an action, the Flow resolves the real ISIS course and enrolls only if
-      unambiguous. If ISIS resolution or enrollment returns
-      ambiguous, not_found, auth_failed, tool_failed, invalid_selector,
+      enrollment but only MOSES data or a title is available, pass exact course
+      title, expected term, and MOSES context to the proposal tool. The proposal
+      tool checks ISIS availability before creating actions. If it cannot verify
+      one unambiguous ISIS course for that term, do not include ISIS enrollment in
+      the UI card; propose Study Manager enrollment only and tell the student that
+      ISIS enrollment is not available yet. If a later guarded ISIS execution
+      returns ambiguous, not_found, auth_failed, tool_failed, invalid_selector,
       missing_isis_id, refused, or any non-success status, treat it as blocking
       and ask the student to choose from candidates or clarify. The Course
-      Commitment Specialist's guarded execution tool is the only write path
-      after the UI accepts action IDs.
+      Commitment Specialist's guarded execution tool is the only write path after
+      the UI accepts action IDs.
     - RULE L — Active Recommendation Exit.
       If the student changes to an unrelated topic, cancels, or asks to discard
       the current course recommendation process, stop carrying the active
@@ -195,9 +196,9 @@ study_assistant_task:
     - If you recommended or suggested new courses/modules to the student, did you delegate to the Course Commitment Specialist to create a UI proposal via `Propose Course Actions For Confirmation`? If you recommended courses but no proposal was created, you MUST delegate to the Course Commitment Specialist to create the proposal before producing the final answer. If no proposal was created, do not claim that the UI will show a confirmation banner.
     - If any proposal or accepted action involves ISIS enrollment, did it avoid
       using a MOSES module number as an ISIS course_id? Verified ISIS id/url is
-      best. If only title/term/MOSES context is available, the proposal must be
-      an unresolved ISIS Resolve + Enroll action, and Course Commitment guarded
-      execution will resolve/enroll after UI approval instead of guessing.
+      best. If only title/term/MOSES context is available, did the Course
+      Commitment proposal tool check ISIS availability first and omit ISIS
+      enrollment when the intended-term ISIS course was not available yet?
     - If the context contains "Actions already executed in this turn", did you
       accurately summarize those execution results and avoid re-proposing the
       same completed actions? If not, correct your answer.

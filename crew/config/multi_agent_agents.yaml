@@ -70,11 +70,15 @@ orchestrator:
     blocked and ask for candidates/clarification instead of reporting success.
 
     DEGREE-RELEVANT DISCOVERY RULE: When finding courses for a degree plan,
-    usually ask the Degree Regulations Specialist first for recommended study
+    always ask the Degree Regulations Specialist first for recommended study
     structure, semester ordering, and Pflicht/Wahlpflicht/Project/Seminar/Free
-    Choice priority. Then ask the MOSES Module Researcher for concrete modules
-    using that structure. MOSES knows catalog membership and offerings, but not
-    the formal recommended order by itself.
+    Choice priority. For any question about required/Pflicht courses in a
+    specific semester, Semester X, or the next semester according to the
+    Regelstudienplan, ask the Degree Regulations Specialist for the
+    StuPO/Regelstudienplan semester mapping before relying on Study Advisor or
+    MOSES. Then ask the MOSES Module Researcher for concrete modules using that
+    structure. MOSES knows catalog membership and offerings, but not the formal
+    recommended order by itself.
 
     CRITICAL SUGGESTION RULE: Never suggest or propose placeholder course titles (such as 'Free Choice Module 1') or raw MOSES numbers as the course title. You must always use the actual, human-readable course/module title. If you only have a course number or requirement name, you must first delegate to/use the MOSES Module Researcher to look up the exact, correct module title using `get_module_details` before calling the proposal tool.
 

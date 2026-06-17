@@ -631,7 +631,7 @@ def _search_directives(program_key: str, requirements: list[RequirementBrief]) -
             directives.append("This is a thesis planning requirement, not a MOSES search task. Confirm thesis timing and supervisor process with the student.")
         elif "mandatory" in text or "pflicht" in text:
             directives.append(
-                f"Ask the MOSES Module Researcher to inspect the degree structure for `{program_key}` and list missing Pflichtbereich/Mandatory modules."
+                f"Ask the Degree Regulations Specialist first for the `{program_key}` Regelstudienplan/Modulplan semester mapping and StuPO-listed Pflicht modules, then ask the MOSES Module Researcher to verify current module details, offerings, and catalog membership for the missing Pflichtbereich/Mandatory modules."
             )
         elif "freechoice" in text or "wahlbereich" in text:
             directives.append(

@@ -9,6 +9,7 @@ from crew.write_permissions import allow_confirmed_writes
 
 
 CS_PROGRAM = "TU Berlin - Computer Science (M.Sc.)"
+TI_PROGRAM = "TU Berlin - Technische Informatik (B.Sc.)"
 
 
 def _module(
@@ -171,6 +172,20 @@ def test_planned_modules_create_completed_only_advisories(monkeypatch, tmp_path)
     assert "Security Seminar (Planned, 3 LP, SS 27)" in output
     assert "Ask the MOSES Module Researcher for project modules" not in output
     assert "Ask the MOSES Module Researcher for seminar modules" not in output
+
+
+def test_missing_mandatory_requirement_routes_through_regulations_before_moses(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path, [])
+
+    output = grademanager_tools.get_degree_requirement_details(
+        program_key=TI_PROGRAM,
+        include_satisfied=False,
+    )
+
+    assert "Ask the Degree Regulations Specialist first" in output
+    assert "Regelstudienplan/Modulplan semester mapping" in output
+    assert "StuPO-listed Pflicht modules" in output
+    assert "then ask the MOSES Module Researcher" in output
 
 
 def test_list_study_plan_modules_filters_by_state_and_query(monkeypatch, tmp_path):

@@ -53,6 +53,25 @@ def test_orchestrator_prompt_includes_degree_regulations_recovery_loop(monkeypat
     assert "before finalizing a workaround or proposal" in task_description
 
 
+def test_orchestrator_prompt_requires_regulations_for_semester_specific_plicht(monkeypatch):
+    import crew.multi_agent_crew as crew_module
+
+    monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
+
+    study_crew = MultiAgentStudyAssistantCrew(model="gpt-4o")
+
+    orchestrator_backstory = study_crew.agents_config["orchestrator"]["backstory"]
+    task_description = study_crew.tasks_config["study_assistant_task"]["description"]
+
+    assert "required/Pflicht courses in a specific semester" in orchestrator_backstory
+    assert "StuPO/Regelstudienplan semester mapping before relying on Study Advisor or" in orchestrator_backstory
+    assert "RULE H1" in task_description
+    assert "Semester-Specific Pflicht Gate" in task_description
+    assert "MUST trigger a focused Degree Regulations Specialist" in task_description
+    assert "before using MOSES or Study Advisor to fill course gaps" in task_description
+    assert "did the Degree Regulations Specialist provide the semester mapping" in task_description
+
+
 def test_orchestrator_prompt_delegates_manifest_writes_to_commitment_specialist(monkeypatch):
     import crew.multi_agent_crew as crew_module
 

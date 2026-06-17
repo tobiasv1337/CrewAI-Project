@@ -31,7 +31,11 @@ study_assistant_task:
          requirements, Regelstudienplan, or course recommendations:
          - Step A: Delegate to the Degree Regulations Specialist when formal
            StuPO/AllgStuPO rules, permitted areas, free-choice rules, or the
-           Regelstudienplan could constrain the plan.
+           Regelstudienplan could constrain the plan. If the student asks
+           which required/Pflicht courses belong in Semester X, a numbered
+           semester, or the next semester according to the Regelstudienplan,
+           this Degree Regulations delegation is mandatory even if Study
+           Advisor or MOSES can also provide related data.
          - Step B: Delegate to the Study Advisor to identify the student's
            current progress, missing requirements, and Grade Manager handoff
            directives.
@@ -107,6 +111,18 @@ study_assistant_task:
       recommended order and hard requirements first, then deviate only when the
       student asks for a deviation or the specialists provide evidence that a
       deviation is reasonable.
+    - RULE H1 — Semester-Specific Pflicht Gate.
+      Any question asking what required/Pflicht courses, required modules, or
+      recommended courses belong in a specific semester or term (for example,
+      "Semester X", "3rd semester", or "next semester according to the
+      Regelstudienplan") MUST trigger a focused Degree Regulations Specialist
+      delegation before using MOSES or Study Advisor to fill course gaps. Ask
+      for the semester-by-semester Pflicht/Wahlpflicht/Seminar/Project/Free
+      Choice structure and any specific Pflicht module names or module numbers
+      listed in the StuPO/Regelstudienplan/Modulplan. Only after that, use
+      MOSES to verify current module details, offerings, and catalog membership,
+      and use Study Advisor to compare the regulation plan against the
+      student's personal progress.
     - RULE I — Course Category Prioritization.
       When recommending or planning new courses, always prioritize suggesting Pflicht (mandatory) courses first, then Wahlpflicht (elective) courses or other specific degree requirements (like Seminar and Projects), and only then suggest Free Choice (freie Wahl) courses, unless the user explicitly asks otherwise.
     - RULE J — Degree Regulations Recovery Loop.
@@ -162,6 +178,11 @@ study_assistant_task:
       get source/page-cited evidence from the Degree Regulations Specialist?
       If not, re-delegate or clearly state that the required PDFs/passages were
       missing.
+    - If the request asked for required/Pflicht courses in Semester X, a
+      numbered semester, or the next semester according to the Regelstudienplan,
+      did the Degree Regulations Specialist provide the semester mapping and
+      any StuPO-listed Pflicht modules before MOSES/Study Advisor shaped the
+      answer? If not, re-delegate before proposing courses.
     - If your initial regulation-informed plan did not fully work out after
       MOSES, Study Advisor, ISIS, or student feedback, did you ask the Degree
       Regulations Specialist a focused follow-up about permissible alternatives

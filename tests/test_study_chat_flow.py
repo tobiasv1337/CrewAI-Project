@@ -339,7 +339,7 @@ def test_confirmed_grade_manager_action_passes_exact_confirmation_token(monkeypa
     seen = {}
 
     import crew.study_chat_flow as flow_module
-    from crew.write_permissions import confirmed_writes_enabled
+    from crew.write_permissions import confirmed_writes_enabled, allow_confirmed_writes
 
     def fake_add(**kwargs):
         assert confirmed_writes_enabled()
@@ -348,8 +348,18 @@ def test_confirmed_grade_manager_action_passes_exact_confirmation_token(monkeypa
 
     monkeypatch.setattr(flow_module, "add_module_to_study_plan", fake_add)
     monkeypatch.setattr(flow_module, "check_module_against_study_plan", lambda **kwargs: "Already in study plan: yes")
+    monkeypatch.setattr(flow_module, "_verify_grade_manager_addition", lambda action: ("executed", "Added."))
 
-    flow = _flow()
+    def recommendation_runner(flow):
+        with allow_confirmed_writes():
+            flow_module.add_module_to_study_plan(
+                module_query="40967",
+                term="WS 26/27",
+                confirmation_token=STUDY_PLAN_CONFIRMATION_TOKEN,
+            )
+        return "Add course."
+
+    flow = _flow(runner_overrides={"recommendation": recommendation_runner})
     flow.kickoff(
         inputs=StudyChatFlowState(
             query="The user approved the plan.",
@@ -359,6 +369,7 @@ def test_confirmed_grade_manager_action_passes_exact_confirmation_token(monkeypa
     )
 
     assert seen["confirmation_token"] == STUDY_PLAN_CONFIRMATION_TOKEN
+    assert flow.state.route == "recommendation"
     assert flow.state.executed_actions[0].status == "executed"
 
 
@@ -388,11 +399,11 @@ def test_natural_language_confirmation_uses_interpreter_not_phrase_list(monkeypa
 
     monkeypatch.setattr(
         flow_module,
-        "_execute_grade_manager_action",
-        lambda action: action.model_copy(update={"status": "executed", "result": "Added."}),
+        "_verify_grade_manager_addition",
+        lambda action: ("executed", "Added."),
     )
 
-    flow = _flow()
+    flow = _flow(runner_overrides={"recommendation": lambda f: "Add course."})
     flow.kickoff(
         inputs=StudyChatFlowState(
             query="Klingt gut!",
@@ -401,7 +412,7 @@ def test_natural_language_confirmation_uses_interpreter_not_phrase_list(monkeypa
         ).model_dump(mode="json")
     )
 
-    assert flow.state.route == "execute_confirmed_actions"
+    assert flow.state.route == "recommendation"
     assert flow.state.decision_interpretation.intent == "apply_selected"
     assert flow.state.executed_actions[0].status == "executed"
     assert load_chat_thread("primary").active_proposals == []
@@ -485,8 +496,8 @@ def test_partial_apply_and_revise_executes_approved_subset_then_runs_recommendat
 
     monkeypatch.setattr(
         flow_module,
-        "_execute_grade_manager_action",
-        lambda action: action.model_copy(update={"status": "executed", "result": f"Added {action.course_title}."}),
+        "_verify_grade_manager_addition",
+        lambda action: ("executed", f"Added {action.course_title}."),
     )
 
     flow = _flow(
@@ -503,7 +514,7 @@ def test_partial_apply_and_revise_executes_approved_subset_then_runs_recommendat
         ).model_dump(mode="json")
     )
 
-    assert flow.state.route == "execute_then_recommendation"
+    assert flow.state.route == "recommendation"
     assert calls == ["recommendation"]
     assert [action.course_title for action in flow.state.executed_actions] == ["Course A"]
     assert "Replacement proposed." in flow.state.answer_markdown

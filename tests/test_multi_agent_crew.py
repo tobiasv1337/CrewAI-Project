@@ -65,12 +65,11 @@ def test_orchestrator_prompt_keeps_irreversible_writes_in_flow(monkeypatch):
     task_description = study_crew.tasks_config["study_assistant_task"]["description"]
 
     assert "APPROVED ACTION EXECUTION RULE" in orchestrator_backstory
-    assert "Flow, not the hierarchical Crew" in orchestrator_backstory
+    assert "delegate the execution of these actions to the Course Commitment Specialist" in orchestrator_backstory
     assert "agents must create UI proposals only" in orchestrator_backstory
-    assert "You do not have Grade Manager or ISIS write tools" in commitment_backstory
+    assert "execute confirmed course actions" in commitment_backstory
     assert "Never execute declined, unsure, or merely proposed actions" in commitment_backstory
-    assert "No specialist in this hierarchical crew permanently changes Grade Manager" in task_description
-    assert "The Course Commitment Specialist does not execute irreversible writes" in task_description
+    assert "The Course Commitment Specialist also executes approved action writes" in task_description
 
 
 def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeypatch):
@@ -129,10 +128,14 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     assert "List My ISIS Courses" not in regulation_tool_names
 
     commitment_tool_names = [tool.name for tool in commitment.tools]
-    assert commitment_tool_names == [tool.name for tool in COURSE_COMMITMENT_TOOLS]
+    expected_commitment_tools = [tool.name for tool in COURSE_COMMITMENT_TOOLS] + [
+        "Add Module To Study Plan",
+        "Permanently Enroll In ISIS Course",
+    ]
+    assert commitment_tool_names == expected_commitment_tools
     assert "Propose Course Actions For Confirmation" in commitment_tool_names
-    assert "Add Module To Study Plan" not in commitment_tool_names
-    assert "Permanently Enroll In ISIS Course" not in commitment_tool_names
+    assert "Add Module To Study Plan" in commitment_tool_names
+    assert "Permanently Enroll In ISIS Course" in commitment_tool_names
 
 
 def test_multi_agent_crew_can_enable_planning_without_default_openai(monkeypatch):

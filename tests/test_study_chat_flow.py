@@ -1176,6 +1176,68 @@ def test_disabled_isis_toggle_executes_study_plan_only_and_clears_disabled_actio
     assert load_chat_thread("primary").active_proposals == []
 
 
+def test_approved_grade_manager_remove_executes_through_commitment_guard(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            _study_module(
+                module_id="analysis",
+                name="Analysis I und Lineare Algebra für Ingenieurwissenschaften",
+                term="SS 26",
+                moses_number="20122",
+                moses_version=4,
+            ),
+        ],
+        "primary",
+    )
+    proposal = build_course_proposal(
+        proposal_title="Remove missed current course",
+        proposal_summary="Remove a planned module that the student no longer wants to pursue.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Analysis I und Lineare Algebra für Ingenieurwissenschaften",
+                rationale="The student asked the Commitment Specialist to remove this planned module.",
+                module_query="20122",
+                version=4,
+                term="SS 26",
+                area="Mandatory",
+                program_key="TU Berlin - Technische Informatik (B.Sc.)",
+                grade_manager_action="remove",
+                include_isis=False,
+            )
+        ],
+    )
+    append_turn(
+        "primary",
+        user_content="Entferne Analysis I aus meinem Study Manager.",
+        assistant_content="Please confirm the removal card.",
+        proposals=[proposal],
+        rolling_summary="A Study Manager removal proposal is waiting for UI approval.",
+    )
+
+    remove_action = proposal.actions[0]
+    assert remove_action.kind == "grade_manager_remove"
+
+    flow = _flow(
+        runner_overrides={
+            "recommendation": lambda flow: (_ for _ in ()).throw(AssertionError("crew should not run"))
+        }
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Ja, entfernen.",
+            profile_slug="primary",
+            ui_decisions=[ActionDecision(action_id=remove_action.action_id, approved=True)],
+        ).model_dump(mode="json")
+    )
+
+    assert [(action.course_title, action.kind, action.status) for action in flow.state.executed_actions] == [
+        ("Analysis I und Lineare Algebra für Ingenieurwissenschaften", "grade_manager_remove", "executed")
+    ]
+    assert persistence.load_modules("primary") == []
+    assert load_chat_thread("primary").active_proposals == []
+
+
 def test_approved_grade_manager_update_executes_deterministically(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     update_action = ProposedAction(

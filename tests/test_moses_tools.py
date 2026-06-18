@@ -630,6 +630,53 @@ def test_get_degree_area_modules_formats_module_rows(monkeypatch):
     assert "timeout" not in inspect.signature(moses_tools.get_degree_area_modules).parameters
 
 
+def test_degree_area_modules_warns_term_is_not_regelstudienplan_semester_without_domain_map(monkeypatch):
+    degree = MosesDegreeProgramSearchResult(
+        degree_id="32",
+        title="Technische Informatik",
+        detail_url="https://example.test/studiengaenge/anzeigen.html?studiengang=32",
+    )
+    area_modules = MosesDegreeAreaModules(
+        degree=degree,
+        area=MosesDegreeProgramArea(area_key="0_0", label="Pflichtbereich", module_count=3, credits=24),
+        term="SoSe 2026",
+        modules=[
+            MosesDegreeProgramModule(title="Digitale Systeme", number="40413", version=5, cycle="SoSe"),
+            MosesDegreeProgramModule(
+                title="Algorithmen und Datenstrukturen",
+                number="40022",
+                version=11,
+                cycle="SoSe",
+            ),
+            MosesDegreeProgramModule(
+                title="Analysis I und Lineare Algebra für Ingenieurwissenschaften",
+                number="20122",
+                version=4,
+                cycle="WiSe/SoSe",
+            ),
+        ],
+    )
+
+    monkeypatch.setattr(
+        moses_tools.moses_provider,
+        "fetch_degree_area_modules",
+        lambda *args, **kwargs: area_modules,
+    )
+
+    output = moses_tools.get_degree_area_modules(
+        "Technische Informatik",
+        "Pflichtbereich",
+        term="SS 26",
+        max_modules=10,
+    )
+
+    assert "they do not mean the listed modules belong to that numbered Regelstudienplan semester" in output
+    assert "ask the Degree Regulations Specialist for the Regelstudienplan mapping" in output
+    assert output.find("## 1. Digitale Systeme") < output.find("## 2. Algorithmen")
+    assert output.find("## 2. Algorithmen") < output.find("## 3. Analysis I und Lineare Algebra")
+    assert "Regelstudienplan semester:" not in output
+
+
 def test_search_degree_modules_formats_results_and_errors(monkeypatch):
     module = MosesDegreeProgramModule(
         title="Algorithmen und Datenstrukturen",

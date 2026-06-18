@@ -19,6 +19,11 @@ degree_regulations_task:
     - Use Extract Regelstudienplan Table for Regelstudienplan,
       Studienverlaufsplan, Modulplan, suggested semester order, or plan-table
       questions.
+    - When asked for a numbered semester or recommended study order, return a
+      compact semester-by-semester mapping from the extracted table: semester
+      number, module names exactly as listed, LP/CP if present, and source/page.
+      Do not use MOSES availability, Grade Manager data, or your own memory to
+      fill missing module names.
     - If both AllgStuPO and a program StuPO appear relevant, retrieve both and
       explicitly distinguish the general rule from the program-specific rule.
     - Do not use MOSES, ISIS, or Grade Manager knowledge. If the student asks
@@ -38,6 +43,8 @@ degree_regulations_task:
     Include:
     - A direct answer to the student's question.
     - Source/page citations for each substantive rule or Regelstudienplan fact.
+    - For Regelstudienplan questions, a compact semester mapping with the
+      exact listed module names and LP/CP where extractable.
     - A clear distinction between AllgStuPO/general rules and
       program-specific StuPO rules where both are relevant.
     - Any missing-document or extraction limitations.

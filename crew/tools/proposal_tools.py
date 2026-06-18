@@ -140,7 +140,7 @@ def build_course_proposal(
                         grade_manager_payload=payload,
                     )
                 )
-        if course.include_isis:
+        if _should_attempt_isis_proposal(course):
             isis_action, notice = _isis_action_or_notice(course, moses_query)
             if isis_action is not None:
                 actions.append(isis_action)
@@ -246,6 +246,46 @@ class DeleteCourseProposalTool(BaseTool):
 def _stable_action_id(kind: str, course_title: str, payload: dict[str, Any]) -> str:
     material = repr((kind, course_title, sorted((key, str(value)) for key, value in payload.items() if value is not None)))
     return f"{kind}-{sha1(material.encode('utf-8')).hexdigest()[:12]}"
+
+
+def _should_attempt_isis_proposal(course: ProposalCourseInput) -> bool:
+    if course.include_isis:
+        return True
+    if _explicit_study_plan_only(course):
+        return False
+    return any(
+        value not in (None, "")
+        for value in [
+            course.verified_isis_course_id,
+            course.verified_isis_course_url,
+            course.isis_course_id,
+            course.isis_course_url,
+            course.isis_course_query,
+            course.isis_resolution_status,
+        ]
+    )
+
+
+def _explicit_study_plan_only(course: ProposalCourseInput) -> bool:
+    haystack = " ".join([course.rationale, *course.evidence]).casefold()
+    return any(
+        token in haystack
+        for token in [
+            "study manager only",
+            "study-manager-only",
+            "study plan only",
+            "study-plan-only",
+            "grade manager only",
+            "grade-manager-only",
+            "without isis",
+            "no isis",
+            "isis enrollment not requested",
+            "isis einschreibung nicht gewünscht",
+            "nur study manager",
+            "nur grade manager",
+            "nur studienplan",
+        ]
+    )
 
 
 def _isis_action_or_notice(course: ProposalCourseInput, moses_query: str) -> tuple[ProposedAction | None, str | None]:

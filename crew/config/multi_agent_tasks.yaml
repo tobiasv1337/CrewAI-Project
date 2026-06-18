@@ -96,6 +96,7 @@ study_assistant_task:
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal and execution actions.
       Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Course proposals should include Study Manager enrollment by default. Include ISIS enrollment only when the proposal tool can verify an unambiguous ISIS course for the intended term, either from a verified ISIS id/url, a unique MOSES-to-ISIS candidate, or current ISIS lookup. If the ISIS course is not available yet, the proposal must be Study Manager-only and your answer must tell the student that ISIS enrollment is not included yet. Do NOT ask another specialist to call a write tool.
+      When the student asks to remove/drop/delete courses from the Study Manager or study plan, use `Propose Course Actions For Confirmation` with `grade_manager_action="remove"` for the existing planned module(s). Do NOT claim that Study Manager removal is impossible. What remains external is ISIS unenrollment and formal exam withdrawal; distinguish those from Grade Manager removal.
       CRITICAL — ISIS enrollment is independent of exam registration: ISIS course access (materials, Hausaufgaben, Lerninsel) is a separate action from exam sign-up (Prüfungsanmeldung). Do NOT suppress include_isis because exam deadlines have passed or because ISIS enrollment does not grant exam rights. When the student explicitly asks to join an ISIS course, you MUST include ISIS enrollment in the proposal if a verified ISIS course is available — regardless of any deadline or Prüfungsrecht concerns. Only set include_isis=false when (a) the student explicitly asked for Study-Manager-only, or (b) the proposal tool cannot find any unambiguous ISIS course.
       If the MOSES Module Researcher returned ISIS course candidates from MOSES detail data, pass the MOSES module number/title/term accurately to the Course Commitment Specialist. The proposal tool can reuse unique verified MOSES-to-ISIS candidates and turn them into direct ISIS Enrollment actions.
       If the context contains "Actions already executed in this turn", summarize those execution results exactly and do not re-run the same actions. If active course-card actions are APPROVED or DECLINED but not listed as executed, retain approved actions and revise declined actions only when the user requested replacement, but do not claim that Grade Manager writes or ISIS enrollments happened.
@@ -115,6 +116,12 @@ study_assistant_task:
       recommended order and hard requirements first, then deviate only when the
       student asks for a deviation or the specialists provide evidence that a
       deviation is reasonable.
+      If MOSES shows that the modules from the requested recommended semester
+      are not offered in the target term, do not treat other available MOSES
+      modules as if they belonged to that requested semester. Re-delegate to the
+      Degree Regulations Specialist for the next recommended semester or
+      permissible adjacent alternatives, then verify those concrete modules in
+      MOSES.
     - RULE H1 — Semester-Specific Pflicht Gate.
       Any question asking what required/Pflicht courses, required modules, or
       recommended courses belong in a specific semester or term (for example,
@@ -127,6 +134,8 @@ study_assistant_task:
       MOSES to verify current module details, offerings, and catalog membership,
       and use Study Advisor to compare the regulation plan against the
       student's personal progress.
+      The MOSES `term` and `offered_in` filters are offering checks, not
+      evidence that a module belongs to Semester X in the Regelstudienplan.
     - RULE I — Course Category Prioritization.
       When recommending or planning new courses, always prioritize suggesting Pflicht (mandatory) courses first, then Wahlpflicht (elective) courses or other specific degree requirements (like Seminar and Projects), and only then suggest Free Choice (freie Wahl) courses, unless the user explicitly asks otherwise.
     - RULE J — Degree Regulations Recovery Loop.
@@ -195,6 +204,11 @@ study_assistant_task:
       and relevant StuPO/AllgStuPO/Regelstudienplan constraints? If not,
       re-delegate before proposing a revised plan.
     - If you recommended or suggested new courses/modules to the student, did you delegate to the Course Commitment Specialist to create a UI proposal via `Propose Course Actions For Confirmation`? If you recommended courses but no proposal was created, you MUST delegate to the Course Commitment Specialist to create the proposal before producing the final answer. If no proposal was created, do not claim that the UI will show a confirmation banner.
+    - If the student asked to remove courses from the Study Manager/study plan,
+      did you create or preserve `grade_manager_remove` confirmation cards for
+      the affected existing planned modules? If not, do not say removal is
+      impossible; create removal proposals or ask which modules should be
+      removed.
     - If any proposal or accepted action involves ISIS enrollment, did it avoid
       using a MOSES module number as an ISIS course_id? Verified ISIS id/url is
       best. If only title/term/MOSES context is available, did the Course

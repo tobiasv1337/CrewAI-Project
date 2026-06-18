@@ -69,7 +69,26 @@ def test_orchestrator_prompt_requires_regulations_for_semester_specific_plicht(m
     assert "Semester-Specific Pflicht Gate" in task_description
     assert "MUST trigger a focused Degree Regulations Specialist" in task_description
     assert "before using MOSES or Study Advisor to fill course gaps" in task_description
+    assert "MOSES `term` and `offered_in` filters are offering checks" in task_description
     assert "did the Degree Regulations Specialist provide the semester mapping" in task_description
+
+
+def test_planning_prompts_keep_semester_order_in_regulations_not_moses(monkeypatch):
+    import crew.multi_agent_crew as crew_module
+
+    monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
+
+    study_crew = MultiAgentStudyAssistantCrew(model="gpt-4o")
+
+    orchestrator_backstory = study_crew.agents_config["orchestrator"]["backstory"]
+    researcher_backstory = study_crew.agents_config["module_researcher"]["backstory"]
+    task_description = study_crew.tasks_config["study_assistant_task"]["description"]
+
+    assert "do not relabel other available MOSES modules" in orchestrator_backstory
+    assert "cannot derive the formal Regelstudienplan semester order from MOSES" in researcher_backstory
+    assert "Degree Regulations Specialist for the next recommended semester" in task_description
+    assert "permissible adjacent alternatives" in task_description
+    assert "The MOSES `term` and `offered_in` filters are offering checks" in task_description
 
 
 def test_orchestrator_prompt_routes_confirmed_writes_through_guarded_commitment_tools(monkeypatch):

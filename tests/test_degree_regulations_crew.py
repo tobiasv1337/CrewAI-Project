@@ -25,3 +25,10 @@ def test_degree_regulations_crew_loads_config_and_tools(monkeypatch):
     assert "Degree Regulations Specialist" in agent.role
     assert [tool.name for tool in agent.tools] == [tool.name for tool in DEGREE_REGULATIONS_TOOLS]
     assert built_crew.tasks[0].agent == agent
+
+    config_crew = DegreeRegulationsCrew(model="gpt-4o")
+    agent_backstory = config_crew.agents_config["degree_regulations_specialist"]["backstory"]
+    task_description = config_crew.tasks_config["degree_regulations_task"]["description"]
+    assert "semester-by-semester structure from the PDFs" in agent_backstory
+    assert "compact semester-by-semester mapping" in task_description
+    assert "Do not use MOSES availability" in task_description

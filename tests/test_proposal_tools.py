@@ -174,6 +174,46 @@ def test_proposal_tool_adds_isis_enroll_when_preflight_resolves_course(monkeypat
     assert actions[1].isis_payload["isis_resolution_status"] == "resolved"
 
 
+def test_proposal_tool_checks_isis_when_selector_present_even_if_include_isis_false(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    import crew.tools.proposal_tools as proposal_module
+
+    monkeypatch.setattr(
+        proposal_module,
+        "_resolve_isis_for_proposal",
+        lambda payload: proposal_module._IsisPreflightResult(
+            status="resolved",
+            reason="Resolved from ISIS global course search.",
+            course_id=48283,
+            course_url="https://isis.tu-berlin.de/course/view.php?id=48283",
+            course_title="[SoSe 2026] Digitale Systeme, QU, VL+UE",
+            term_hint="SoSe 2026",
+        ),
+    )
+
+    proposal = build_course_proposal(
+        proposal_title="First semester plan",
+        proposal_summary="The model incorrectly marked ISIS as unavailable before lookup.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Digitale Systeme",
+                rationale="Mandatory module with an ISIS selector available.",
+                module_query="40413",
+                term="SS 26",
+                area="Mandatory",
+                include_isis=False,
+                isis_course_query="Digitale Systeme SS 26",
+                isis_term_hint="SS 26",
+            )
+        ],
+    )
+
+    actions = proposal.actions
+    assert [action.kind for action in actions] == ["grade_manager_add", "isis_enroll"]
+    assert actions[1].isis_payload["course_id"] == 48283
+    assert actions[1].isis_payload["isis_resolution_status"] == "resolved"
+
+
 def test_proposal_tool_reuses_verified_moses_isis_candidate(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     data = MosesModuleData(

@@ -800,6 +800,9 @@ def _format_degree_area_modules(
     filter_lines = _format_active_filters(filters)
     if filter_lines:
         lines.extend(["## Active filters", *filter_lines, ""])
+    scope_notes = _degree_area_scope_notes(filters)
+    if scope_notes:
+        lines.extend(["## Important scope note", *scope_notes, ""])
 
     if not area_modules.modules:
         lines.extend(
@@ -867,6 +870,23 @@ def _degree_module_lines(index: int, module: MosesDegreeProgramModule) -> list[s
         f"- Suggested next call: `get_module_details(module_query=\"{module.number}\")`",
         "",
     ]
+
+
+def _degree_area_scope_notes(
+    filters: moses_provider.MosesCourseSearchFilters | None,
+) -> list[str]:
+    notes: list[str] = []
+    if filters and (filters.term or filters.offered_in != "any"):
+        notes.append(
+            "- `term` and `offered_in` filter catalog availability/offering cycle; they do not mean the listed modules belong to that numbered Regelstudienplan semester."
+        )
+        notes.append(
+            "- For semester-specific Pflicht planning, use the regulation table for the recommended semester order, then use this MOSES list only to verify current availability."
+        )
+        notes.append(
+            "- If the task asks for Semester 1, Semester 2, or another numbered recommended semester, ask the Degree Regulations Specialist for the Regelstudienplan mapping instead of deriving it from this MOSES listing."
+        )
+    return notes
 
 
 def _search_query_variants(query: str) -> list[str]:

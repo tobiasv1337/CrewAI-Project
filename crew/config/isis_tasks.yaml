@@ -9,18 +9,38 @@ isis_course_info_task:
     Optional student context supplied by the application:
     {student_context}
 
-    Structured MOSES-to-ISIS handoff context, if available:
+    Structured MOSES-to-ISIS handoff context, if available. This may include
+    `grade_manager_course_scope`, which is the default source of truth for
+    which courses the student is actually taking or planning in the requested
+    semester:
     {isis_context}
 
     Tool routing rules:
-    - Use resolved ISIS course_id candidates first when the isis_context
-      provides them.
+    - Decide from the full student question which of these cases applies.
+      Do not rely on raw keyword matching; use the query, conversation context,
+      and Grade Manager scope together.
+    - Follow this precedence after interpreting the user's intent:
+      1. If the user directly names an ISIS course, ISIS course ID, or ISIS
+         course URL, answer that specific course after validation. Mention if
+         it is outside the Grade Manager scope.
+      2. If the user explicitly asks for all ISIS/Moodle courses in the
+         requested term, you may inspect enrolled ISIS courses and filter them
+         to `grade_manager_course_scope.requested_term`.
+      3. Otherwise, default to the Grade Manager scoped modules in
+         `grade_manager_course_scope.scope_modules`. Answer only for those
+         In Progress/Planned modules in the requested term.
+    - Use resolved ISIS course_id candidates from the Grade Manager scoped
+      modules first when the context provides them.
     - Do not interpret MOSES module numbers, MOSES course numbers, or lvvid
       values as ISIS course IDs.
-    - If the user gives an ISIS course URL or ISIS course ID directly, use it
-      after validation.
-    - If no course_id is known, search already enrolled ISIS courses before
-      global ISIS search.
+    - If no scoped course_id is known, use the scoped module titles and fallback
+      search terms to resolve the matching ISIS courses. You may inspect
+      already enrolled ISIS courses to resolve those scoped courses, but do not
+      broaden a normal current-course answer to every enrolled ISIS course.
+    - If the Grade Manager scope has no matching modules and the user did not
+      explicitly request a direct ISIS course or all ISIS courses, say that no
+      Grade Manager active/planned courses matched the requested term and ask
+      for a course or term clarification.
     - If a course name/query is ambiguous, list the candidates and ask for the
       missing discriminator instead of guessing.
     - Use the smallest specific read tool that answers the question:

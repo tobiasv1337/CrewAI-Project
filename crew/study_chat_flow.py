@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +10,9 @@ from typing import Any
 from crewai.flow.flow import Flow, listen, or_, router, start
 from pydantic import PrivateAttr
 
+from core import persistence
+from core.models import Module, ModuleState
+from core.terms import canonical_term_label, default_term_index, format_term_label, parse_term_label
 from crew.chat_models import (
     ActionDecision,
     ChatThreadState,
@@ -191,6 +195,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         classifier = self._classifier or self._classify_with_llm_or_heuristics
         intent = classifier(self.state)
         intent = _normalize_commitment_route(intent, self.state.query)
+        intent = _normalize_simple_isis_sources(intent)
         self.state.intent = intent
         self.state.route = intent.route
         if self._on_trace_event:
@@ -314,15 +319,12 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         if route == "simple_isis":
             from crew.isis_crew import IsisCourseInfoCrew
 
+            inputs = self._simple_isis_inputs()
             result = IsisCourseInfoCrew(
                 **self._crew_kwargs(),
                 allow_temp_enrollment=self._runtime.allow_temp_enrollment,
             ).crew().kickoff(
-                inputs={
-                    "query": self._contextual_query(),
-                    "student_context": self.state.student_context or "No student context supplied.",
-                    "isis_context": self.state.isis_context_json or "{}",
-                }
+                inputs=inputs
             )
             return str(getattr(result, "raw", result))
         if route == "simple_degree_regulations":
@@ -470,6 +472,24 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 proposal_lines.append(f"- {proposal.title}: {proposal.summary}\n{actions_str}")
             parts.append("Active proposal state:\n" + "\n".join(proposal_lines))
         return "\n\n".join(parts)
+
+    def _simple_isis_inputs(self) -> dict[str, str]:
+        scope = _build_simple_isis_grade_manager_scope(self.state.profile_slug, self.state.query)
+        if self._on_trace_event:
+            self._on_trace_event(
+                {
+                    "event": "simple_isis_scope_built",
+                    "status": "ok",
+                    "scope_mode": scope["mode"],
+                    "requested_term": scope["requested_term"],
+                    "module_count": len(scope["scope_modules"]),
+                }
+            )
+        return {
+            "query": self._contextual_query(),
+            "student_context": _student_context_with_simple_isis_scope(self.state.student_context, scope),
+            "isis_context": _scoped_isis_context_json(self.state.isis_context_json, scope),
+        }
 
     def _interpret_active_proposal_decision(self) -> UserDecisionInterpretation | None:
         thread = self.state.thread
@@ -1108,6 +1128,15 @@ def _has_separate_user_question(query: str) -> bool:
     return _looks_like_unrelated_new_topic(text) or _looks_like_information_question(text)
 
 
+def _normalize_simple_isis_sources(intent: IntentClassification) -> IntentClassification:
+    if intent.route != "simple_isis":
+        return intent
+    sources = _dedupe_sources(["grade_manager", "isis", *intent.required_sources])
+    if sources == intent.required_sources:
+        return intent
+    return intent.model_copy(update={"required_sources": sources})
+
+
 def _normalize_commitment_route(intent: IntentClassification, query: str) -> IntentClassification:
     if intent.route in {"deep_dive"}:
         return intent
@@ -1130,6 +1159,273 @@ def _normalize_commitment_route(intent: IntentClassification, query: str) -> Int
             ).strip(),
         }
     )
+
+
+def _build_simple_isis_grade_manager_scope(profile_slug: str, query: str) -> dict[str, Any]:
+    requested_term, term_source = _infer_simple_isis_requested_term(query)
+    modules, load_error = _load_simple_isis_scope_modules(profile_slug, requested_term)
+    scope_modules = [_simple_isis_module_scope_payload(module) for module in modules]
+    return {
+        "mode": "llm_decides_with_grade_manager_default",
+        "requested_term": requested_term,
+        "requested_term_source": term_source,
+        "profile_slug": profile_slug,
+        "scope_source": "Grade Manager",
+        "scope_states": ["In Progress", "Planned"],
+        "scope_modules": scope_modules,
+        "load_error": load_error,
+        "instruction": _simple_isis_scope_instruction(requested_term, scope_modules, load_error),
+        "override_policy": {
+            "direct_isis_course": (
+                "If the user explicitly asks for a specific ISIS/Moodle course by ID, URL, or name, "
+                "answer that course even when it is outside the Grade Manager scope."
+            ),
+            "all_isis_courses_for_term": (
+                "If the user explicitly asks for all ISIS/Moodle courses in the requested term, "
+                "inspect enrolled ISIS courses and filter them to that term."
+            ),
+        },
+    }
+
+
+def _infer_simple_isis_requested_term(query: str) -> tuple[str, str]:
+    for pattern in _CONCRETE_TERM_PATTERNS:
+        for match in re.finditer(pattern, query, flags=re.IGNORECASE):
+            label = canonical_term_label(match.group(0))
+            if label:
+                return label, "explicit"
+
+    text = query.casefold()
+    current_index = default_term_index()
+    if any(token in text for token in _NEXT_TERM_TOKENS):
+        return format_term_label(current_index + 1), "relative_next"
+    if any(token in text for token in _PREVIOUS_TERM_TOKENS):
+        return format_term_label(current_index - 1), "relative_previous"
+    return format_term_label(current_index), "default_current"
+
+
+_CONCRETE_TERM_PATTERNS = (
+    r"\b(?:WS|WiSe)\s*\d{2,4}(?:\s*/\s*\d{2,4})?\b",
+    r"\b(?:SS|SoSe)\s*\d{2,4}\b",
+    r"\b(?:Wintersemester|winter semester|winter term)\s*\d{2,4}(?:\s*/\s*\d{2,4})?\b",
+    r"\b(?:Sommersemester|summer semester|summer term)\s*\d{2,4}\b",
+)
+_NEXT_TERM_TOKENS = (
+    "nächstes semester",
+    "naechstes semester",
+    "kommendes semester",
+    "next semester",
+    "upcoming semester",
+)
+_PREVIOUS_TERM_TOKENS = (
+    "letztes semester",
+    "vorheriges semester",
+    "previous semester",
+    "last semester",
+)
+
+
+def _load_simple_isis_scope_modules(profile_slug: str, requested_term: str) -> tuple[list[Module], str | None]:
+    try:
+        modules = persistence.load_modules(profile_slug)
+    except Exception as exc:
+        return [], f"Could not load Grade Manager modules for profile `{profile_slug}`: {exc}"
+
+    selected = [
+        module
+        for module in modules
+        if module.state in {ModuleState.IN_PROGRESS, ModuleState.PLANNED}
+        and _module_is_in_requested_term(module, requested_term)
+    ]
+    return sorted(selected, key=lambda module: (module.term or "", module.name.casefold())), None
+
+
+def _module_is_in_requested_term(module: Module, requested_term: str) -> bool:
+    target_index = parse_term_label(requested_term)
+    module_index = parse_term_label(module.term or "")
+    if target_index is not None and module_index is not None:
+        span = max(int(module.semester_span or 1), 1)
+        return module_index <= target_index < module_index + span
+    if module.term:
+        return canonical_term_label(module.term) == requested_term
+    current_term = format_term_label(default_term_index())
+    return module.state == ModuleState.IN_PROGRESS and requested_term == current_term
+
+
+def _simple_isis_module_scope_payload(module: Module) -> dict[str, Any]:
+    candidates = [
+        candidate.model_dump(mode="json")
+        for candidate in (module.moses.isis_candidates if module.moses else [])
+    ]
+    fallback_values = [module.name]
+    if module.moses and module.moses.title:
+        fallback_values.append(module.moses.title)
+    fallback_values.extend(
+        term
+        for candidate in candidates
+        for term in candidate.get("fallback_search_terms", [])
+    )
+    fallback_terms = _dedupe_texts(fallback_values)
+    return {
+        "name": module.name,
+        "state": module.state.value,
+        "term": module.term,
+        "area": module.area,
+        "program_key": module.program_key,
+        "credits": module.cp,
+        "moses_number": module.moses_number,
+        "moses_version": module.moses_version,
+        "isis_candidates": candidates,
+        "fallback_search_terms": fallback_terms,
+    }
+
+
+def _simple_isis_scope_instruction(
+    requested_term: str,
+    scope_modules: list[dict[str, Any]],
+    load_error: str | None,
+) -> str:
+    if load_error:
+        return (
+            "Grade Manager scope could not be loaded. Explain this limitation and ask for a direct ISIS course or an explicit all-ISIS request."
+        )
+    if not scope_modules:
+        return (
+            f"No Grade Manager modules with state In Progress or Planned matched `{requested_term}`. "
+            "Do not substitute all enrolled ISIS courses unless the user explicitly asked for all ISIS courses; ask for a course or term clarification."
+        )
+    return (
+        f"Default scope: answer only for these Grade Manager In Progress/Planned modules in `{requested_term}` unless the user's query explicitly asks for a specific other ISIS course or for all ISIS courses in the term. "
+        "Use ISIS tools to resolve and read the courses selected by that interpretation."
+    )
+
+
+def _student_context_with_simple_isis_scope(student_context: str, scope: dict[str, Any]) -> str:
+    base = student_context or "No student context supplied."
+    return "\n\n".join([base, _format_simple_isis_scope(scope)])
+
+
+def _format_simple_isis_scope(scope: dict[str, Any]) -> str:
+    lines = [
+        "Simple ISIS Grade Manager scope:",
+        f"- Scope mode: `{scope['mode']}`",
+        f"- Requested term: `{scope['requested_term']}` ({scope['requested_term_source']})",
+        "- Source: Grade Manager modules with states In Progress or Planned.",
+        f"- Instruction: {scope['instruction']}",
+    ]
+    if scope.get("load_error"):
+        lines.append(f"- Load error: {scope['load_error']}")
+    modules = scope.get("scope_modules") or []
+    if not modules:
+        lines.append("- Scoped modules: none.")
+        return "\n".join(lines)
+
+    lines.extend(
+        [
+            "",
+            "| Module | State | Term | Area | MOSES | ISIS candidates |",
+            "|---|---|---|---|---|---|",
+        ]
+    )
+    for module in modules:
+        moses = (
+            f"{module['moses_number']} v{module['moses_version']}"
+            if module.get("moses_number") and module.get("moses_version") is not None
+            else "-"
+        )
+        candidate_ids = [
+            str(candidate.get("course_id"))
+            for candidate in module.get("isis_candidates") or []
+            if candidate.get("course_id") is not None
+        ]
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    _md_cell(module.get("name")),
+                    _md_cell(module.get("state")),
+                    _md_cell(module.get("term")),
+                    _md_cell(module.get("area")),
+                    _md_cell(moses),
+                    _md_cell(", ".join(candidate_ids) if candidate_ids else "-"),
+                ]
+            )
+            + " |"
+        )
+    return "\n".join(lines)
+
+
+def _scoped_isis_context_json(raw_context: str, scope: dict[str, Any]) -> str:
+    try:
+        context = json.loads(raw_context or "{}")
+    except json.JSONDecodeError:
+        context = {"unparsed_prior_isis_context": raw_context}
+    if not isinstance(context, dict):
+        context = {"prior_isis_context": context}
+
+    context["grade_manager_course_scope"] = scope
+    context["preferred_course_candidates"] = _dedupe_isis_candidate_dicts(
+        [
+            *(context.get("preferred_course_candidates") or []),
+            *(
+                candidate
+                for module in scope.get("scope_modules", [])
+                for candidate in module.get("isis_candidates", [])
+                if candidate.get("course_id") is not None
+            ),
+        ]
+    )
+    context["fallback_search_terms"] = _dedupe_texts(
+        [
+            *(context.get("fallback_search_terms") or []),
+            *(
+                term
+                for module in scope.get("scope_modules", [])
+                for term in module.get("fallback_search_terms", [])
+            ),
+        ]
+    )
+    return json.dumps(context, ensure_ascii=False)
+
+
+def _dedupe_isis_candidate_dicts(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("course_id") is not None:
+            key = ("course", candidate.get("course_id"), candidate.get("status"))
+        else:
+            key = (
+                "fallback",
+                candidate.get("module_title"),
+                candidate.get("module_element_title"),
+                tuple(candidate.get("fallback_search_terms") or []),
+            )
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(candidate)
+    return result
+
+
+def _dedupe_texts(values) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _md_cell(value: object) -> str:
+    text = str(value if value is not None and value != "" else "-")
+    return text.replace("|", "\\|").replace("\n", " ")
 
 
 def _looks_like_course_commitment_request(text: str) -> bool:

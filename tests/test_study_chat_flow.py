@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 from core import persistence
-from core.models import Module, ModuleState
+from core.models import Module, ModuleState, MosesIsisCandidate, MosesModuleData
 from crew.chat_models import ActionDecision, IntentClassification, ProposedAction, StudyChatFlowState, UserDecisionInterpretation
 from crew.chat_persistence import append_turn, load_chat_thread
 from crew.study_chat_flow import StudyChatFlow, StudyChatFlowRuntime
@@ -45,6 +46,76 @@ def _classifier_for(
         )
 
     return classify
+
+
+def _study_module(
+    *,
+    module_id: str,
+    name: str,
+    state: ModuleState = ModuleState.PLANNED,
+    term: str = "SS 26",
+    moses_number: str | None = None,
+    moses_version: int | None = None,
+    isis_course_id: int | None = None,
+    semester_span: int = 1,
+) -> Module:
+    moses = None
+    if moses_number and moses_version is not None:
+        candidates = []
+        if isis_course_id is not None:
+            candidates.append(
+                MosesIsisCandidate(
+                    course_id=isis_course_id,
+                    course_url=f"https://isis.tu-berlin.de/course/view.php?id={isis_course_id}",
+                    course_title=f"[SoSe 2026] {name}",
+                    term_hint="SoSe 2026" if term == "SS 26" else term,
+                    module_title=name,
+                    fallback_search_terms=[name],
+                    confidence="high",
+                    status="resolved",
+                )
+            )
+        moses = MosesModuleData(
+            number=moses_number,
+            version=moses_version,
+            title=name,
+            credits=6,
+            isis_candidates=candidates,
+        )
+    return Module(
+        id=module_id,
+        name=name,
+        state=state,
+        program_key="TU Berlin - Technische Informatik (B.Sc.)",
+        cp=12 if "Analysis" in name else 6,
+        area="Mandatory",
+        is_graded=True,
+        term=term,
+        semester_span=semester_span,
+        moses_number=moses_number,
+        moses_version=moses_version,
+        moses=moses,
+    )
+
+
+def _capture_isis_crew_inputs(monkeypatch):
+    import crew.isis_crew as isis_crew_module
+
+    captured = {}
+
+    class FakeIsisCourseInfoCrew:
+        def __init__(self, **kwargs):
+            captured["crew_kwargs"] = kwargs
+
+        def crew(self):
+            return self
+
+        def kickoff(self, inputs):
+            captured["inputs"] = inputs
+            return SimpleNamespace(raw="Scoped ISIS answer.")
+
+    monkeypatch.setattr(isis_crew_module, "IsisCourseInfoCrew", FakeIsisCourseInfoCrew)
+    return captured
 
 
 def test_simple_progress_question_routes_only_to_study_advisor(monkeypatch, tmp_path):
@@ -105,6 +176,172 @@ def test_non_llm_classifier_routes_to_deep_dive_with_warning(monkeypatch, tmp_pa
     assert flow.state.intent.route == "deep_dive"
     assert flow.state.intent.required_sources == ["grade_manager", "moses", "isis"]
     assert "WARNING" in flow.state.intent.rationale
+
+
+def test_simple_isis_defaults_to_current_grade_manager_scope(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            _study_module(
+                module_id="analysis",
+                name="Analysis I und Lineare Algebra für Ingenieurwissenschaften",
+                term="SS 26",
+                moses_number="20122",
+                moses_version=4,
+                isis_course_id=46899,
+            ),
+            _study_module(
+                module_id="future",
+                name="Machine Learning and Security",
+                term="WS 26/27",
+                moses_number="41103",
+                moses_version=1,
+                isis_course_id=48001,
+            ),
+            _study_module(
+                module_id="completed",
+                name="Completed Old Course",
+                state=ModuleState.COMPLETED,
+                term="SS 26",
+                moses_number="11111",
+                moses_version=1,
+                isis_course_id=47000,
+            ),
+        ],
+        "primary",
+    )
+    captured = _capture_isis_crew_inputs(monkeypatch)
+
+    flow = _flow(classifier=_classifier_for("simple_isis", required_sources=["isis"]))
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Was steht dieses Semester in meinen aktuellen Kursen an?",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    inputs = captured["inputs"]
+    context = json.loads(inputs["isis_context"])
+    scope = context["grade_manager_course_scope"]
+    assert flow.state.intent.required_sources == ["grade_manager", "isis"]
+    assert scope["mode"] == "llm_decides_with_grade_manager_default"
+    assert scope["requested_term"] == "SS 26"
+    assert [module["name"] for module in scope["scope_modules"]] == [
+        "Analysis I und Lineare Algebra für Ingenieurwissenschaften"
+    ]
+    assert [candidate["course_id"] for candidate in context["preferred_course_candidates"]] == [46899]
+    assert "Machine Learning and Security" not in inputs["student_context"]
+    assert "Completed Old Course" not in inputs["student_context"]
+
+
+def test_simple_isis_uses_explicit_semester_for_grade_manager_scope(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            _study_module(
+                module_id="summer",
+                name="Summer Course",
+                term="SS 26",
+                moses_number="20122",
+                moses_version=4,
+                isis_course_id=46899,
+            ),
+            _study_module(
+                module_id="winter",
+                name="Winter Course",
+                term="WS 26/27",
+                moses_number="41103",
+                moses_version=1,
+                isis_course_id=48001,
+            ),
+        ],
+        "primary",
+    )
+    captured = _capture_isis_crew_inputs(monkeypatch)
+
+    flow = _flow(classifier=_classifier_for("simple_isis", required_sources=["isis"]))
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Welche ISIS-Deadlines gibt es im WS 26/27?",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    context = json.loads(captured["inputs"]["isis_context"])
+    scope = context["grade_manager_course_scope"]
+    assert scope["requested_term"] == "WS 26/27"
+    assert scope["requested_term_source"] == "explicit"
+    assert [module["name"] for module in scope["scope_modules"]] == ["Winter Course"]
+    assert [candidate["course_id"] for candidate in context["preferred_course_candidates"]] == [48001]
+
+
+def test_simple_isis_direct_course_requests_leave_decision_to_isis_agent(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            _study_module(
+                module_id="analysis",
+                name="Analysis I und Lineare Algebra für Ingenieurwissenschaften",
+                term="SS 26",
+                moses_number="20122",
+                moses_version=4,
+                isis_course_id=46899,
+            ),
+        ],
+        "primary",
+    )
+    captured = _capture_isis_crew_inputs(monkeypatch)
+
+    flow = _flow(classifier=_classifier_for("simple_isis", required_sources=["isis"]))
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Was steht im ISIS-Kurs Quality and Usability an? ISIS course ID 47235",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    context = json.loads(captured["inputs"]["isis_context"])
+    scope = context["grade_manager_course_scope"]
+    assert scope["mode"] == "llm_decides_with_grade_manager_default"
+    assert "direct_isis_course" in scope["override_policy"]
+    assert "outside the Grade Manager scope" in scope["override_policy"]["direct_isis_course"]
+    assert [candidate["course_id"] for candidate in context["preferred_course_candidates"]] == [46899]
+    assert "ISIS course ID 47235" in captured["inputs"]["query"]
+
+
+def test_simple_isis_all_isis_courses_request_leaves_broader_scope_decision_to_isis_agent(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            _study_module(
+                module_id="analysis",
+                name="Analysis I und Lineare Algebra für Ingenieurwissenschaften",
+                term="SS 26",
+                moses_number="20122",
+                moses_version=4,
+                isis_course_id=46899,
+            ),
+        ],
+        "primary",
+    )
+    captured = _capture_isis_crew_inputs(monkeypatch)
+
+    flow = _flow(classifier=_classifier_for("simple_isis", required_sources=["isis"]))
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Zeig mir alle aktuellen ISIS-Kurse dieses Semester.",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    context = json.loads(captured["inputs"]["isis_context"])
+    scope = context["grade_manager_course_scope"]
+    assert scope["mode"] == "llm_decides_with_grade_manager_default"
+    assert scope["requested_term"] == "SS 26"
+    assert "all_isis_courses_for_term" in scope["override_policy"]
+    assert "all ISIS/Moodle courses" in scope["override_policy"]["all_isis_courses_for_term"]
+    assert [candidate["course_id"] for candidate in context["preferred_course_candidates"]] == [46899]
+    assert "alle aktuellen ISIS-Kurse" in captured["inputs"]["query"]
 
 
 def test_degree_regulation_question_routes_to_simple_regulations(monkeypatch, tmp_path):

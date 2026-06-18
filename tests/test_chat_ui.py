@@ -138,6 +138,19 @@ def test_current_settings_includes_agent_chat_toggle():
     assert settings.show_agent_chat is True
 
 
+def test_student_context_uses_source_boundary_wording():
+    st.session_state["modules"] = []
+    st.session_state["program_view"] = "All"
+    st.session_state["relevant_programs"] = []
+
+    context = chat.build_student_context("alice")
+
+    assert "Grade Manager is the source of truth for the student's actual study plan" in context
+    assert "MOSES is the source of truth for catalog and module details" in context
+    assert "ISIS is the source of truth for live course activity" in context
+    assert "source of truth for full module details" not in context
+
+
 def test_live_workbench_shows_lifecycle_activity_before_tool_calls():
     settings = chat.ChatRuntimeSettings(
         specialist_model=None,

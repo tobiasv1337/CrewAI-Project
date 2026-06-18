@@ -2300,7 +2300,7 @@ def build_student_context(profile_slug: str) -> str:
             f"Loaded modules in UI state: {len(modules)}",
             f"State counts: Completed={completed}, In Progress={in_progress}, Planned={planned}",
             semester_reference_context(),
-            "Use Grade Manager tools as the source of truth for full module details.",
+            "Source boundaries: Grade Manager is the source of truth for the student's actual study plan, module status, terms, areas, and active/current course list. MOSES is the source of truth for catalog and module details. ISIS is the source of truth for live course activity, deadlines, materials, and announcements.",
         ]
     )
 

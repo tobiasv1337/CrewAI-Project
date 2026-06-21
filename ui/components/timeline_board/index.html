@@ -324,9 +324,9 @@
       }
 
       .pill-solid {
-        background: var(--ink);
-        color: #fff;
-        border-color: var(--ink);
+        background: #1e293b;
+        color: #f1f5f9;
+        border-color: #334155;
       }
 
       .pill-status {
@@ -366,6 +366,41 @@
       }
 
       .pill-default { border-color: rgba(15, 23, 42, 0.12); }
+
+      /* ── Dark mode pill overrides ───────────────────── */
+      :root[data-theme="dark"] .pill-solid {
+        background: #374151;
+        color: #f9fafb;
+        border-color: #4b5563;
+      }
+
+      :root[data-theme="dark"] .pill-candidate {
+        background: rgba(100, 116, 139, 0.18);
+        border-color: rgba(100, 116, 139, 0.40);
+        color: #94a3b8;
+      }
+
+      :root[data-theme="dark"] .pill-grade {
+        background: rgba(243, 243, 245, 0.06);
+        border-color: rgba(148, 163, 184, 0.30);
+        color: rgba(243, 243, 245, 0.88);
+      }
+
+      :root[data-theme="dark"] .pill-program-other {
+        background: rgba(243, 243, 245, 0.05);
+        border-color: rgba(148, 163, 184, 0.30);
+        color: rgba(243, 243, 245, 0.75);
+      }
+
+      :root[data-theme="dark"] .pill-muted {
+        background: rgba(100, 116, 139, 0.15);
+        border-color: rgba(100, 116, 139, 0.30);
+        color: #8a8a93;
+      }
+
+      :root[data-theme="dark"] .pill-default {
+        border-color: rgba(243, 243, 245, 0.12);
+      }
 
       .pill-program-msc {
         background: rgba(190, 18, 60, 0.10);
@@ -553,22 +588,45 @@
       let shelfOpen = false;
       let shelfFilter = "all"; // "all" | "ws" | "ss"
 
-      function syncTheme() {
+      let currentTheme = null;
+
+      function normalizeTheme(value) {
+        const text = String(value || "").toLowerCase();
+        if (text.includes("dark")) return "dark";
+        if (text.includes("light")) return "light";
+        return null;
+      }
+
+      function parentTheme() {
         try {
           const parentDoc = window.parent.document;
-          const stApp = parentDoc.querySelector('.stApp');
-          if (stApp) {
-            const theme = stApp.getAttribute('data-theme');
-            if (theme) {
-              document.documentElement.setAttribute('data-theme', theme);
-              return;
-            }
+          const sources = [
+            parentDoc.documentElement,
+            parentDoc.body,
+            parentDoc.querySelector(".stApp")
+          ].filter(Boolean);
+          for (const source of sources) {
+            const theme = normalizeTheme(source.getAttribute("data-theme"));
+            if (theme) return theme;
           }
         } catch (e) {
           console.warn("Could not sync theme with parent document:", e);
         }
-        const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-        document.documentElement.setAttribute('data-theme', prefersDark ? 'dark' : 'light');
+        return null;
+      }
+
+      function applyTheme(theme) {
+        if (theme !== "dark" && theme !== "light") return;
+        if (currentTheme === theme) return;
+        currentTheme = theme;
+        document.documentElement.setAttribute("data-theme", theme);
+        document.body.setAttribute("data-theme", theme);
+      }
+
+      function syncTheme(event) {
+        const eventTheme = normalizeTheme(event && event.detail && event.detail.theme);
+        const mediaTheme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+        applyTheme(eventTheme || parentTheme() || mediaTheme);
       }
 
       // Initial theme sync
@@ -577,19 +635,27 @@
       // Parent theme observer
       try {
         const parentDoc = window.parent.document;
-        const stApp = parentDoc.querySelector('.stApp');
-        if (stApp) {
-          const observer = new MutationObserver((mutations) => {
-            mutations.forEach((mutation) => {
-              if (mutation.type === 'attributes' && mutation.attributeName === 'data-theme') {
-                syncTheme();
-              }
-            });
+        const observer = new MutationObserver(syncTheme);
+        [
+          parentDoc.documentElement,
+          parentDoc.body,
+          parentDoc.querySelector(".stApp")
+        ].filter(Boolean).forEach((element) => {
+          observer.observe(element, {
+            attributes: true,
+            attributeFilter: ["data-theme", "class", "style"]
           });
-          observer.observe(stApp, { attributes: true, attributeFilter: ['data-theme'] });
-        }
+        });
+        window.parent.addEventListener("tu-theme-change", syncTheme);
       } catch (e) {
         console.warn("Could not register theme observer on parent:", e);
+      }
+
+      const themeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+      if (themeMedia.addEventListener) {
+        themeMedia.addEventListener("change", syncTheme);
+      } else if (themeMedia.addListener) {
+        themeMedia.addListener(syncTheme);
       }
 
       /* ── Streamlit component protocol ──────────────── */

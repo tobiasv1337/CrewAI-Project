@@ -179,41 +179,165 @@ def load_css() -> None:
 
 
 def inject_theme_detector() -> None:
-    """Inject a lightweight script that observes Streamlit's theme and sets data-theme attribute on .stApp."""
+    """Bridge Streamlit/browser theme changes into stable data-theme attributes."""
     st.iframe(
         """
         <script>
         (function() {
             try {
-                const pd = window.parent.document;
-                
-                function updateTheme() {
-                    const stApp = pd.querySelector('.stApp');
-                    if (!stApp) return;
-                    
-                    const bg = window.getComputedStyle(stApp).backgroundColor;
-                    const match = bg.match(/\\d+/g);
-                    if (match) {
-                        const r = parseInt(match[0], 10);
-                        const g = parseInt(match[1], 10);
-                        const b = parseInt(match[2], 10);
-                        // Perceived brightness formula
-                        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-                        if (brightness < 128) {
-                            stApp.setAttribute('data-theme', 'dark');
+                const pw = window.parent;
+                const pd = pw.document;
+
+                if (typeof pw.__tuThemeBridgeCleanup === 'function') {
+                    pw.__tuThemeBridgeCleanup();
+                }
+
+                const media = pw.matchMedia
+                    ? pw.matchMedia('(prefers-color-scheme: dark)')
+                    : window.matchMedia('(prefers-color-scheme: dark)');
+                const observers = [];
+                let lastTheme = null;
+                let scheduled = 0;
+
+                function normalizeTheme(value) {
+                    const text = String(value || '').toLowerCase();
+                    if (text.includes('dark')) return 'dark';
+                    if (text.includes('light')) return 'light';
+                    return null;
+                }
+
+                function themeFromColor(value) {
+                    const color = String(value || '').trim();
+                    const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+                    let r, g, b;
+                    if (hex) {
+                        const raw = hex[1];
+                        if (raw.length === 3) {
+                            r = parseInt(raw[0] + raw[0], 16);
+                            g = parseInt(raw[1] + raw[1], 16);
+                            b = parseInt(raw[2] + raw[2], 16);
                         } else {
-                            stApp.setAttribute('data-theme', 'light');
+                            r = parseInt(raw.slice(0, 2), 16);
+                            g = parseInt(raw.slice(2, 4), 16);
+                            b = parseInt(raw.slice(4, 6), 16);
                         }
+                    } else {
+                        const parts = color.match(/[0-9.]+/g);
+                        if (!parts || parts.length < 3) return null;
+                        r = Number(parts[0]);
+                        g = Number(parts[1]);
+                        b = Number(parts[2]);
+                    }
+                    if ([r, g, b].some(Number.isNaN)) return null;
+                    const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+                    return brightness < 128 ? 'dark' : 'light';
+                }
+
+                function themeFromStreamlitVariables(stApp) {
+                    const candidates = [stApp, pd.documentElement, pd.body].filter(Boolean);
+                    for (const element of candidates) {
+                        const styles = pw.getComputedStyle(element);
+                        const colors = [
+                            styles.getPropertyValue('--background-color'),
+                            styles.getPropertyValue('--secondary-background-color'),
+                            styles.getPropertyValue('--theme-background-color')
+                        ];
+                        for (const color of colors) {
+                            const theme = themeFromColor(color);
+                            if (theme) return theme;
+                        }
+                    }
+                    return null;
+                }
+
+                function themeFromAppBackground(stApp) {
+                    if (!stApp) return null;
+                    return themeFromColor(pw.getComputedStyle(stApp).backgroundColor);
+                }
+
+                function resolveTheme() {
+                    const stApp = pd.querySelector('.stApp');
+                    return (
+                        themeFromStreamlitVariables(stApp)
+                        || (media && (media.matches ? 'dark' : 'light'))
+                        || themeFromAppBackground(stApp)
+                        || 'light'
+                    );
+                }
+
+                function applyTheme(theme) {
+                    if (theme !== 'dark' && theme !== 'light') return;
+                    const stApp = pd.querySelector('.stApp');
+                    [pd.documentElement, pd.body, stApp].filter(Boolean).forEach(function(element) {
+                        if (element.getAttribute('data-theme') !== theme) {
+                            element.setAttribute('data-theme', theme);
+                        }
+                    });
+                    if (lastTheme !== theme) {
+                        lastTheme = theme;
+                        pw.dispatchEvent(new CustomEvent('tu-theme-change', { detail: { theme } }));
                     }
                 }
 
-                updateTheme();
-
-                const stApp = pd.querySelector('.stApp');
-                if (stApp) {
-                    const observer = new MutationObserver(updateTheme);
-                    observer.observe(stApp, { attributes: true, attributeFilter: ['style', 'class'] });
+                function syncTheme() {
+                    scheduled = 0;
+                    applyTheme(resolveTheme());
                 }
+
+                function scheduleSync() {
+                    if (scheduled) return;
+                    scheduled = pw.requestAnimationFrame(syncTheme);
+                }
+
+                function observe(element, options) {
+                    if (!element) return;
+                    const observer = new MutationObserver(scheduleSync);
+                    observer.observe(element, options);
+                    observers.push(observer);
+                }
+
+                syncTheme();
+                pw.requestAnimationFrame(syncTheme);
+
+                observe(pd.documentElement, {
+                    attributes: true,
+                    attributeFilter: ['class', 'style', 'data-theme']
+                });
+                observe(pd.body, {
+                    attributes: true,
+                    attributeFilter: ['class', 'style', 'data-theme']
+                });
+                observe(pd.querySelector('.stApp'), {
+                    attributes: true,
+                    attributeFilter: ['class', 'style', 'data-theme']
+                });
+                observe(pd.head, {
+                    childList: true,
+                    subtree: true,
+                    characterData: true
+                });
+
+                const mediaHandler = scheduleSync;
+                if (media && typeof media.addEventListener === 'function') {
+                    media.addEventListener('change', mediaHandler);
+                } else if (media && typeof media.addListener === 'function') {
+                    media.addListener(mediaHandler);
+                }
+                pw.addEventListener('pageshow', scheduleSync);
+                pd.addEventListener('visibilitychange', scheduleSync);
+
+                pw.__tuThemeBridgeCleanup = function() {
+                    observers.forEach(function(observer) { observer.disconnect(); });
+                    if (scheduled) pw.cancelAnimationFrame(scheduled);
+                    if (media && typeof media.removeEventListener === 'function') {
+                        media.removeEventListener('change', mediaHandler);
+                    } else if (media && typeof media.removeListener === 'function') {
+                        media.removeListener(mediaHandler);
+                    }
+                    pw.removeEventListener('pageshow', scheduleSync);
+                    pd.removeEventListener('visibilitychange', scheduleSync);
+                };
+
             } catch(e) {
                 // Ignore cross-origin issues or exceptions
             }

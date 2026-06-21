@@ -2475,7 +2475,78 @@ a.course-card * {
     }
 }
 
-/* Also support stApp with dark theme attribute specifically */
+/* Explicit theme attributes win over the browser media-query fallback. */
+:root[data-theme="light"],
+body[data-theme="light"],
+.stApp[data-theme="light"] {
+    --bg: #f4f6f8;
+    --bg-2: #e9eef4;
+    --surface: #ffffff;
+    --surface-2: #f6f8fb;
+    --ink: #151922;
+    --muted: #667085;
+    --border: #dbe2ea;
+    --accent: #c50e1f;
+    --accent-2: #8a0c16;
+    --primary: #c50e1f;
+    --primary-hover: #a00714;
+    --sidebar-bg: #f8fafc;
+    --accent-bg: rgba(197, 14, 31, 0.08);
+    --accent-border: rgba(197, 14, 31, 0.4);
+    --accent-shadow: rgba(197, 14, 31, 0.1);
+
+    --agent-dialogue-bg: #f8fafc;
+    --agent-dialogue-border: #dbe2ea;
+    --agent-dialogue-header-bg: #ffffff;
+    --agent-dialogue-title-color: #151922;
+    --agent-dialogue-body-color: #334155;
+    --agent-dialogue-bubble-bg: #ffffff;
+    --agent-dialogue-bubble-border: #dbe2ea;
+    --agent-dialogue-avatar-bg: #f6f8fb;
+    --agent-dialogue-avatar-border: #dbe2ea;
+    --agent-dialogue-meta-strong: #151922;
+    --agent-dialogue-meta-span: #667085;
+}
+
+:root[data-theme="light"],
+:root[data-theme="light"] body,
+:root[data-theme="light"] .stApp,
+body[data-theme="light"],
+.stApp[data-theme="light"] {
+    background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.9) 0%, rgba(255,255,255,0) 26rem),
+        var(--bg) !important;
+    color: var(--ink) !important;
+}
+
+:root[data-theme="light"] #nm-hamburger-bar {
+    background: rgba(248, 250, 252, 0.96) !important;
+    border-bottom: 1px solid rgba(213, 219, 228, 0.85) !important;
+}
+:root[data-theme="light"] #nm-hamburger-btn {
+    background: #ffffff !important;
+    border-color: rgba(219, 226, 234, 0.95) !important;
+}
+:root[data-theme="light"] #nm-hamburger-title {
+    color: #151922 !important;
+}
+
+:root[data-theme="light"] .module-hero-shell {
+    background:
+        radial-gradient(circle at top right, rgba(197, 14, 31, 0.18) 0%, rgba(197, 14, 31, 0) 34%),
+        linear-gradient(135deg, #ffffff 0%, #f8fafc 100%) !important;
+}
+:root[data-theme="light"] .module-hero-shell::before {
+    background: linear-gradient(90deg, var(--module-accent, var(--primary)) 0%, rgba(197, 14, 31, 0) 100%) !important;
+}
+:root[data-theme="light"] .module-pdf-frame-wrap,
+:root[data-theme="light"] .module-attachment-card {
+    background: var(--surface) !important;
+    border-color: var(--border) !important;
+}
+
+:root[data-theme="dark"],
+body[data-theme="dark"],
 .stApp[data-theme="dark"],
 .stApp[data-theme="dark"] :root {
     --bg: #121214;
@@ -2506,6 +2577,10 @@ a.course-card * {
     --agent-dialogue-meta-strong: #f3f3f5;
     --agent-dialogue-meta-span: #8a8a93;
 }
+:root[data-theme="dark"],
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .stApp,
+body[data-theme="dark"],
 .stApp[data-theme="dark"] html,
 .stApp[data-theme="dark"] body,
 .stApp[data-theme="dark"] {
@@ -2513,6 +2588,17 @@ a.course-card * {
         linear-gradient(180deg, rgba(18, 18, 20, 0.8) 0%, rgba(18, 18, 20, 0) 26rem),
         var(--bg) !important;
     color: var(--ink) !important;
+}
+:root[data-theme="dark"] #nm-hamburger-bar {
+    background: rgba(15, 23, 42, 0.96) !important;
+    border-bottom: 1px solid rgba(51, 65, 85, 0.85) !important;
+}
+:root[data-theme="dark"] #nm-hamburger-btn {
+    background: #1e293b !important;
+    border-color: rgba(51, 65, 85, 0.95) !important;
+}
+:root[data-theme="dark"] #nm-hamburger-title {
+    color: #f8fafc !important;
 }
 .stApp[data-theme="dark"] [data-testid="stSidebar"] [data-testid="stRadio"] div[role="radiogroup"] > label {
     background-color: var(--surface) !important;
@@ -2864,4 +2950,3 @@ a.course-card * {
 .agent-dialogue-expandable[open] .agent-dialogue-preview-text {
     display: none !important;
 }
-

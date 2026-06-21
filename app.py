@@ -178,6 +178,53 @@ def load_css() -> None:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 
+def inject_theme_detector() -> None:
+    """Inject a lightweight script that observes Streamlit's theme and sets data-theme attribute on .stApp."""
+    st.iframe(
+        """
+        <script>
+        (function() {
+            try {
+                const pd = window.parent.document;
+                
+                function updateTheme() {
+                    const stApp = pd.querySelector('.stApp');
+                    if (!stApp) return;
+                    
+                    const bg = window.getComputedStyle(stApp).backgroundColor;
+                    const match = bg.match(/\\d+/g);
+                    if (match) {
+                        const r = parseInt(match[0], 10);
+                        const g = parseInt(match[1], 10);
+                        const b = parseInt(match[2], 10);
+                        // Perceived brightness formula
+                        const brightness = (r * 299 + g * 587 + b * 114) / 1000;
+                        if (brightness < 128) {
+                            stApp.setAttribute('data-theme', 'dark');
+                        } else {
+                            stApp.setAttribute('data-theme', 'light');
+                        }
+                    }
+                }
+
+                updateTheme();
+
+                const stApp = pd.querySelector('.stApp');
+                if (stApp) {
+                    const observer = new MutationObserver(updateTheme);
+                    observer.observe(stApp, { attributes: true, attributeFilter: ['style', 'class'] });
+                }
+            } catch(e) {
+                // Ignore cross-origin issues or exceptions
+            }
+        })();
+        </script>
+        """,
+        height=1,
+    )
+
+
+
 def inject_streamlit_chrome_css(hide: bool) -> None:
     if not hide:
         return
@@ -430,6 +477,7 @@ if "ui_hide_streamlit_chrome" not in st.session_state:
     st.session_state["ui_hide_streamlit_chrome"] = DEFAULT_HIDE_STREAMLIT_CHROME
 
 load_css()
+inject_theme_detector()
 inject_streamlit_chrome_css(bool(st.session_state.get("ui_hide_streamlit_chrome", DEFAULT_HIDE_STREAMLIT_CHROME)))
 inject_mobile_hamburger()
 

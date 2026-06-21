@@ -8,15 +8,15 @@ from core import persistence
 from crew.chat_models import ChatMessage, ChatThreadState, CourseProposal, utc_now_iso
 
 
-CHAT_FILENAME = "study_chat.json"
+def chat_path(profile_slug: str, thread_id: str = "default") -> Path:
+    return persistence.profile_dir(_clean_slug(profile_slug)) / f"study_chat_{thread_id}.json"
 
 
-def chat_path(profile_slug: str) -> Path:
-    return persistence.profile_dir(_clean_slug(profile_slug)) / CHAT_FILENAME
-
-
-def load_chat_thread(profile_slug: str, *, thread_id: str = "default") -> ChatThreadState:
-    path = chat_path(profile_slug)
+def load_chat_thread(profile_slug: str, *, thread_id: str | None = None) -> ChatThreadState:
+    if thread_id is None:
+        from crew.profile_context import get_active_thread_id
+        thread_id = get_active_thread_id() or "default"
+    path = chat_path(profile_slug, thread_id)
     if not path.exists():
         return ChatThreadState(thread_id=thread_id, profile_slug=_clean_slug(profile_slug))
     try:
@@ -36,7 +36,7 @@ def load_chat_thread(profile_slug: str, *, thread_id: str = "default") -> ChatTh
 
 def save_chat_thread(thread: ChatThreadState) -> None:
     thread.updated_at = utc_now_iso()
-    path = chat_path(thread.profile_slug)
+    path = chat_path(thread.profile_slug, thread.thread_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(thread.model_dump(mode="json"), indent=2, ensure_ascii=False)
     if path.exists() and path.read_text(encoding="utf-8") == serialized:
@@ -53,13 +53,32 @@ def reset_chat_thread(profile_slug: str, *, thread_id: str | None = None) -> Cha
     return thread
 
 
-def clear_chat_thread(profile_slug: str) -> None:
-    path = chat_path(profile_slug)
+def clear_chat_thread(profile_slug: str, *, thread_id: str | None = None) -> None:
+    if thread_id is None:
+        from crew.profile_context import get_active_thread_id
+        thread_id = get_active_thread_id() or "default"
+    path = chat_path(profile_slug, thread_id)
     if path.exists():
         path.unlink()
 
 
-def append_chat_message(profile_slug: str, message: ChatMessage, *, thread_id: str = "default") -> ChatThreadState:
+def list_chat_threads(profile_slug: str) -> list[ChatThreadState]:
+    p_dir = persistence.profile_dir(_clean_slug(profile_slug))
+    if not p_dir.exists():
+        return []
+    threads = []
+    for path in p_dir.glob("study_chat_*.json"):
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            thread = ChatThreadState.model_validate(data)
+            threads.append(thread)
+        except Exception:
+            continue
+    threads.sort(key=lambda t: t.updated_at, reverse=True)
+    return threads
+
+
+def append_chat_message(profile_slug: str, message: ChatMessage, *, thread_id: str | None = None) -> ChatThreadState:
     thread = load_chat_thread(profile_slug, thread_id=thread_id)
     thread.messages.append(message)
     save_chat_thread(thread)
@@ -70,7 +89,7 @@ def replace_active_proposals(
     profile_slug: str,
     proposals: list[CourseProposal],
     *,
-    thread_id: str = "default",
+    thread_id: str | None = None,
 ) -> ChatThreadState:
     thread = load_chat_thread(profile_slug, thread_id=thread_id)
     thread.active_proposals = proposals
@@ -83,7 +102,7 @@ def add_trace_artifact(
     *,
     trace_dir: str | None,
     state_path: str | None,
-    thread_id: str = "default",
+    thread_id: str | None = None,
 ) -> ChatThreadState:
     thread = load_chat_thread(profile_slug, thread_id=thread_id)
     artifact = {key: value for key, value in {"trace_dir": trace_dir, "state_path": state_path}.items() if value}
@@ -105,7 +124,7 @@ def append_turn(
     assistant_content: str,
     proposals: list[CourseProposal],
     rolling_summary: str,
-    thread_id: str = "default",
+    thread_id: str | None = None,
 ) -> ChatThreadState:
     proposals_list = list(proposals) if proposals is not None else []
     thread = load_chat_thread(profile_slug, thread_id=thread_id)

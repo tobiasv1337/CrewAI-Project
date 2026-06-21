@@ -891,7 +891,7 @@ def run_study_assistant_query(
     from crew.chat_models import ActionDecision, StudyChatFlowState
     from crew.chat_persistence import add_trace_artifact
     from crew.isis_client import use_default_isis_client
-    from crew.profile_context import use_grade_manager_profile
+    from crew.profile_context import use_grade_manager_profile, use_chat_thread_id
     from crew.state import collect_moses_state_artifacts
     from crew.study_chat_flow import StudyChatFlow, StudyChatFlowRuntime
     from crew.tools.proposal_tools import collect_course_proposals
@@ -934,7 +934,7 @@ def run_study_assistant_query(
         ui_decisions=ui_decisions_list,
         isis_session_mode="session" if isis_client is not None else "env",
     ).model_dump(mode="json")
-    with use_grade_manager_profile(profile_slug), use_default_isis_client(isis_client), collect_moses_state_artifacts(), collect_course_proposals(), capture_tool_traces(
+    with use_grade_manager_profile(profile_slug), use_chat_thread_id(thread_id), use_default_isis_client(isis_client), collect_moses_state_artifacts(), collect_course_proposals(), capture_tool_traces(
         enabled=trace,
         query=query,
         student_context=student_context or "No student context supplied.",

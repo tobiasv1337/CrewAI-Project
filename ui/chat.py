@@ -19,7 +19,13 @@ from core.models import Module
 from core.persistence import load_modules
 from core.registry import create_program, list_relevant_programs, list_selectable_programs
 from crew.chat_models import ActionDecision, ChatMessage, CourseProposal
-from crew.chat_persistence import clear_chat_thread, load_chat_thread, reset_chat_thread, save_chat_thread
+from crew.chat_persistence import (
+    clear_chat_thread,
+    load_chat_thread,
+    reset_chat_thread,
+    save_chat_thread,
+    list_chat_threads,
+)
 from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL
 from crew.isis_client import IsisCredentials, MoodleRestClient, login_via_playwright_sync
 from crew.semester_context import semester_reference_context
@@ -60,13 +66,21 @@ class ChatRuntimeSettings:
     show_agent_chat: bool = False
 
 
+def _get_active_thread_id(profile_slug: str) -> str:
+    key = f"active_thread_id_{profile_slug}"
+    if key not in st.session_state:
+        st.session_state[key] = "default"
+    return st.session_state[key]
+
+
 def render_chat_page() -> None:
     inject_chat_css()
     profile_slug = str(st.session_state.get("active_profile") or "primary")
     profile_name = _active_profile_display_name(profile_slug)
 
-    settings = _render_chat_config_panel(profile_slug)
-    thread = load_chat_thread(profile_slug)
+    active_tid = _get_active_thread_id(profile_slug)
+    settings = _render_chat_config_panel(profile_slug, active_tid=active_tid)
+    thread = load_chat_thread(profile_slug, thread_id=active_tid)
     
     # Initialize UI decision state from on-disk active proposals if not present
     typed_proposals = [_proposal_model(item) for item in thread.active_proposals]
@@ -87,7 +101,7 @@ def render_chat_page() -> None:
             if toggle_key not in st.session_state:
                 st.session_state[toggle_key] = (action.status != "declined")
 
-    messages = get_profile_messages(profile_slug)
+    messages = get_profile_messages(profile_slug, thread_id=active_tid)
 
     st.markdown(
         _clean_html(
@@ -102,6 +116,69 @@ def render_chat_page() -> None:
         ),
         unsafe_allow_html=True,
     )
+
+    # ── Session Selector & Actions ───────────────────────────────────────────
+    threads = list_chat_threads(profile_slug)
+    if not threads:
+        threads = [load_chat_thread(profile_slug, thread_id="default")]
+    
+    def thread_label(t) -> str:
+        if t.thread_id == "default":
+            first_user = next((m.content for m in t.messages if m.role == "user"), None)
+            if first_user:
+                return f"Default: {first_user[:30]}" + ("..." if len(first_user) > 30 else "")
+            return "Default Chat"
+        first_user = next((m.content for m in t.messages if m.role == "user"), None)
+        if first_user:
+            return first_user[:35] + ("..." if len(first_user) > 35 else "")
+        try:
+            dt = datetime.fromisoformat(t.updated_at)
+            return f"Chat on {dt.strftime('%b %d, %H:%M')}"
+        except Exception:
+            return f"Chat: {t.thread_id[:8]}"
+            
+    thread_options = {t.thread_id: thread_label(t) for t in threads}
+    if active_tid not in thread_options:
+        t_active = load_chat_thread(profile_slug, thread_id=active_tid)
+        threads.insert(0, t_active)
+        thread_options[active_tid] = thread_label(t_active)
+        
+    col_sel, col_new, col_del = st.columns([3, 1, 1])
+    with col_sel:
+        selected_tid = st.selectbox(
+            "Session Selector",
+            options=list(thread_options.keys()),
+            format_func=lambda tid: thread_options[tid],
+            index=list(thread_options.keys()).index(active_tid),
+            key=f"chat_session_selector_{profile_slug}",
+            label_visibility="collapsed"
+        )
+        if selected_tid != active_tid:
+            st.session_state[f"active_thread_id_{profile_slug}"] = selected_tid
+            st.rerun()
+            
+    with col_new:
+        if st.button("＋ New Chat", key=f"chat_new_btn_header_{profile_slug}", use_container_width=True, type="secondary"):
+            new_t = reset_chat_thread(profile_slug)
+            st.session_state[f"active_thread_id_{profile_slug}"] = new_t.thread_id
+            _set_profile_messages(profile_slug, [])
+            _clear_all_course_card_state(profile_slug)
+            st.rerun()
+            
+    with col_del:
+        is_default = (active_tid == "default")
+        btn_label = "🗑️ Clear" if is_default else "🗑️ Delete"
+        if st.button(btn_label, key=f"chat_del_btn_header_{profile_slug}", use_container_width=True, type="secondary"):
+            if is_default:
+                clear_chat_thread(profile_slug, thread_id="default")
+            else:
+                clear_chat_thread(profile_slug, thread_id=active_tid)
+                st.session_state[f"active_thread_id_{profile_slug}"] = "default"
+            _set_profile_messages(profile_slug, [])
+            _clear_all_course_card_state(profile_slug)
+            st.rerun()
+            
+    st.markdown("<div style='margin-bottom: 0.8rem;'></div>", unsafe_allow_html=True)
 
     if not messages:
         _render_empty_state(profile_slug)
@@ -135,6 +212,7 @@ def render_chat_page() -> None:
                 proposal_decisions=proposal_decisions,
                 ui_decisions=ui_decisions,
                 approved_actions=pending_prompt.get("approved_actions") or [],
+                thread_id=active_tid,
             )
 
     if thread.active_proposals and not run_active and not clear_pass:
@@ -162,7 +240,7 @@ def render_chat_page() -> None:
         st.rerun()
 
 
-def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
+def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") -> ChatRuntimeSettings:
     with st.expander("Configuration & Connections", expanded=False):
         col_isis, col_agent = st.columns(2)
 
@@ -236,12 +314,15 @@ def _render_chat_config_panel(profile_slug: str) -> ChatRuntimeSettings:
         st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
         col_new, col_clear = st.columns(2)
         if col_new.button("New chat", type="secondary", key=f"chat_new_{profile_slug}", use_container_width=True):
-            reset_chat_thread(profile_slug)
+            new_t = reset_chat_thread(profile_slug)
+            st.session_state[f"active_thread_id_{profile_slug}"] = new_t.thread_id
             _set_profile_messages(profile_slug, [])
             _clear_all_course_card_state(profile_slug)
             st.rerun()
         if col_clear.button("Clear persisted chat", type="secondary", key=f"chat_clear_{profile_slug}", use_container_width=True):
-            clear_chat_thread(profile_slug)
+            clear_chat_thread(profile_slug, thread_id=active_tid)
+            if active_tid != "default":
+                st.session_state[f"active_thread_id_{profile_slug}"] = "default"
             _set_profile_messages(profile_slug, [])
             _clear_all_course_card_state(profile_slug)
             st.rerun()
@@ -407,6 +488,7 @@ def _run_and_render_assistant_turn(
     proposal_decisions: list[dict[str, Any]] | None = None,
     ui_decisions: list[ActionDecision] | None = None,
     approved_actions: list[dict[str, Any]] | list[ActionDecision] | None = None,
+    thread_id: str = "default",
 ) -> None:
     events = initial_live_trace_events(prompt, settings)
     event_queue: Queue[dict[str, Any]] = Queue()
@@ -438,6 +520,7 @@ def _run_and_render_assistant_turn(
                 future = executor.submit(
                     _run_chat_query,
                     profile_slug=profile_slug,
+                    thread_id=thread_id,
                     prompt=prompt,
                     settings=settings,
                     student_context=student_context,
@@ -495,9 +578,9 @@ def _run_and_render_assistant_turn(
                 "trace_dir": str(result.trace_dir) if result.trace_dir else None,
                 "metadata": {"workbench": workbench, "agent_dialogue": agent_dialogue} if workbench else {},
             }
-            previous_proposals = list(load_chat_thread(profile_slug).active_proposals)
+            previous_proposals = list(load_chat_thread(profile_slug, thread_id=thread_id).active_proposals)
             course_proposals = resolve_course_proposals(result, workbench)
-            _update_or_append_assistant_message(profile_slug, assistant_message, proposals=course_proposals)
+            _update_or_append_assistant_message(profile_slug, assistant_message, proposals=course_proposals, thread_id=thread_id)
             if result.executed_actions:
                 _clear_course_card_state(profile_slug, previous_proposals)
 
@@ -524,13 +607,14 @@ def _run_and_render_assistant_turn(
                 _render_live_trace(events, completed=True)
             content = f"Could not run the Study Assistant: `{exc}`"
             st.error(content)
-            _append_message(profile_slug, {"role": "assistant", "content": content, "created_at": _now_iso()})
+            _append_message(profile_slug, {"role": "assistant", "content": content, "created_at": _now_iso()}, thread_id=thread_id)
             st.rerun()
 
 
 def _run_chat_query(
     *,
     profile_slug: str,
+    thread_id: str,
     prompt: str,
     settings: ChatRuntimeSettings,
     student_context: str,
@@ -544,6 +628,7 @@ def _run_chat_query(
         student_context=student_context,
         allow_temp_enrollment=settings.allow_temp_enrollment,
         profile_slug=profile_slug,
+        thread_id=thread_id,
         approved_actions=list(approved_actions or []),
         ui_decisions=list(ui_decisions or []),
         isis_client=isis_client,
@@ -1290,6 +1375,10 @@ def _interaction_from_tool_payload(
     input_data = _coerce_mapping(tool_input)
     sender_label, sender_avatar, sender_class = _clean_agent_label(str(sender or "Orchestrator"))
     receiver_label, receiver_avatar, receiver_class = _clean_agent_label(_receiver_from_tool_input(input_data))
+    
+    question_full = _delegation_request_from_tool_input(input_data)
+    response_full = "" if response is None else str(response).strip()
+    
     return {
         "call_id": call_id,
         "tool_name": str(tool_name or ""),
@@ -1299,8 +1388,10 @@ def _interaction_from_tool_payload(
         "receiver": receiver_label,
         "receiver_avatar": receiver_avatar,
         "receiver_class": receiver_class,
-        "question": _delegation_request_from_tool_input(input_data),
-        "response": _preview_dialogue_text(response, limit=1800),
+        "question": _preview_dialogue_text(question_full, limit=1400),
+        "question_full": question_full,
+        "response": _preview_dialogue_text(response_full, limit=1800),
+        "response_full": response_full,
         "status": status,
         "elapsed_ms": _optional_int(elapsed_ms),
         "duration_ms": _optional_int(duration_ms),
@@ -1355,7 +1446,7 @@ def _delegation_request_from_tool_input(tool_input: dict[str, Any]) -> str:
     context = str(tool_input.get("context") or "").strip()
     if context and not any(context in part for part in request_parts):
         request_parts.append(f"Context: {context}")
-    return _preview_dialogue_text("\n\n".join(request_parts) or "Delegation request captured without readable text.", limit=1400)
+    return "\n\n".join(request_parts) or "Delegation request captured without readable text."
 
 
 def _clean_agent_label(role_or_label: str) -> tuple[str, str, str]:
@@ -1461,6 +1552,32 @@ def _render_agent_interactions_panel(interactions: list[dict[str, Any]], *, live
     st.markdown(_compile_agent_dialogue_html(interactions, live=live), unsafe_allow_html=True)
 
 
+def _render_dialogue_body_html(preview_text: str, full_text: str | None = None) -> str:
+    md = MarkdownIt()
+    preview_str = str(preview_text or "").strip()
+    full_str = str(full_text or "").strip()
+    
+    if not full_str or len(full_str) <= len(preview_str):
+        return md.render(preview_str) if preview_str else ""
+        
+    preview_html = md.render(preview_str)
+    full_html = md.render(full_str)
+    
+    import uuid
+    uniq = uuid.uuid4().hex[:6]
+    
+    return f"""
+    <details class="agent-dialogue-expandable" id="details-{uniq}">
+      <summary class="agent-dialogue-expand-trigger">
+        <div class="agent-dialogue-preview-text">{preview_html}</div>
+        <span class="agent-dialogue-expand-label show-more">[Show full message ({len(full_str) - len(preview_str)} more chars)]</span>
+        <span class="agent-dialogue-expand-label show-less" style="display: none;">[Hide full message]</span>
+      </summary>
+      <div class="agent-dialogue-full-text">{full_html}</div>
+    </details>
+    """
+
+
 def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bool = False) -> str:
     if not interactions:
         message = (
@@ -1489,14 +1606,20 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
         receiver_class = str(item.get("receiver_class") or "specialist")
         sender_avatar = str(item.get("sender_avatar") or "🧭")
         receiver_avatar = str(item.get("receiver_avatar") or "🤖")
-        question_html = _dialogue_text_html(str(item.get("question") or "Delegation request captured without readable text."))
-        response = str(item.get("response") or "")
+        
+        question_html = _render_dialogue_body_html(
+            item.get("question") or "Delegation request captured without readable text.",
+            item.get("question_full")
+        )
+        response = item.get("response") or ""
+        response_full = item.get("response_full")
         status = str(item.get("status") or "running")
         duration = item.get("duration_ms")
         duration_html = f'<span>{html.escape(str(duration))} ms</span>' if duration is not None else ""
         status_label = "working" if status == "running" else status
+        
         response_html = (
-            _dialogue_text_html(response or "Completed without a response preview.")
+            _render_dialogue_body_html(response or "Completed without a response preview.", response_full)
             if status in {"completed", "warning", "error"}
             else '<em>Thinking and gathering information...</em>'
         )
@@ -1541,7 +1664,9 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
 
 
 def _dialogue_text_html(text: str) -> str:
-    return "<br>".join(html.escape(str(text or "")).splitlines())
+    # Kept as fallback for any external caller, but dialogue body html now renders markdown.
+    md = MarkdownIt()
+    return md.render(text or "")
 
 
 def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
@@ -2340,8 +2465,8 @@ def refresh_streamlit_profile_state(profile_slug: str) -> None:
     st.session_state["managers"] = {key: DegreeManager(create_program(key)) for key in relevant}
 
 
-def get_profile_messages(profile_slug: str) -> list[dict[str, Any]]:
-    thread = load_chat_thread(profile_slug)
+def get_profile_messages(profile_slug: str, thread_id: str = "default") -> list[dict[str, Any]]:
+    thread = load_chat_thread(profile_slug, thread_id=thread_id)
     messages = [message.model_dump(mode="json") for message in thread.messages]
     store = _chat_store()
     store[profile_slug] = messages
@@ -2349,8 +2474,8 @@ def get_profile_messages(profile_slug: str) -> list[dict[str, Any]]:
     return messages
 
 
-def _append_message(profile_slug: str, message: dict[str, Any]) -> None:
-    thread = load_chat_thread(profile_slug)
+def _append_message(profile_slug: str, message: dict[str, Any], thread_id: str = "default") -> None:
+    thread = load_chat_thread(profile_slug, thread_id=thread_id)
     thread.messages.append(ChatMessage.model_validate(message))
     save_chat_thread(thread)
     _set_profile_messages(profile_slug, [item.model_dump(mode="json") for item in thread.messages])
@@ -2360,8 +2485,9 @@ def _update_or_append_assistant_message(
     profile_slug: str,
     assistant_message: dict[str, Any],
     proposals: list[CourseProposal] | None = None,
+    thread_id: str = "default",
 ) -> None:
-    thread = load_chat_thread(profile_slug)
+    thread = load_chat_thread(profile_slug, thread_id=thread_id)
     updated = False
     for msg in reversed(thread.messages):
         if msg.role == "assistant":
@@ -2387,8 +2513,8 @@ def _set_profile_messages(profile_slug: str, messages: list[dict[str, Any]]) -> 
     st.session_state[CHAT_HISTORY_KEY] = store
 
 
-def _clear_active_course_proposals(profile_slug: str) -> None:
-    thread = load_chat_thread(profile_slug)
+def _clear_active_course_proposals(profile_slug: str, thread_id: str = "default") -> None:
+    thread = load_chat_thread(profile_slug, thread_id=thread_id)
     if not thread.active_proposals:
         return
     thread.active_proposals = []
@@ -2541,7 +2667,7 @@ def inject_chat_css() -> None:
         """
         <style>
         .chat-hero {
-            border-bottom: 1px solid rgba(217, 223, 232, 0.95);
+            border-bottom: 1px solid var(--border);
             padding: 0.35rem 0 1rem 0;
             margin-bottom: 1rem;
         }
@@ -2550,11 +2676,11 @@ def inject_chat_css() -> None:
             line-height: 1.2;
             margin: 0 0 0.25rem 0;
             letter-spacing: 0;
-            color: #151922;
+            color: var(--ink);
         }
         .chat-hero p {
             margin: 0;
-            color: #536070;
+            color: var(--muted);
             font-size: 0.95rem;
         }
         .chat-empty-grid {
@@ -2564,11 +2690,11 @@ def inject_chat_css() -> None:
             margin: 1rem 0 1.5rem 0;
         }
         .chat-example {
-            border: 1px solid #d8dee8;
-            background: #ffffff;
+            border: 1px solid var(--border);
+            background: var(--surface);
             border-radius: 8px;
             padding: 0.85rem;
-            color: #2d3748;
+            color: var(--ink);
             min-height: 4.25rem;
         }
         .course-choice-header {
@@ -2576,40 +2702,40 @@ def inject_chat_css() -> None:
             align-items: center;
             justify-content: space-between;
             gap: 1rem;
-            border: 1px solid #dfe7f1;
+            border: 1px solid var(--border);
             border-radius: 8px;
-            background: #f8fafc;
+            background: var(--surface-2);
             padding: 0.75rem 0.9rem;
             margin: 1rem 0 0.7rem 0;
         }
         .course-choice-kicker {
             text-transform: uppercase;
             letter-spacing: 0.07em;
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.7rem;
             font-weight: 750;
         }
         .course-choice-title {
-            color: #1e293b;
+            color: var(--ink);
             font-size: 1rem;
             font-weight: 760;
             line-height: 1.2;
             margin-top: 0.08rem;
         }
         .course-choice-header span {
-            border: 1px solid #cbd5e1;
-            background: #ffffff;
+            border: 1px solid var(--border);
+            background: var(--surface);
             border-radius: 999px;
-            color: #64748b;
+            color: var(--muted);
             font-weight: 750;
             font-size: 0.75rem;
             padding: 0.22rem 0.55rem;
             white-space: nowrap;
         }
         .course-choice-card {
-            border: 1px solid #dfe7f1;
+            border: 1px solid var(--border);
             border-radius: 8px;
-            background: #ffffff;
+            background: var(--surface);
             box-shadow: 0 2px 5px rgba(15, 23, 42, 0.04);
             padding: 0.8rem;
             min-height: 13rem;
@@ -2631,7 +2757,7 @@ def inject_chat_css() -> None:
         }
         .course-choice-card-top span {
             display: block;
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.68rem;
             font-weight: 750;
             text-transform: uppercase;
@@ -2640,7 +2766,7 @@ def inject_chat_css() -> None:
         }
         .course-choice-card-top strong {
             display: block;
-            color: #1e293b;
+            color: var(--ink);
             font-size: 0.98rem;
             font-weight: 750;
             line-height: 1.25;
@@ -2652,9 +2778,9 @@ def inject_chat_css() -> None:
             gap: 0.35rem;
         }
         .course-choice-chip {
-            border: 1px solid #dbe3ee;
-            background: #f8fafc;
-            color: #475569;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
+            color: var(--muted);
             border-radius: 999px;
             font-size: 0.7rem;
             font-weight: 700;
@@ -2665,10 +2791,20 @@ def inject_chat_css() -> None:
             background: #eff6ff;
             color: #1d4ed8;
         }
+        .stApp[data-theme="dark"] .course-choice-chip.grade-manager {
+            border-color: rgba(59, 130, 246, 0.4);
+            background: rgba(59, 130, 246, 0.1);
+            color: #60a5fa;
+        }
         .course-choice-chip.isis {
             border-color: #bbf7d0;
             background: #f0fdf4;
             color: #047857;
+        }
+        .stApp[data-theme="dark"] .course-choice-chip.isis {
+            border-color: rgba(34, 197, 94, 0.4);
+            background: rgba(34, 197, 94, 0.1);
+            color: #4ade80;
         }
         .course-choice-meta {
             display: grid;
@@ -2676,14 +2812,14 @@ def inject_chat_css() -> None:
             gap: 0.4rem;
         }
         .course-choice-meta-item {
-            border: 1px solid #edf2f7;
-            background: #f8fafc;
+            border: 1px solid var(--border);
+            background: var(--surface-2);
             border-radius: 6px;
             padding: 0.42rem 0.5rem;
         }
         .course-choice-meta-item span {
             display: block;
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.64rem;
             font-weight: 700;
             text-transform: uppercase;
@@ -2691,16 +2827,16 @@ def inject_chat_css() -> None:
         }
         .course-choice-meta-item strong {
             display: block;
-            color: #1e293b;
+            color: var(--ink);
             font-size: 0.78rem;
             line-height: 1.25;
             overflow-wrap: anywhere;
         }
         .course-choice-evidence {
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.74rem;
             line-height: 1.35;
-            border-top: 1px solid #f1f5f9;
+            border-top: 1px solid var(--border);
             padding-top: 0.48rem;
         }
         @media (max-width: 760px) {
@@ -2710,9 +2846,9 @@ def inject_chat_css() -> None:
         }
         /* Workbench Container */
         .workbench-container {
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border);
             border-radius: 12px;
-            background-color: #ffffff;
+            background-color: var(--surface);
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
             margin: 1rem 0 1.5rem 0;
             overflow: hidden;
@@ -2724,21 +2860,21 @@ def inject_chat_css() -> None:
             display: flex;
             align-items: center;
             justify-content: space-between;
-            background-color: #f8fafc;
+            background-color: var(--surface-2);
             padding: 0.85rem 1.25rem;
-            border-bottom: 1px solid #e2e8f0;
+            border-bottom: 1px solid var(--border);
         }
         .workbench-title {
             font-size: 1.05rem;
             font-weight: 700;
-            color: #1e293b;
+            color: var(--ink);
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }
         .workbench-summary {
             font-size: 0.8rem;
-            color: #64748b;
+            color: var(--muted);
             font-weight: 500;
         }
 
@@ -2770,13 +2906,13 @@ def inject_chat_css() -> None:
         /* Timeline and phase classes */
         .phases-timeline-container {
             padding: 1rem 1.25rem;
-            border-bottom: 1px solid #f1f5f9;
+            border-bottom: 1px solid var(--border);
         }
         .phases-timeline-title {
             font-size: 0.7rem;
             text-transform: uppercase;
             letter-spacing: 0.075em;
-            color: #94a3b8;
+            color: var(--muted);
             font-weight: 700;
             margin-bottom: 0.65rem;
         }
@@ -2788,35 +2924,35 @@ def inject_chat_css() -> None:
         .phase-node {
             flex: 1;
             min-width: 130px;
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border);
             border-radius: 8px;
             padding: 0.5rem 0.75rem;
-            background-color: #f8fafc;
+            background-color: var(--surface-2);
             transition: all 0.2s ease-in-out;
             display: flex;
             align-items: center;
             gap: 0.5rem;
         }
         .phase-node.idle {
-            background-color: #f8fafc;
-            color: #94a3b8;
-            border-color: #e2e8f0;
+            background-color: var(--surface-2);
+            color: var(--muted);
+            border-color: var(--border);
         }
         .phase-node.active {
-            border-color: #3b82f6;
-            background-color: #eff6ff;
-            color: #1e3a8a;
+            border-color: var(--accent);
+            background-color: rgba(59, 130, 246, 0.15);
+            color: var(--ink);
             box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
         }
         .phase-node.done {
-            border-color: #10b981;
-            background-color: #ecfdf5;
-            color: #065f46;
+            border-color: var(--success);
+            background-color: rgba(22, 163, 74, 0.15);
+            color: var(--ink);
         }
         .phase-node.error {
-            border-color: #ef4444;
-            background-color: #fef2f2;
-            color: #991b1b;
+            border-color: var(--danger);
+            background-color: rgba(220, 38, 38, 0.15);
+            color: var(--ink);
         }
         .phase-num {
             height: 18px;
@@ -2829,16 +2965,19 @@ def inject_chat_css() -> None:
             font-size: 0.7rem;
             font-weight: 700;
         }
+        .stApp[data-theme="dark"] .phase-num {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
         .phase-node.active .phase-num {
-            background-color: #3b82f6;
+            background-color: var(--accent);
             color: #ffffff;
         }
         .phase-node.done .phase-num {
-            background-color: #10b981;
+            background-color: var(--success);
             color: #ffffff;
         }
         .phase-node.error .phase-num {
-            background-color: #ef4444;
+            background-color: var(--danger);
             color: #ffffff;
         }
         .phase-txt {
@@ -2849,14 +2988,14 @@ def inject_chat_css() -> None:
         /* Flow pipeline styles */
         .flow-pipeline-container {
             padding: 0.75rem 1.25rem;
-            background-color: #f8fafc;
-            border-bottom: 1px solid #f1f5f9;
+            background-color: var(--surface-2);
+            border-bottom: 1px solid var(--border);
         }
         .flow-pipeline-title {
             font-size: 0.7rem;
             text-transform: uppercase;
             letter-spacing: 0.075em;
-            color: #94a3b8;
+            color: var(--muted);
             font-weight: 700;
             margin-bottom: 0.5rem;
         }
@@ -2867,8 +3006,8 @@ def inject_chat_css() -> None:
             align-items: center;
         }
         .flow-card {
-            border: 1px solid #e2e8f0;
-            background-color: #ffffff;
+            border: 1px solid var(--border);
+            background-color: var(--surface);
             border-radius: 6px;
             padding: 0.35rem 0.6rem;
             font-size: 0.72rem;
@@ -2876,30 +3015,36 @@ def inject_chat_css() -> None:
             align-items: center;
             gap: 0.35rem;
             font-weight: 500;
-            color: #64748b;
+            color: var(--muted);
         }
         .flow-card.active {
-            border-color: #10b981;
-            background-color: #ecfdf5;
-            color: #047857;
+            border-color: var(--success);
+            background-color: rgba(22, 163, 74, 0.15);
+            color: var(--ink);
             font-weight: 600;
             box-shadow: 0 1px 2px rgba(16, 185, 129, 0.05);
         }
         .flow-src {
             font-weight: 700;
-            color: #334155;
+            color: var(--ink);
         }
         .flow-card.active .flow-src {
-            color: #065f46;
+            color: var(--success);
+        }
+        .stApp[data-theme="dark"] .flow-card.active .flow-src {
+            color: #34d399;
         }
         .flow-connector {
-            color: #94a3b8;
+            color: var(--muted);
         }
         .flow-agt {
-            color: #475569;
+            color: var(--muted);
         }
         .flow-card.active .flow-agt {
-            color: #047857;
+            color: var(--success);
+        }
+        .stApp[data-theme="dark"] .flow-card.active .flow-agt {
+            color: #34d399;
         }
 
         /* Agents grid */
@@ -2908,12 +3053,12 @@ def inject_chat_css() -> None:
             grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
             gap: 1rem;
             padding: 1.25rem;
-            background-color: #ffffff;
+            background-color: var(--surface);
         }
         .agent-card {
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border);
             border-radius: 10px;
-            background-color: #ffffff;
+            background-color: var(--surface);
             padding: 0.85rem;
             display: flex;
             flex-direction: column;
@@ -2922,7 +3067,7 @@ def inject_chat_css() -> None:
             position: relative;
         }
         .agent-card.running {
-            border-color: #3b82f6;
+            border-color: var(--accent);
             box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
         }
         .agent-card-header {
@@ -2933,14 +3078,14 @@ def inject_chat_css() -> None:
         .agent-card-name {
             font-size: 0.85rem;
             font-weight: 700;
-            color: #1e293b;
+            color: var(--ink);
             display: flex;
             align-items: center;
             gap: 0.35rem;
         }
         .agent-card-source {
             font-size: 0.68rem;
-            color: #64748b;
+            color: var(--muted);
             font-weight: 500;
             margin-top: 0.1rem;
         }
@@ -2953,9 +3098,9 @@ def inject_chat_css() -> None:
             letter-spacing: 0.05em;
         }
         .status-badge.idle {
-            background-color: #f1f5f9;
-            color: #64748b;
-            border: 1px solid #cbd5e1;
+            background-color: var(--surface-2);
+            color: var(--muted);
+            border: 1px solid var(--border);
         }
         .status-badge.running {
             background-color: #eff6ff;
@@ -2974,7 +3119,7 @@ def inject_chat_css() -> None:
         }
         .agent-card-activity {
             font-size: 0.74rem;
-            color: #475569;
+            color: var(--ink);
             line-height: 1.35;
             min-height: 2.2rem;
             display: -webkit-box;
@@ -2986,16 +3131,16 @@ def inject_chat_css() -> None:
             display: flex;
             gap: 0.5rem;
             font-size: 0.68rem;
-            color: #64748b;
+            color: var(--muted);
             font-weight: 500;
-            border-top: 1px solid #f1f5f9;
+            border-top: 1px solid var(--border);
             padding-top: 0.5rem;
         }
         .agent-card-stats span {
-            background-color: #f8fafc;
+            background-color: var(--surface-2);
             padding: 0.1rem 0.4rem;
             border-radius: 4px;
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border);
         }
         .agent-card-tools {
             display: flex;
@@ -3004,7 +3149,7 @@ def inject_chat_css() -> None:
         }
         .no-tools {
             font-size: 0.68rem;
-            color: #94a3b8;
+            color: var(--muted);
             font-style: italic;
         }
 
@@ -3014,8 +3159,8 @@ def inject_chat_css() -> None:
             justify-content: space-between;
             align-items: center;
             font-size: 0.68rem;
-            background-color: #f8fafc;
-            border: 1px solid #e2e8f0;
+            background-color: var(--surface-2);
+            border: 1px solid var(--border);
             border-radius: 4px;
             padding: 0.25rem 0.4rem;
         }
@@ -3029,7 +3174,7 @@ def inject_chat_css() -> None:
         }
         .tool-lbl {
             font-weight: 600;
-            color: #334155;
+            color: var(--ink);
             overflow: hidden;
             text-overflow: ellipsis;
             white-space: nowrap;
@@ -3037,7 +3182,7 @@ def inject_chat_css() -> None:
         }
         .tool-dur {
             font-family: monospace;
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.62rem;
         }
 
@@ -3158,15 +3303,15 @@ def inject_chat_css() -> None:
         /* Unified Trace Artifacts Section */
         .artifacts-container {
             padding: 1rem 1.25rem;
-            border-top: 1px solid #f1f5f9;
-            border-bottom: 1px solid #f1f5f9;
-            background-color: #f8fafc;
+            border-top: 1px solid var(--border);
+            border-bottom: 1px solid var(--border);
+            background-color: var(--surface-2);
         }
         .section-title {
             font-size: 0.7rem;
             text-transform: uppercase;
             letter-spacing: 0.075em;
-            color: #94a3b8;
+            color: var(--muted);
             font-weight: 700;
             margin-bottom: 0.65rem;
         }
@@ -3180,18 +3325,18 @@ def inject_chat_css() -> None:
             align-items: center;
             justify-content: space-between;
             font-size: 0.75rem;
-            background-color: #ffffff;
-            border: 1px solid #e2e8f0;
+            background-color: var(--surface);
+            border: 1px solid var(--border);
             border-radius: 6px;
             padding: 0.5rem 0.75rem;
         }
         .artifact-label {
             font-weight: 600;
-            color: #334155;
+            color: var(--ink);
         }
         .artifact-path {
             font-family: monospace;
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.7rem;
             word-break: break-all;
             user-select: all;
@@ -3200,33 +3345,33 @@ def inject_chat_css() -> None:
         /* Unified Trace Tool Logs Section */
         .tool-logs-container {
             padding: 1.25rem;
-            background-color: #ffffff;
+            background-color: var(--surface);
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
         }
         .tool-log-item {
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border);
             border-radius: 8px;
             overflow: hidden;
-            background-color: #f8fafc;
+            background-color: var(--surface-2);
             transition: border-color 0.2s ease;
         }
         .tool-log-item[open] {
-            border-color: #cbd5e1;
+            border-color: var(--border);
             box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
         }
         .tool-log-summary {
             padding: 0.65rem 1rem;
             font-size: 0.78rem;
             font-weight: 600;
-            color: #334155;
+            color: var(--ink);
             cursor: pointer;
             display: flex;
             align-items: center;
             gap: 0.5rem;
             user-select: none;
-            background-color: #f8fafc;
+            background-color: var(--surface-2);
         }
         .tool-log-summary::-webkit-details-marker {
             display: none;
@@ -3237,7 +3382,7 @@ def inject_chat_css() -> None:
         .tool-log-summary::before {
             content: "▶";
             font-size: 0.65rem;
-            color: #64748b;
+            color: var(--muted);
             transition: transform 0.2s ease;
             display: inline-block;
         }
@@ -3245,18 +3390,21 @@ def inject_chat_css() -> None:
             transform: rotate(90deg);
         }
         .tool-log-id {
-            color: #94a3b8;
+            color: var(--muted);
             font-family: monospace;
             font-weight: bold;
         }
         .tool-log-agent {
             color: #4f46e5;
         }
+        .stApp[data-theme="dark"] .tool-log-agent {
+            color: #818cf8;
+        }
         .tool-log-arrow {
-            color: #94a3b8;
+            color: var(--muted);
         }
         .tool-log-name {
-            color: #0f172a;
+            color: var(--ink);
             font-weight: 700;
         }
         .tool-log-status-badge {
@@ -3284,15 +3432,15 @@ def inject_chat_css() -> None:
         }
         .tool-log-details {
             padding: 0.85rem 1rem;
-            border-top: 1px solid #e2e8f0;
-            background-color: #ffffff;
+            border-top: 1px solid var(--border);
+            background-color: var(--surface);
             display: flex;
             flex-direction: column;
             gap: 0.75rem;
         }
         .tool-log-meta {
             font-size: 0.68rem;
-            color: #64748b;
+            color: var(--muted);
             font-weight: 500;
         }
         .tool-log-section {
@@ -3304,7 +3452,7 @@ def inject_chat_css() -> None:
             font-size: 0.7rem;
             text-transform: uppercase;
             font-weight: 700;
-            color: #94a3b8;
+            color: var(--muted);
             letter-spacing: 0.05em;
         }
         .tool-log-code {
@@ -3323,9 +3471,9 @@ def inject_chat_css() -> None:
 
         /* Agent dialogue panel */
         .agent-dialogue-panel {
-            border: 1px solid #dfe7f1;
+            border: 1px solid var(--border);
             border-radius: 8px;
-            background: #ffffff;
+            background: var(--surface);
             overflow: hidden;
             margin: 0.7rem 0 1rem 0;
         }
@@ -3335,21 +3483,21 @@ def inject_chat_css() -> None:
             align-items: center;
             gap: 0.75rem;
             padding: 0.75rem 0.9rem;
-            border-bottom: 1px solid #e7edf5;
-            background: #f8fafc;
+            border-bottom: 1px solid var(--border);
+            background: var(--surface-2);
         }
         .agent-dialogue-title {
-            color: #172033;
+            color: var(--ink);
             font-weight: 760;
             font-size: 0.95rem;
             line-height: 1.2;
         }
         .agent-dialogue-count,
         .agent-dialogue-live {
-            border: 1px solid #cbd5e1;
+            border: 1px solid var(--border);
             border-radius: 999px;
-            color: #526072;
-            background: #ffffff;
+            color: var(--muted);
+            background: var(--surface);
             font-size: 0.68rem;
             font-weight: 760;
             padding: 0.18rem 0.5rem;
@@ -3362,7 +3510,7 @@ def inject_chat_css() -> None:
         }
         .agent-dialogue-empty {
             padding: 1rem;
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.86rem;
         }
         .agent-dialogue-list {
@@ -3390,8 +3538,8 @@ def inject_chat_css() -> None:
             width: 2rem;
             height: 2rem;
             border-radius: 999px;
-            border: 1px solid #d8e0eb;
-            background: #ffffff;
+            border: 1px solid var(--border);
+            background: var(--surface);
             display: flex;
             align-items: center;
             justify-content: center;
@@ -3400,51 +3548,51 @@ def inject_chat_css() -> None:
             flex: 0 0 auto;
         }
         .agent-dialogue-bubble {
-            border: 1px solid #dce4ee;
+            border: 1px solid var(--border);
             border-radius: 8px;
-            background: #ffffff;
+            background: var(--surface);
             padding: 0.62rem 0.72rem;
             min-width: 0;
             overflow-wrap: anywhere;
         }
         .agent-dialogue-message.request .agent-dialogue-bubble {
-            background: #f8fafc;
+            background: var(--surface-2);
         }
         .agent-dialogue-message.response.completed .agent-dialogue-bubble {
-            border-color: #bbf7d0;
-            background: #f7fef9;
+            border-color: rgba(34, 197, 94, 0.4);
+            background: rgba(34, 197, 94, 0.08);
         }
         .agent-dialogue-message.response.running .agent-dialogue-bubble {
-            border-color: #bfdbfe;
-            background: #f7fbff;
+            border-color: rgba(59, 130, 246, 0.4);
+            background: rgba(59, 130, 246, 0.08);
         }
         .agent-dialogue-message.response.warning .agent-dialogue-bubble {
-            border-color: #fde68a;
-            background: #fffdf3;
+            border-color: rgba(245, 158, 11, 0.4);
+            background: rgba(245, 158, 11, 0.08);
         }
         .agent-dialogue-message.response.error .agent-dialogue-bubble {
-            border-color: #fecaca;
-            background: #fff7f7;
+            border-color: rgba(239, 68, 68, 0.4);
+            background: rgba(239, 68, 68, 0.08);
         }
         .agent-dialogue-meta {
             display: flex;
             flex-wrap: wrap;
             align-items: center;
             gap: 0.35rem;
-            color: #64748b;
+            color: var(--muted);
             font-size: 0.72rem;
             line-height: 1.25;
             margin-bottom: 0.35rem;
         }
         .agent-dialogue-meta strong {
-            color: #1f2937;
+            color: var(--ink);
             font-size: 0.78rem;
         }
         .agent-dialogue-meta span {
-            color: #64748b;
+            color: var(--muted);
         }
         .agent-dialogue-body {
-            color: #273244;
+            color: var(--ink);
             font-size: 0.82rem;
             line-height: 1.46;
         }
@@ -3459,8 +3607,8 @@ def inject_chat_css() -> None:
 
         /* Proposals panel styling */
         .pending-write-card {
-            border: 1px solid #cbd5e1;
-            background-color: #f8fafc;
+            border: 1px solid var(--border);
+            background-color: var(--surface-2);
             border-radius: 10px;
             padding: 1rem;
             margin: 1.25rem 0 0.85rem 0;
@@ -3468,16 +3616,16 @@ def inject_chat_css() -> None:
         .pending-write-title {
             font-size: 1.05rem;
             font-weight: 700;
-            color: #0f172a;
+            color: var(--ink);
             margin-bottom: 0.25rem;
         }
         .pending-write-subtitle {
             font-size: 0.8rem;
-            color: #475569;
+            color: var(--muted);
         }
         .divider {
             height: 1px;
-            background-color: #e2e8f0;
+            background-color: var(--border);
             margin: 0.85rem 0;
         }
 
@@ -3515,10 +3663,10 @@ def inject_chat_css() -> None:
         .tool-log-output-markdown {
             margin: 0;
             padding: 0.75rem;
-            background-color: #f8fafc;
-            color: #334155;
+            background-color: var(--surface-2);
+            color: var(--ink);
             border-radius: 6px;
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border);
             font-size: 0.78rem;
             line-height: 1.45;
             overflow-x: auto;
@@ -3535,7 +3683,7 @@ def inject_chat_css() -> None:
             font-size: 0.9rem !important;
             font-weight: 700 !important;
             margin: 0.65rem 0 0.3rem 0 !important;
-            color: #1e293b !important;
+            color: var(--ink) !important;
         }
         .tool-log-output-markdown h1:first-child, 
         .tool-log-output-markdown h2:first-child, 
@@ -3561,11 +3709,11 @@ def inject_chat_css() -> None:
         }
         .tool-log-output-markdown code {
             font-family: monospace;
-            background-color: #f1f5f9;
+            background-color: var(--surface);
             padding: 0.1rem 0.25rem;
             border-radius: 3px;
             font-size: 0.72rem;
-            color: #0f172a;
+            color: var(--ink);
         }
         .tool-log-output-markdown pre code {
             background-color: transparent;
@@ -3581,12 +3729,12 @@ def inject_chat_css() -> None:
         }
         .tool-log-output-markdown th, 
         .tool-log-output-markdown td {
-            border: 1px solid #e2e8f0;
+            border: 1px solid var(--border);
             padding: 0.25rem 0.4rem;
             text-align: left;
         }
         .tool-log-output-markdown th {
-            background-color: #f1f5f9;
+            background-color: var(--surface-2);
             font-weight: 700;
         }
         </style>

@@ -1886,14 +1886,24 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
         complexity = intent.get("complexity") or "Unknown"
         rationale = intent.get("rationale") or ""
         sources = ", ".join(intent.get("required_sources") or [])
+        sources_html = (
+            f'<div class="intent-sources"><strong>Required sources:</strong> {html.escape(sources)}</div>'
+            if sources
+            else ""
+        )
+        rationale_html = (
+            f'<div class="intent-rationale">Rationale: {html.escape(rationale)}</div>'
+            if rationale
+            else ""
+        )
         intent_html = f"""
-        <div class="intent-banner" style="margin: 0.75rem 0 1rem 0; padding: 0.85rem 1rem; background: #f8fafc; border: 1px solid #e2e8f0; border-left: 4px solid #0f766e; border-radius: 8px; font-size: 0.88rem; color: #334155;">
-          <div style="display: flex; justify-content: space-between; align-items: center; font-weight: 600; color: #0f172a; margin-bottom: 0.25rem;">
-            <span>Detected Intent: <code style="color: #0f766e; font-size: 0.9rem; font-weight: 700; background: #f1f5f9; padding: 0.1rem 0.35rem; border-radius: 4px;">{html.escape(route)}</code></span>
-            <span style="font-size: 0.75rem; text-transform: uppercase; color: #64748b; background: #e2e8f0; padding: 0.15rem 0.45rem; border-radius: 9999px;">{html.escape(complexity)} complexity</span>
+        <div class="intent-banner">
+          <div class="intent-banner-head">
+            <span>Detected Intent: <code class="intent-route">{html.escape(route)}</code></span>
+            <span class="intent-complexity">{html.escape(complexity)} complexity</span>
           </div>
-          {f'<div style="font-size: 0.8rem; color: #64748b; margin-top: 0.2rem;"><strong>Required sources:</strong> {html.escape(sources)}</div>' if sources else ''}
-          {f'<div style="font-size: 0.8rem; color: #475569; margin-top: 0.35rem; font-style: italic;">Rationale: {html.escape(rationale)}</div>' if rationale else ''}
+          {sources_html}
+          {rationale_html}
         </div>
         """
 

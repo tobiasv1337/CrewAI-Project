@@ -20,7 +20,7 @@ from ui.program_labels import short_program_label
 
 
 DISCARD_STRATEGY_BY_PROGRAM_KEY = "grade_discard_strategy_by_program"
-DEFAULT_DISCARD_VARIANT_KEY = "whole_modules"
+DEFAULT_DISCARD_VARIANT_KEY = "partial_boundary"
 
 
 def _strategy_settings() -> dict[str, str]:

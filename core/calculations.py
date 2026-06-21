@@ -377,7 +377,7 @@ def _build_discard_variants(
             "delta": 0.0,
             "raw_delta": 0.0,
             "differs_from_selected": False,
-            "help": "Text-near interpretation: only full modules are excluded and the 30-credit limit is not exceeded.",
+            "help": "Whole-module-only interpretation: only full modules are excluded and the 30-credit limit is not exceeded.",
             "modules": [
                 {
                     "ID": module.id,
@@ -417,7 +417,7 @@ def _build_discard_variants(
             "delta": partial_grade - selected_final_grade,
             "raw_delta": partial_raw - selected_raw_average,
             "differs_from_selected": partial_differs,
-            "help": "Informational only: assumes boundary modules can be weighted partly to fill the 30-credit limit exactly.",
+            "help": "Boundary interpretation: boundary modules can be weighted partly to fill the 30-credit limit exactly.",
             "modules": partial_modules,
         }
     )

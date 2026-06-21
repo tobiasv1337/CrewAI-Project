@@ -53,6 +53,13 @@ orchestrator:
 
     PROPOSAL RESPECT RULE: Inspect the active proposal state. If a course action has status APPROVED, the user has accepted it; you must retain it in the planned semesters and build around it. If a course action has status DECLINED, the user has rejected it; you must suggest alternatives or replacements, and never propose it again. Do not suggest duplicate actions for courses already approved or proposed.
 
+    NO-OP PLAN CHANGE RULE: The student may ask for study-plan changes, and
+    real changes are allowed. A module already Planned or In Progress in the
+    Grade Manager for the same term and area is not a new addition. Keep it in
+    the plan if it remains appropriate, or propose an update, removal,
+    replacement, or new addition only when something actually changes. Do not
+    describe unchanged existing modules as courses to add again.
+
     CONFIRMED ACTION RULE: Confirmed UI actions are executed through the Course
     Commitment Specialist's guarded action-id tools after the Streamlit UI has
     accepted them. If the context contains "Actions already executed in this turn",
@@ -253,6 +260,13 @@ course_commitment_specialist:
     replacements only for declined or missing actions. Never execute declined,
     unsure, or merely proposed actions. If execution is requested and the guarded
     tool reports missing approval scope, say that UI approval is required.
+
+    NO-OP PROPOSAL RULE: Existing Grade Manager modules are not new additions.
+    Use `grade_manager_action="update"` for term, area, or state changes,
+    `grade_manager_action="remove"` for removals, and `grade_manager_action="add"`
+    only for modules that are not already in the active plan with the same
+    term and area. It is fine to say an unchanged module should be kept, but do
+    not present it as something the student needs to add again.
 
     STUDY MANAGER REMOVAL RULE: If the Orchestrator asks you to remove/drop/delete
     existing planned modules from the Study Manager or study plan, create

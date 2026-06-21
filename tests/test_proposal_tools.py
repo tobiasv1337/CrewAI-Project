@@ -260,6 +260,46 @@ def test_proposal_tool_reuses_verified_moses_isis_candidate(monkeypatch, tmp_pat
     assert actions[1].isis_payload["isis_resolution_status"] == "resolved"
 
 
+def test_proposal_tool_suppresses_existing_module_with_same_term_and_area(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    persistence.save_modules(
+        [
+            Module(
+                id="ana2",
+                name="Analysis II für Ingenieurwissenschaften",
+                state=ModuleState.PLANNED,
+                program_key="TU Berlin - Technische Informatik (B.Sc.)",
+                cp=9,
+                area="Mandatory",
+                is_graded=True,
+                term="WS 26/27",
+                moses_number="20130",
+                moses_version=4,
+            )
+        ],
+        "primary",
+    )
+
+    proposal = build_course_proposal(
+        proposal_title="Keep Analysis II",
+        proposal_summary="Analysis II remains in the plan.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Analysis II für Ingenieurwissenschaften",
+                rationale="The module is already planned for the same term and area.",
+                module_query="20130",
+                version=4,
+                term="WS 26/27",
+                area="Mandatory",
+                program_key="tech_informatik_bsc",
+                include_isis=False,
+            )
+        ],
+    )
+
+    assert proposal.actions == []
+
+
 def test_proposal_tool_turns_existing_module_with_new_term_into_update(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     persistence.save_modules(

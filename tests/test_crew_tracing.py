@@ -159,7 +159,7 @@ def test_degree_regulations_tools_are_labeled_for_workbench():
     assert call.source_system == "Degree Regulations"
     assert call.badges == ["Degree Regulations"]
     assert [group.agent_label for group in workbench.groups] == ["Degree Regulations Specialist"]
-    assert [item["active"] for item in workbench.source_flow] == [False, False, True, False, False, True]
+    assert [item["active"] for item in workbench.source_flow] == [False, False, False, True, False, False, True]
 
 
 def test_commitment_execution_tool_is_labeled_for_workbench():
@@ -258,7 +258,7 @@ def test_trace_workbench_groups_calls_by_agent_and_source(tmp_path):
     workbench = build_trace_workbench(calls, run_id="grouped", run_dir=tmp_path / "grouped")
 
     assert [group.agent_label for group in workbench.groups] == ["Study Advisor", "MOSES Module Researcher"]
-    assert [item["active"] for item in workbench.source_flow] == [True, True, False, False, False, True]
+    assert [item["active"] for item in workbench.source_flow] == [True, False, True, False, False, False, True]
 
     run_dir = tmp_path / "grouped"
     run_dir.mkdir()
@@ -267,6 +267,31 @@ def test_trace_workbench_groups_calls_by_agent_and_source(tmp_path):
     loaded = load_trace_workbench(run_dir)
     assert loaded.total_tool_calls == 2
     assert loaded.artifacts["trace"] == str(trace_path)
+
+
+def test_trace_workbench_groups_grade_optimization_calls(tmp_path):
+    event = {
+        "call_id": 3,
+        "tool_name": "Run Target Grade Optimizer",
+        "tool_input": {"target_grade": 1.7},
+        "output_preview": "Target grade 1.7 is feasible.",
+        "output_chars": 29,
+        "agent_role": "TU Berlin Grade Optimization Specialist",
+        "duration_ms": 90,
+    }
+
+    call = tool_call_summary_from_event(event)
+    workbench = build_trace_workbench([call], run_id="grade-optimization", run_dir=tmp_path / "grade-optimization")
+
+    assert call.agent_label == "Grade Optimization Specialist"
+    assert call.source_system == "Grade Optimization"
+    assert [group.agent_label for group in workbench.groups] == ["Grade Optimization Specialist"]
+    assert workbench.source_flow[1] == {
+        "source": "Grade Optimization",
+        "agent": "Grade Optimization Specialist",
+        "target": "Orchestrator",
+        "active": True,
+    }
 
 
 def test_capture_tool_traces_can_be_disabled(tmp_path):

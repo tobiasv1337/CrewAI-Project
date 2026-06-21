@@ -190,8 +190,36 @@ def test_live_workbench_shows_lifecycle_activity_before_tool_calls():
     assert groups["Orchestrator"]["status"] == "running"
     assert groups["Orchestrator"]["llm_calls"] == 1
     assert groups["Study Advisor"]["activity"] == "Ready for Grade Manager reads and confirmed study-plan writes."
+    assert groups["Grade Optimization Specialist"]["activity"] == (
+        "Ready for deterministic grade scenario, sensitivity, and target-grade simulations."
+    )
     assert groups["Degree Regulations Specialist"]["activity"] == "Ready for AllgStuPO, StuPO, and Regelstudienplan PDF lookups."
     assert [phase["status"] for phase in workbench["phases"][:2]] == ["done", "active"]
+
+
+def test_live_workbench_includes_grade_optimization_specialist():
+    events = [
+        {
+            "event": "tool_start",
+            "run_id": "run-grade-optimization",
+            "call_id": 8,
+            "tool_name": "Run Target Grade Optimizer",
+            "tool_input": {"target_grade": 1.7},
+            "agent_role": "TU Berlin Grade Optimization Specialist",
+            "source_system": "Grade Optimization",
+            "status": "running",
+            "badges": ["Grade Optimization"],
+        }
+    ]
+
+    workbench = chat.live_workbench_from_events(events)
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+
+    assert "Grade Optimization Specialist" in groups
+    assert groups["Grade Optimization Specialist"]["status"] == "running"
+    assert groups["Grade Optimization Specialist"]["source_system"] == "Grade Optimization"
+    assert groups["Grade Optimization Specialist"]["tool_calls"][0]["tool_name"] == "Run Target Grade Optimizer"
+    assert workbench["source_flow"] == [{"agent": "Grade Optimization Specialist", "active": True}]
 
 
 def test_live_workbench_includes_degree_regulations_specialist():

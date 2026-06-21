@@ -630,8 +630,11 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                             "- simple_degree_regulations: Single questions about AllgStuPO, StuPO, degree rules, exam regulations, free-choice/elective rules, or Regelstudienplan from local PDFs\n"
                             "- recommendation: Semester/course planning, follow-ups to active proposals, course selection, and any request to enroll/register/add/save/write course actions for confirmation\n"
                             "- deep_dive: Broad/multi-source queries, unclear intent, or when combining multiple sources makes sense\n"
-                            "Prefer simple routes for read-only single-source efficiency. Never use a simple_* route for write_intent=true. "
-                            "Do not use simple_grade_optimization when the student asks how to change their course plan, choose modules, or combine target grades with semester/course recommendations; use recommendation or deep_dive so the hierarchical crew can coordinate specialists."
+                            "Prefer simple routes only when the selected single specialist can fully answer the request "
+                            "without coordination. Never use a simple_* route for write_intent=true, course planning, "
+                            "semester planning, course selection/recommendations, active proposal follow-ups, or any "
+                            "request that combines multiple sources. Use recommendation or deep_dive when the answer "
+                            "needs coordination across Grade Manager, grade optimization, MOSES, ISIS, or regulations."
                         ),
                     },
                     {

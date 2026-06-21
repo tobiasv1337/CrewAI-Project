@@ -783,6 +783,7 @@ def build_trace_workbench(
     ordered_labels = [
         "Orchestrator",
         "Study Advisor",
+        "Grade Optimization Specialist",
         "MOSES Module Researcher",
         "Degree Regulations Specialist",
         "ISIS Course Info Specialist",
@@ -853,6 +854,8 @@ def agent_label_for_role(role: object | None) -> str:
         return "Orchestrator"
     if "study advisor" in text or "personal study advisor" in text:
         return "Study Advisor"
+    if "grade optimization" in text or "grade optimizer" in text:
+        return "Grade Optimization Specialist"
     if "moses" in text or "module researcher" in text:
         return "MOSES Module Researcher"
     if "degree regulations" in text or "regulations specialist" in text or "stupo" in text:
@@ -866,6 +869,8 @@ def agent_label_for_role(role: object | None) -> str:
 
 def source_system_for_tool(tool_name: str) -> str:
     text = tool_name.casefold()
+    if "grade scenario" in text or "grade sensitivity" in text or "target grade" in text or "target-grade" in text:
+        return "Grade Optimization"
     if "study plan" in text or "degree requirement" in text:
         return "Grade Manager"
     if "propose course actions" in text or "confirmation" in text or "commitment" in text:
@@ -932,6 +937,12 @@ def source_flow_for_calls(tool_calls: list[ToolCallSummary]) -> list[dict[str, A
             "agent": "Study Advisor",
             "target": "Orchestrator",
             "active": "Grade Manager" in active_sources,
+        },
+        {
+            "source": "Grade Optimization",
+            "agent": "Grade Optimization Specialist",
+            "target": "Orchestrator",
+            "active": "Grade Optimization" in active_sources,
         },
         {
             "source": "MOSES",

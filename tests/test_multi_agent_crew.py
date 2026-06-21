@@ -112,6 +112,26 @@ def test_orchestrator_prompt_routes_confirmed_writes_through_guarded_commitment_
     assert "guarded action-id tools" in task_description
 
 
+def test_planning_prompts_avoid_noop_duplicate_course_adds(monkeypatch):
+    import crew.multi_agent_crew as crew_module
+
+    monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
+
+    study_crew = MultiAgentStudyAssistantCrew(model="gpt-4o")
+
+    orchestrator_backstory = study_crew.agents_config["orchestrator"]["backstory"]
+    commitment_backstory = study_crew.agents_config["course_commitment_specialist"]["backstory"]
+    task_description = study_crew.tasks_config["study_assistant_task"]["description"]
+
+    assert "NO-OP PLAN CHANGE RULE" in orchestrator_backstory
+    assert "Do not describe unchanged existing modules as courses to add again" in orchestrator_backstory
+    assert "NO-OP PROPOSAL RULE" in commitment_backstory
+    assert 'Use `grade_manager_action="update"`' in commitment_backstory
+    assert "No-op duplicate constraint" in task_description
+    assert "Do not recommend" in task_description
+    assert "already in the same term/area" in task_description
+
+
 def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeypatch):
     import crew.multi_agent_crew as crew_module
 

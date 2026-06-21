@@ -118,6 +118,13 @@ study_assistant_task:
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal and execution actions.
       Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Course proposals should include Study Manager enrollment by default. Include ISIS enrollment only when the proposal tool can verify an unambiguous ISIS course for the intended term, either from a verified ISIS id/url, a unique MOSES-to-ISIS candidate, or current ISIS lookup. If the ISIS course is not available yet, the proposal must be Study Manager-only and your answer must tell the student that ISIS enrollment is not included yet. Do NOT ask another specialist to call a write tool.
+      No-op duplicate constraint: Existing Planned or In Progress modules from
+      the Grade Manager are not new additions when they already match the same
+      term and area. The student can still ask for changes; represent those as
+      keep, remove, update, replacement, or add as appropriate. Do not recommend
+      "adding" a course that is already in the same term/area. Keep it in the
+      explanation if it remains part of the plan, or propose an update/removal
+      only if something actually changes.
       When the student asks to remove/drop/delete courses from the Study Manager or study plan, use `Propose Course Actions For Confirmation` with `grade_manager_action="remove"` for the existing planned module(s). Do NOT claim that Study Manager removal is impossible. What remains external is ISIS unenrollment and formal exam withdrawal; distinguish those from Grade Manager removal.
       CRITICAL — ISIS enrollment is independent of exam registration: ISIS course access (materials, Hausaufgaben, Lerninsel) is a separate action from exam sign-up (Prüfungsanmeldung). Do NOT suppress include_isis because exam deadlines have passed or because ISIS enrollment does not grant exam rights. When the student explicitly asks to join an ISIS course, you MUST include ISIS enrollment in the proposal if a verified ISIS course is available — regardless of any deadline or Prüfungsrecht concerns. Only set include_isis=false when (a) the student explicitly asked for Study-Manager-only, or (b) the proposal tool cannot find any unambiguous ISIS course.
       If the MOSES Module Researcher returned ISIS course candidates from MOSES detail data, pass the MOSES module number/title/term accurately to the Course Commitment Specialist. The proposal tool can reuse unique verified MOSES-to-ISIS candidates and turn them into direct ISIS Enrollment actions.
@@ -228,6 +235,10 @@ study_assistant_task:
       and relevant StuPO/AllgStuPO/Regelstudienplan constraints? If not,
       re-delegate before proposing a revised plan.
     - If you recommended or suggested new courses/modules to the student, did you delegate to the Course Commitment Specialist to create a UI proposal via `Propose Course Actions For Confirmation`? If you recommended courses but no proposal was created, you MUST delegate to the Course Commitment Specialist to create the proposal before producing the final answer. If no proposal was created, do not claim that the UI will show a confirmation banner.
+    - If the plan keeps modules already Planned or In Progress in the Grade
+      Manager, did you avoid describing those unchanged modules as new additions?
+      If a module is already in the same term/area, the answer should say keep
+      it or leave it unchanged, not add it again.
     - If the student asked to remove courses from the Study Manager/study plan,
       did you create or preserve `grade_manager_remove` confirmation cards for
       the affected existing planned modules? If not, do not say removal is

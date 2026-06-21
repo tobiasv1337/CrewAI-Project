@@ -226,8 +226,11 @@ def test_llm_classifier_prompt_includes_grade_optimization_route_and_boundary(mo
     assert result.route == "simple_grade_optimization"
     assert "simple_grade_optimization" in captured["system"]
     assert "target grade optimizer" in captured["system"]
-    assert "Do not use simple_grade_optimization" in captured["system"]
-    assert "choose modules" in captured["system"]
+    assert "Prefer simple routes only when" in captured["system"]
+    assert "single specialist can fully answer" in captured["system"]
+    assert "Never use a simple_* route" in captured["system"]
+    assert "course selection/recommendations" in captured["system"]
+    assert "combines multiple sources" in captured["system"]
 
 
 def test_non_llm_classifier_routes_to_deep_dive_with_warning(monkeypatch, tmp_path):

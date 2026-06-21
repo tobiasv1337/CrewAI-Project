@@ -37,6 +37,7 @@ DEFAULT_TEMPERATURE = 0.2
 AGENT_LANES = [
     "Orchestrator",
     "Study Advisor",
+    "Grade Optimization Specialist",
     "MOSES Module Researcher",
     "Degree Regulations Specialist",
     "ISIS Course Info Specialist",
@@ -1364,6 +1365,8 @@ def _clean_agent_label(role_or_label: str) -> tuple[str, str, str]:
         return "Orchestrator", "🧭", "orchestrator"
     if "study advisor" in lowered or "personal study advisor" in lowered:
         return "Study Advisor", "🎓", "study-advisor"
+    if "grade optimization" in lowered or "grade optimizer" in lowered:
+        return "Grade Optimization Specialist", "📈", "grade-optimization"
     if "moses" in lowered or "module researcher" in lowered:
         return "MOSES Module Researcher", "🔎", "moses"
     if "degree regulations" in lowered or "regulations specialist" in lowered or "stupo" in lowered:
@@ -1993,6 +1996,16 @@ def initial_live_trace_events(prompt: str, settings: ChatRuntimeSettings) -> lis
             "event": "agent_ready",
             "event_id": 0,
             "elapsed_ms": 0,
+            "agent_label": "Grade Optimization Specialist",
+            "phase": "ready",
+            "status": "idle",
+            "activity": "Ready for deterministic grade scenario, sensitivity, and target-grade simulations.",
+            "source_system": "Grade Optimization",
+        },
+        {
+            "event": "agent_ready",
+            "event_id": 0,
+            "elapsed_ms": 0,
             "agent_label": "MOSES Module Researcher",
             "phase": "ready",
             "status": "idle",
@@ -2086,6 +2099,8 @@ def _elapsed_ms_from_events(events: list[dict[str, Any]]) -> int:
 def _source_for_agent_label(label: str) -> str:
     if label == "Study Advisor":
         return "Grade Manager"
+    if label == "Grade Optimization Specialist":
+        return "Grade Optimization"
     if label == "MOSES Module Researcher":
         return "MOSES"
     if label == "Degree Regulations Specialist":
@@ -2101,6 +2116,7 @@ def _default_activity_for_agent(label: str) -> str:
     return {
         "Orchestrator": "Preparing delegation.",
         "Study Advisor": "Waiting for Grade Manager work.",
+        "Grade Optimization Specialist": "Waiting for grade optimization simulation work.",
         "MOSES Module Researcher": "Waiting for MOSES work.",
         "Degree Regulations Specialist": "Waiting for regulation PDF work.",
         "ISIS Course Info Specialist": "Waiting for ISIS work.",
@@ -2117,6 +2133,8 @@ def _event_agent_label(event: dict[str, Any]) -> str:
     role = str(event.get("agent_role") or "").casefold()
     if "study advisor" in role or "personal study advisor" in role:
         return "Study Advisor"
+    if "grade optimization" in role or "grade optimizer" in role:
+        return "Grade Optimization Specialist"
     if "moses" in role or "module researcher" in role:
         return "MOSES Module Researcher"
     if "degree regulations" in role or "regulations specialist" in role or "stupo" in role:
@@ -2428,6 +2446,7 @@ def _default_source_flow(*, active_sources: set[str] | None = None, active: bool
     active_sources = active_sources or set()
     return [
         {"source": "Grade Manager", "agent": "Study Advisor", "target": "Orchestrator", "active": "Grade Manager" in active_sources},
+        {"source": "Grade Optimization", "agent": "Grade Optimization Specialist", "target": "Orchestrator", "active": "Grade Optimization" in active_sources},
         {"source": "MOSES", "agent": "MOSES Module Researcher", "target": "Orchestrator", "active": "MOSES" in active_sources},
         {"source": "Degree Regulations", "agent": "Degree Regulations Specialist", "target": "Orchestrator", "active": "Degree Regulations" in active_sources},
         {"source": "ISIS", "agent": "ISIS Course Info Specialist", "target": "Orchestrator", "active": "ISIS" in active_sources},
@@ -3053,6 +3072,9 @@ def inject_chat_css() -> None:
         }
         .agent-card.study-advisor {
             border-left: 3px solid #10b981;
+        }
+        .agent-card.grade-optimization-specialist {
+            border-left: 3px solid #0ea5e9;
         }
         .agent-card.moses-module-researcher {
             border-left: 3px solid #14b8a6;

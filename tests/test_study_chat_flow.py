@@ -151,6 +151,85 @@ def test_simple_progress_question_routes_only_to_study_advisor(monkeypatch, tmp_
     assert load_chat_thread("primary").messages[-1].content == "You have 60 LP completed."
 
 
+def test_simple_grade_optimization_routes_to_grade_optimization_crew(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    import crew.grade_optimization_crew as grade_optimization_module
+
+    captured = {}
+
+    class FakeGradeOptimizationCrew:
+        def __init__(self, **kwargs):
+            captured["crew_kwargs"] = kwargs
+
+        def crew(self):
+            return self
+
+        def kickoff(self, inputs):
+            captured["inputs"] = inputs
+            return SimpleNamespace(raw="Target grade optimizer answer.")
+
+    monkeypatch.setattr(grade_optimization_module, "GradeOptimizationCrew", FakeGradeOptimizationCrew)
+
+    flow = _flow(
+        classifier=_classifier_for(
+            "simple_grade_optimization",
+            required_sources=["grade_optimization"],
+        ),
+        runner_overrides={
+            "simple_grade_manager": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+            "simple_moses": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+            "simple_isis": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+            "deep_dive": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+            "recommendation": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+        },
+    )
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Can I still reach a 1.7 final grade?",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    assert flow.state.intent.route == "simple_grade_optimization"
+    assert captured["inputs"]["student_context"] == "No student context supplied."
+    assert "Can I still reach a 1.7 final grade?" in captured["inputs"]["query"]
+    assert load_chat_thread("primary").messages[-1].content == "Target grade optimizer answer."
+
+
+def test_llm_classifier_prompt_includes_grade_optimization_route_and_boundary(monkeypatch):
+    import crew.study_chat_flow as flow_module
+
+    captured = {}
+
+    class FakeLlm:
+        def call(self, messages, response_model):
+            captured["system"] = messages[0]["content"]
+            return IntentClassification(
+                route="simple_grade_optimization",
+                required_sources=["grade_optimization"],
+                rationale="single-source grade optimizer question",
+            )
+
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setattr(flow_module, "get_default_llm", lambda **kwargs: FakeLlm())
+
+    flow = StudyChatFlow(
+        runtime=StudyChatFlowRuntime(
+            use_llm_classifier=True,
+            use_llm_decision_interpreter=False,
+        )
+    )
+    result = flow._classify_with_llm_or_heuristics(
+        StudyChatFlowState(query="Can I reach a 1.7 final grade?")
+    )
+
+    assert result.route == "simple_grade_optimization"
+    assert "simple_grade_optimization" in captured["system"]
+    assert "target grade optimizer" in captured["system"]
+    assert "Do not use simple_grade_optimization" in captured["system"]
+    assert "choose modules" in captured["system"]
+
+
 def test_non_llm_classifier_routes_to_deep_dive_with_warning(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     calls = []

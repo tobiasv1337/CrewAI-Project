@@ -12,6 +12,7 @@ from crew.state import IsisLookupContext
 MessageRole = Literal["user", "assistant", "system"]
 IntentRoute = Literal[
     "simple_grade_manager",
+    "simple_grade_optimization",
     "simple_moses",
     "simple_isis",
     "simple_degree_regulations",
@@ -90,7 +91,7 @@ class IntentClassification(BaseModel):
     language: Literal["en", "de"] = "en"
     complexity: Literal["simple", "scoped", "deep"] = "deep"
     follow_up_target: str | None = None
-    required_sources: list[Literal["degree_regulations", "grade_manager", "moses", "isis"]] = Field(default_factory=list)
+    required_sources: list[Literal["degree_regulations", "grade_manager", "grade_optimization", "moses", "isis"]] = Field(default_factory=list)
     write_intent: bool = False
     tool_budget: int = 12
     rationale: str = ""

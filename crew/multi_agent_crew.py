@@ -9,6 +9,7 @@ from crew.runtime import ensure_crewai_storage_writable
 from crew.tools import (
     COURSE_COMMITMENT_TOOLS,
     DEGREE_REGULATIONS_TOOLS,
+    GRADE_ANALYSIS_TOOLS,
     MOSES_MODULE_RESEARCH_TOOLS,
     STUDY_ADVISOR_TOOLS,
     make_isis_read_only_tools,
@@ -108,6 +109,18 @@ class MultiAgentStudyAssistantCrew:
         return Agent(
             config=self.agents_config["degree_regulations_specialist"],  # type: ignore[index]
             tools=list(DEGREE_REGULATIONS_TOOLS),
+            llm=self._llm(),
+            verbose=self.verbose,
+            cache=self.cache,
+            inject_date=True,
+            date_format="%Y-%m-%d",
+        )
+
+    @agent
+    def grade_optimization_specialist(self) -> Agent:
+        return Agent(
+            config=self.agents_config["grade_optimization_specialist"],  # type: ignore[index]
+            tools=list(GRADE_ANALYSIS_TOOLS),
             llm=self._llm(),
             verbose=self.verbose,
             cache=self.cache,

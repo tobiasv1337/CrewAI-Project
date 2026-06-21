@@ -211,6 +211,11 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         self.state.answer_markdown = self._run_route("simple_grade_manager")
         self._carry_forward_existing_proposals()
 
+    @listen("simple_grade_optimization")
+    def run_simple_grade_optimization(self) -> None:
+        self.state.answer_markdown = self._run_route("simple_grade_optimization")
+        self._carry_forward_existing_proposals()
+
     @listen("simple_moses")
     def run_simple_moses(self) -> None:
         self.state.answer_markdown = self._run_route("simple_moses")
@@ -245,6 +250,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     @listen(
         or_(
             run_simple_grade_manager,
+            run_simple_grade_optimization,
             run_simple_moses,
             run_simple_isis,
             run_simple_degree_regulations,
@@ -300,6 +306,16 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             from crew.study_advisor_crew import StudyAdvisorCrew
 
             result = StudyAdvisorCrew(**self._crew_kwargs()).crew().kickoff(
+                inputs={
+                    "query": self._contextual_query(),
+                    "student_context": self.state.student_context or "No student context supplied.",
+                }
+            )
+            return str(getattr(result, "raw", result))
+        if route == "simple_grade_optimization":
+            from crew.grade_optimization_crew import GradeOptimizationCrew
+
+            result = GradeOptimizationCrew(**self._crew_kwargs()).crew().kickoff(
                 inputs={
                     "query": self._contextual_query(),
                     "student_context": self.state.student_context or "No student context supplied.",
@@ -608,12 +624,14 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                             "Classify a TU Berlin study assistant chat turn into the most efficient route. "
                             "Available routes:\n"
                             "- simple_grade_manager: Single questions about current grades, credits, GPA, degree requirements\n"
+                            "- simple_grade_optimization: Single-source, read-only grade simulation questions about forecast grade, best/worst scenarios, target grade optimizer, sensitivity analysis, or discard impact\n"
                             "- simple_moses: Single questions about module catalog, prerequisites, workload\n"
                             "- simple_isis: Read-only questions about deadlines/assignments/info in a known ISIS course\n"
                             "- simple_degree_regulations: Single questions about AllgStuPO, StuPO, degree rules, exam regulations, free-choice/elective rules, or Regelstudienplan from local PDFs\n"
                             "- recommendation: Semester/course planning, follow-ups to active proposals, course selection, and any request to enroll/register/add/save/write course actions for confirmation\n"
                             "- deep_dive: Broad/multi-source queries, unclear intent, or when combining multiple sources makes sense\n"
-                            "Prefer simple routes for read-only single-source efficiency. Never use a simple_* route for write_intent=true."
+                            "Prefer simple routes for read-only single-source efficiency. Never use a simple_* route for write_intent=true. "
+                            "Do not use simple_grade_optimization when the student asks how to change their course plan, choose modules, or combine target grades with semester/course recommendations; use recommendation or deep_dive so the hierarchical crew can coordinate specialists."
                         ),
                     },
                     {

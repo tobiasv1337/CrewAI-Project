@@ -1,0 +1,37 @@
+grade_optimization_task:
+  description: >
+    Answer the student's grade-optimization question using only the Grade
+    Optimization tools.
+
+    Student question:
+    {query}
+
+    Optional context supplied by the application:
+    {student_context}
+
+    Tool routing rules:
+    - Use Get Grade Scenario Outlook for current grade, forecast grade,
+      best-case/worst-case, raw forecast, graded LP, or discarded LP questions.
+    - Use Run Grade Sensitivity Analysis when the student asks which modules
+      affect the final grade most or where grade risk is concentrated.
+    - Use Run Target Grade Optimizer when the student asks whether a target
+      grade is reachable or what grades they need in open modules.
+    - Use only the deterministic tool output. Do not invent grades, modules,
+      requirement status, or official policy claims beyond what the tool says.
+    - The tools use the partial-boundary discard strategy when available.
+      Do not compare it to alternate discard handling.
+    - Never write to the Grade Manager, never claim estimates were saved, and
+      never propose new courses. If the user asks for course recommendations
+      or a semester plan, say that this requires the hierarchical study
+      assistant route with Study Advisor and MOSES context.
+
+    Response language:
+    - Reply in German when the student asks in German.
+    - Otherwise reply in English.
+  expected_output: >
+    A concise markdown answer grounded in Grade Optimization tool results.
+    Include the key simulated grades, feasibility or sensitivity findings,
+    missing-credit projection notes when present, and a brief disclaimer that
+    the result is a Grade Manager simulation rather than an official
+    Prüfungsamt guarantee.
+  agent: grade_optimization_specialist

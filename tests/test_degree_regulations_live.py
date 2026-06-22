@@ -28,6 +28,7 @@ def test_live_degree_regulations_crew_answers_from_local_pdfs():
         inputs={
             "query": "Welche Informationen enthalten die lokalen StuPO PDFs zum Regelstudienplan?",
             "student_context": "Live smoke test without personal progress context.",
+            "language": "German",
         }
     )
 

@@ -206,6 +206,27 @@ def test_grade_what_if_scenario_applies_fixed_grade_without_writing(monkeypatch,
     assert "does not write grades, estimates, or modules" in output
 
 
+def test_grade_what_if_scenario_accepts_dict_constraints(monkeypatch, tmp_path):
+    modules = [
+        _module("thesis", "Master Thesis", 30, None, "Master Thesis", state=ModuleState.PLANNED, estimated_grade=2.0),
+        _module("web", "Web-Service Engineering", 30, None, "Elective", state=ModuleState.PLANNED, estimated_grade=2.3),
+        _module("elective", "Other Elective", 60, 1.0, "Elective"),
+    ]
+    _setup_profile(monkeypatch, tmp_path, modules)
+
+    output = grade_analysis_tools.run_grade_what_if_scenario(
+        program_key=CS_PROGRAM,
+        constraints=[
+            {
+                "module_query": "Web-Service Engineering",
+                "fixed_grade": 1.3,
+            }
+        ],
+    )
+    assert "Grade what-if scenario" in output
+    assert "Web-Service Engineering" in output
+
+
 def test_grade_contribution_breakdown_lists_excluded_sections(monkeypatch, tmp_path):
     modules = _partial_boundary_modules()
     modules.append(

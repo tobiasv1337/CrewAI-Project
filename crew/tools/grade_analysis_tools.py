@@ -119,6 +119,20 @@ class GradeConstraintInput(grademanager_tools.GradeManagerToolInput):
         return self
 
 
+def _parse_grade_constraints(
+    constraints: list[GradeConstraintInput] | list[dict] | None,
+) -> list[GradeConstraintInput]:
+    if not constraints:
+        return []
+    parsed = []
+    for item in constraints:
+        if isinstance(item, dict):
+            parsed.append(GradeConstraintInput.model_validate(item))
+        else:
+            parsed.append(item)
+    return parsed
+
+
 class GradeWhatIfScenarioInput(GradeAnalysisToolInput):
     constraints: list[GradeConstraintInput] = Field(
         ...,
@@ -246,6 +260,7 @@ def run_grade_what_if_scenario(
 ) -> str:
     """Apply fixed hypothetical grades to copied modules and report the grade outcome."""
     try:
+        constraints = _parse_grade_constraints(constraints)
         ctx = _analysis_context(program_key)
         selected_scenario = _scenario_from_input(scenario)
         before = ctx.calculate(ctx.degree_modules, selected_scenario)
@@ -385,6 +400,7 @@ def run_target_grade_optimizer(
 ) -> str:
     """Return deterministic target-grade optimizer suggestions for the active profile."""
     try:
+        constraints = _parse_grade_constraints(constraints)
         ctx = _analysis_context(program_key)
         base_modules = _with_default_open_grade(ctx.degree_modules, default_open_grade)
         simulation_modules = (

@@ -25,6 +25,10 @@ study_advising_task:
       already appears in the study plan.
     - Use Check Module Against Study Plan for one specific MOSES module,
       module number, module title, or MOSES URL.
+    - Use Run Study Plan What-If when the student asks whether degree rules
+      would still be satisfied after removing, adding, or exchanging planned
+      or in-progress modules. Treat it as read-only simulation evidence; do
+      not claim that the plan was changed.
     - Do not add modules directly. The application Flow creates and executes
       Grade Manager write actions only after UI course-card approval. For this
       read-only advising task, provide the module-fit evidence and handoff

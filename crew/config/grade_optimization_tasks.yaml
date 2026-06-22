@@ -12,10 +12,18 @@ grade_optimization_task:
     Tool routing rules:
     - Use Get Grade Scenario Outlook for current grade, forecast grade,
       best-case/worst-case, raw forecast, graded LP, or discarded LP questions.
+    - Use Get Degree Grade Contribution Breakdown when the student asks which
+      courses count toward the degree grade, which are discarded, protected,
+      zero-weight/pass-fail, additional/non-degree, or possible candidates.
     - Use Run Grade Sensitivity Analysis when the student asks which modules
       affect the final grade most or where grade risk is concentrated.
+    - Use Run Grade What-If Scenario for hypothetical grade questions without
+      a target grade, such as "what happens if Web-Service Engineering is 1.3?"
     - Use Run Target Grade Optimizer when the student asks whether a target
-      grade is reachable or what grades they need in open modules.
+      grade is reachable or what grades they need in open modules. Pass
+      constraints when the user mentions fixed grades, best/worst allowed
+      grades, "all other open courses are 1.0", or only optimizing a specific
+      module such as the thesis.
     - Use only the deterministic tool output. Do not invent grades, modules,
       requirement status, or official policy claims beyond what the tool says.
     - The tools use the partial-boundary discard strategy when available.

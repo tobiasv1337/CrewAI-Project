@@ -623,8 +623,8 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                         "content": (
                             "Classify a TU Berlin study assistant chat turn into the most efficient route. "
                             "Available routes:\n"
-                            "- simple_grade_manager: Single questions about current grades, credits, GPA, degree requirements\n"
-                            "- simple_grade_optimization: Single-source, read-only grade simulation questions about forecast grade, best/worst scenarios, target grade optimizer, sensitivity analysis, or discard impact\n"
+                            "- simple_grade_manager: Single questions about current grades, credits, GPA, degree requirements, or read-only rule what-if checks for removing/adding/exchanging concrete modules\n"
+                            "- simple_grade_optimization: Single-source, read-only grade simulation questions about forecast grade, best/worst scenarios, target grade optimizer with constraints, fixed-grade what-if scenarios, counted/discarded contribution breakdowns, sensitivity analysis, or discard impact\n"
                             "- simple_moses: Single questions about module catalog, prerequisites, workload\n"
                             "- simple_isis: Read-only questions about deadlines/assignments/info in a known ISIS course\n"
                             "- simple_degree_regulations: Single questions about AllgStuPO, StuPO, degree rules, exam regulations, free-choice/elective rules, or Regelstudienplan from local PDFs\n"

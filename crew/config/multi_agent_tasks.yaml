@@ -71,10 +71,12 @@ study_assistant_task:
       Regelstudienplan, Studienverlaufsplan, Modulplan, and suggested semester
       structure questions to the Degree Regulations Specialist.
     - Delegate Grade Manager progress, completed/planned modules, open
-      requirements, and read-only module-fit checks to the Study Advisor.
+      requirements, read-only module-fit checks, and read-only remove/add/
+      exchange rule what-if simulations to the Study Advisor.
     - Delegate grade forecast, scenario outlook, target-grade optimizer,
-      sensitivity analysis, and final-grade simulation questions to the Grade
-      Optimization Specialist.
+      constrained target-grade optimizer, fixed-grade what-if scenarios,
+      counted/discarded contribution breakdowns, sensitivity analysis, and
+      final-grade simulation questions to the Grade Optimization Specialist.
     - Delegate broad module discovery, module details, MOSES degree structure,
       catalog assignments, teaching terms, prerequisites, and exam information
       to the MOSES Module Researcher.
@@ -108,6 +110,9 @@ study_assistant_task:
       only when real missing requirements or explicit alternative-course
       discovery require it, and proposal cards from the Course Commitment
       Specialist only after module fit is verified.
+      For constrained questions, pass constraints explicitly: fixed grades,
+      best/worst allowed grades, default grade assumptions for all open modules,
+      and optimize-only module lists.
     - RULE A — ISIS needs Grade Manager course list first.
       Any request touching current-semester courses, workload, deadlines, or
       assignments REQUIRES the Study Advisor to run first. Extract from its
@@ -153,6 +158,12 @@ study_assistant_task:
       If the context contains "Actions already executed in this turn", summarize those execution results exactly and do not re-run the same actions. If active course-card actions are APPROVED or DECLINED but not listed as executed, retain approved actions and revise declined actions only when the user requested replacement, but do not claim that Grade Manager writes or ISIS enrollments happened.
     - RULE D — Study Advisor cannot discover new modules in the catalog.
       For any task requiring finding, suggesting, or planning new modules or courses (e.g. semester planning, course planning, or course recommendations), you MUST NEVER delegate to the Study Advisor to search for or suggest new modules. The Study Advisor only knows about modules already in the student's plan and cannot search the catalog. You must first delegate to the Study Advisor to identify missing requirements/handoff search directives, then delegate to the MOSES Module Researcher with those directives to search the MOSES catalog and find matching modules, and finally delegate back to the Study Advisor with specific module numbers/names using `Check Module Against Study Plan` to verify degree area fit before proposing them to the student. If Study Advisor reports that all relevant rules are already covered by completed, in-progress, or planned modules, do not force catalog discovery. Summarize the current plan, grade risks, and ask whether the student wants alternative course suggestions.
+      When the user asks whether rules would still be satisfied after removing
+      an existing module, adding a concrete MOSES module, or exchanging one
+      concrete module for another, delegate to the Study Advisor's read-only
+      Study Plan What-If tool. If the new/replacement course is not concrete
+      enough for MOSES resolution, ask MOSES to resolve the real module
+      title/number first or ask the user for a concrete module.
     - RULE E — Program Switch / Explore Rule.
       If the student's query explicitly asks about or mentions a specific degree program (e.g. "Technische Informatik") that differs from the active profile program (or if the active profile is empty/unlinked), do NOT force the active profile's program. Instead, delegate to the Degree Regulations Specialist to read the regulations and the MOSES Module Researcher to inspect the structure and modules of the requested program directly, rather than relying on the active profile's Study Advisor output.
     - RULE F — Structured Search Prioritization.
@@ -230,6 +241,8 @@ study_assistant_task:
     - For pure progress/degree questions: only Study Advisor.
     - For pure forecast, target-grade, sensitivity, and grade-scenario
       questions: only Grade Optimization Specialist.
+    - For pure read-only plan-rule what-if questions involving existing
+      modules or concrete MOSES modules: only Study Advisor.
     - For recommendation banners: only Course Commitment Specialist.
     - For study-plan writes and permanent ISIS enrollment: only the Course
       Commitment Specialist's guarded action-id execution tools after explicit

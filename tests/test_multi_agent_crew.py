@@ -163,6 +163,7 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     commitment = _agent_with_role_fragment(built_crew.agents, "Course Commitment Specialist")
 
     assert [tool.name for tool in study_advisor.tools] == [tool.name for tool in STUDY_ADVISOR_TOOLS]
+    assert "Run Study Plan What-If" in [tool.name for tool in study_advisor.tools]
     assert "Add Module To Study Plan" not in [tool.name for tool in study_advisor.tools]
     assert "Search TU Berlin MOSES Modules" not in [tool.name for tool in study_advisor.tools]
     assert "List My ISIS Courses" not in [tool.name for tool in study_advisor.tools]
@@ -191,7 +192,9 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     grade_tool_names = [tool.name for tool in grade_optimization.tools]
     assert grade_tool_names == [tool.name for tool in GRADE_ANALYSIS_TOOLS]
     assert "Get Grade Scenario Outlook" in grade_tool_names
+    assert "Get Degree Grade Contribution Breakdown" in grade_tool_names
     assert "Run Grade Sensitivity Analysis" in grade_tool_names
+    assert "Run Grade What-If Scenario" in grade_tool_names
     assert "Run Target Grade Optimizer" in grade_tool_names
     assert "Get Study Plan Snapshot" not in grade_tool_names
     assert "Add Module To Study Plan" not in grade_tool_names

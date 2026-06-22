@@ -139,6 +139,50 @@ class RemoveStudyModuleInput(CheckStudyModuleInput):
     )
 
 
+class StudyPlanWhatIfOperationInput(GradeManagerToolInput):
+    action: Literal["remove", "add", "exchange"] = Field(
+        ...,
+        description="Read-only operation to simulate.",
+    )
+    module_query: str | None = Field(
+        default=None,
+        description="Existing module selector for remove/exchange: MOSES number, id, URL, or exact/unique title.",
+    )
+    replacement_query: str | None = Field(
+        default=None,
+        description="New MOSES module selector for add/exchange. Must be concretely resolvable by MOSES.",
+    )
+    version: int | None = Field(default=None, description="Optional version for module_query.")
+    replacement_version: int | None = Field(default=None, description="Optional version for replacement_query.")
+    area: str | None = Field(
+        default=None,
+        description="Area for an added/replacement module. Omit to infer from MOSES and degree rules.",
+    )
+    term: str | None = Field(
+        default=None,
+        description="Term for an added/replacement module, e.g. WS 26/27. Exchange defaults to the removed module's term.",
+    )
+    state: Literal["Completed", "In Progress", "Planned", "Possible Candidate"] = Field(
+        default="Planned",
+        description="State for an added/replacement module in the simulation.",
+    )
+    estimated_grade: float | None = Field(
+        default=None,
+        description="Optional simulated estimated grade for the added/replacement module.",
+    )
+
+
+class StudyPlanWhatIfInput(GradeManagerToolInput):
+    program_key: str | None = Field(default=None, description="Optional degree program filter.")
+    operations: list[StudyPlanWhatIfOperationInput] = Field(
+        ...,
+        description="One or more read-only plan changes to simulate.",
+    )
+    include_satisfied: bool = Field(default=False, description="Include unchanged satisfied rules in the output.")
+    include_modules: bool = Field(default=False, description="Include the simulated module table.")
+    max_modules: int = Field(default=40, description=f"Maximum module rows. Absolute max: {MAX_OUTPUT_MODULES}.")
+
+
 class ProgramResolutionError(ValueError):
     pass
 
@@ -329,6 +373,92 @@ def check_module_against_study_plan(
             "",
             "## Safe next step",
             "For broad recommendations, hand this context to the MOSES Module Researcher instead of searching from the Study Advisor.",
+        ]
+    )
+    return "\n".join(lines).rstrip()
+
+
+def run_study_plan_what_if(
+    operations: list[StudyPlanWhatIfOperationInput],
+    program_key: str | None = None,
+    include_satisfied: bool = False,
+    include_modules: bool = False,
+    max_modules: int = 40,
+) -> str:
+    """Run read-only degree-rule validation after copied study-plan changes."""
+    if not operations:
+        return "Could not run study-plan what-if: at least one operation is required."
+    try:
+        profile, modules = _load_primary_profile_modules()
+        resolved_program = _resolve_program_key(program_key, modules, require_single=True)
+        baseline_modules = modules_for_program(resolved_program, modules)
+        simulated_modules = [module.model_copy(deep=True) for module in baseline_modules]
+        applied_lines = _apply_plan_what_if_operations(
+            simulated_modules,
+            operations,
+            program_key=resolved_program,
+        )
+        manager = DegreeManager(create_program(resolved_program))
+        before = manager.validate(baseline_modules)
+        after = manager.validate(simulated_modules)
+    except Exception as exc:
+        return f"Could not run study-plan what-if: {exc}"
+
+    before_by_rule = {item.rule_name: item for item in before}
+    after_by_rule = {item.rule_name: item for item in after}
+    all_rules = list(dict.fromkeys([*[item.rule_name for item in before], *[item.rule_name for item in after]]))
+    newly_broken = [
+        after_by_rule[name]
+        for name in all_rules
+        if _validation_satisfied(before_by_rule.get(name)) and not _validation_satisfied(after_by_rule.get(name))
+    ]
+    newly_satisfied = [
+        after_by_rule[name]
+        for name in all_rules
+        if not _validation_satisfied(before_by_rule.get(name)) and _validation_satisfied(after_by_rule.get(name))
+    ]
+    still_open = [
+        after_by_rule[name]
+        for name in all_rules
+        if not _validation_satisfied(before_by_rule.get(name)) and not _validation_satisfied(after_by_rule.get(name))
+    ]
+    unchanged_satisfied = [
+        after_by_rule[name]
+        for name in all_rules
+        if _validation_satisfied(before_by_rule.get(name)) and _validation_satisfied(after_by_rule.get(name))
+    ]
+
+    lines = [
+        f"# Study-plan what-if for {resolved_program}",
+        "",
+        f"- Profile: `{profile.display_name}` (`{profile.slug}`)",
+        f"- Operations simulated: {len(operations)}",
+        f"- Baseline degree-plan LP: {_fmt_cp(sum(module.cp for module in manager.filter_degree_modules(baseline_modules)))}",
+        f"- Simulated degree-plan LP: {_fmt_cp(sum(module.cp for module in manager.filter_degree_modules(simulated_modules)))}",
+        "",
+        "## Simulated operations",
+        "",
+        *[f"- {line}" for line in applied_lines],
+        "",
+        "## Rule impact",
+        "",
+    ]
+    lines.extend(_validation_group_table("Newly broken rules", newly_broken))
+    lines.extend([""])
+    lines.extend(_validation_group_table("Newly satisfied rules", newly_satisfied))
+    lines.extend([""])
+    lines.extend(_validation_group_table("Still open rules", still_open))
+    if include_satisfied:
+        lines.extend([""])
+        lines.extend(_validation_group_table("Unchanged satisfied rules", unchanged_satisfied))
+    if include_modules:
+        lines.extend(["", "## Simulated modules", ""])
+        lines.append(_format_module_table(_sort_modules(simulated_modules), limit=_clamp(max_modules, 1, MAX_OUTPUT_MODULES)))
+
+    lines.extend(
+        [
+            "",
+            "Note: This is a read-only simulation. It does not add, remove, update, or save Grade Manager modules.",
         ]
     )
     return "\n".join(lines).rstrip()
@@ -590,6 +720,164 @@ def find_existing_study_plan_module(
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _apply_plan_what_if_operations(
+    simulated_modules: list[Module],
+    operations: list[StudyPlanWhatIfOperationInput],
+    *,
+    program_key: str,
+) -> list[str]:
+    applied: list[str] = []
+    for index, operation in enumerate(operations, start=1):
+        action = operation.action
+        if action == "remove":
+            if not operation.module_query:
+                raise ValueError(f"Operation {index} remove needs module_query.")
+            existing = _select_existing_module(
+                simulated_modules,
+                module_query=operation.module_query,
+                version=operation.version,
+                program_key=program_key,
+                term=None,
+                area=None,
+                state="any",
+            )
+            simulated_modules[:] = [module for module in simulated_modules if module.id != existing.id]
+            applied.append(f"Removed `{existing.name}` ({existing.state.value}, {_fmt_cp(existing.cp)} LP).")
+            continue
+
+        if action == "add":
+            query = operation.replacement_query or operation.module_query
+            if not query:
+                raise ValueError(f"Operation {index} add needs replacement_query or module_query.")
+            new_module, note = _build_simulated_moses_module(
+                query,
+                version=operation.replacement_version or operation.version,
+                program_key=program_key,
+                area=operation.area,
+                term=operation.term,
+                state=operation.state,
+                estimated_grade=operation.estimated_grade,
+            )
+            simulated_modules.append(new_module)
+            applied.append(f"Added `{new_module.name}` ({_fmt_cp(new_module.cp)} LP, {new_module.area}).{note}")
+            continue
+
+        if action == "exchange":
+            if not operation.module_query:
+                raise ValueError(f"Operation {index} exchange needs module_query.")
+            if not operation.replacement_query:
+                raise ValueError(f"Operation {index} exchange needs replacement_query.")
+            existing = _select_existing_module(
+                simulated_modules,
+                module_query=operation.module_query,
+                version=operation.version,
+                program_key=program_key,
+                term=None,
+                area=None,
+                state="any",
+            )
+            simulated_modules[:] = [module for module in simulated_modules if module.id != existing.id]
+            replacement_term = operation.term if operation.term is not None else existing.term
+            new_module, note = _build_simulated_moses_module(
+                operation.replacement_query,
+                version=operation.replacement_version,
+                program_key=program_key,
+                area=operation.area,
+                term=replacement_term,
+                state=operation.state,
+                estimated_grade=operation.estimated_grade,
+            )
+            simulated_modules.append(new_module)
+            applied.append(
+                f"Exchanged `{existing.name}` for `{new_module.name}` ({_fmt_cp(new_module.cp)} LP, {new_module.area}).{note}"
+            )
+            continue
+
+        raise ValueError(f"Unsupported what-if action `{action}`.")
+    return applied
+
+
+def _build_simulated_moses_module(
+    module_query: str,
+    *,
+    version: int | None,
+    program_key: str,
+    area: str | None,
+    term: str | None,
+    state: str,
+    estimated_grade: float | None,
+) -> tuple[Module, str]:
+    term_label = _canonical_term_or_error(term) if term else None
+    try:
+        resolved = _resolve_moses_module(module_query, version=version, term=term_label)
+    except Exception as exc:
+        raise ValueError(
+            f"needs_moses_lookup: `{module_query}` could not be resolved to one concrete MOSES module ({exc})."
+        ) from exc
+
+    data = resolved.data
+    normalized_area = _resolve_area_for_module(program_key, data, area)
+    module = moses_provider.create_module_from_moses_data(
+        data,
+        program_key=program_key,
+        area=normalized_area,
+        state=_module_state_or_error(state),
+        module_id=f"what-if-{new_module_id()}",
+        term=term_label,
+    )
+    if estimated_grade is not None:
+        module.estimated_grade = float(estimated_grade)
+    note = ""
+    if term_label and not offering_matches_term(data.offered_in, term_label):
+        note = f" Warning: MOSES lists offering as `{data.offered_in.value}`, not `{term_label}`."
+    return module, note
+
+
+def _validation_satisfied(result) -> bool:
+    return bool(result and result.satisfied)
+
+
+def _validation_group_table(title: str, results) -> list[str]:
+    lines = [f"### {title}", ""]
+    results = list(results)
+    if not results:
+        lines.append("No rules in this group.")
+        return lines
+    lines.extend(
+        [
+            "| Status | Severity | Rule | Coverage evidence | Message |",
+            "|---|---|---|---|---|",
+        ]
+    )
+    for result in results:
+        requirement = RequirementBrief(
+            rule_name=result.rule_name,
+            satisfied=result.satisfied,
+            message=result.message,
+            severity=result.severity,
+            coverage_status=result.coverage_status,
+            scope_results={
+                key: value.model_dump(mode="json")
+                for key, value in (result.scope_results or {}).items()
+            },
+            evidence=[
+                _validation_evidence_brief(evidence, program_key="")
+                for evidence in (result.evidence or [])
+            ],
+            assumptions=[
+                assumption.model_dump(mode="json")
+                for assumption in (result.assumptions or [])
+            ],
+        )
+        lines.append(
+            f"| {_cell(_requirement_status_label(requirement))} | "
+            f"{_cell(_requirement_display_severity(requirement))} | "
+            f"{_cell(requirement.rule_name)} | {_cell(_format_requirement_evidence(requirement) or '-')} | "
+            f"{_cell(_requirement_with_assumptions(requirement))} |"
+        )
+    return lines
+
+
 class GetStudyPlanSnapshotTool(BaseTool):
     name: str = "Get Study Plan Snapshot"
     description: str = "Read the active Grade Manager profile and summarize study progress, GPA, missing requirements, and Moses handoff directives."
@@ -626,6 +914,18 @@ class CheckModuleAgainstStudyPlanTool(BaseTool):
         return check_module_against_study_plan(**kwargs)
 
 
+class RunStudyPlanWhatIfTool(BaseTool):
+    name: str = "Run Study Plan What-If"
+    description: str = (
+        "Read-only Grade Manager simulation: check how degree rules change if planned/in-progress modules "
+        "are removed, added, or exchanged. It never saves modules."
+    )
+    args_schema: Type[BaseModel] = StudyPlanWhatIfInput
+
+    def _run(self, **kwargs) -> str:
+        return run_study_plan_what_if(**kwargs)
+
+
 class AddModuleToStudyPlanTool(BaseTool):
     name: str = "Add Module To Study Plan"
     description: str = "Write-capable Grade Manager tool: add one verified MOSES module as Planned after explicit user confirmation."
@@ -658,6 +958,7 @@ GRADE_MANAGER_READ_TOOLS = [
     ListStudyPlanModulesTool(),
     GetDegreeRequirementDetailsTool(),
     CheckModuleAgainstStudyPlanTool(),
+    RunStudyPlanWhatIfTool(),
 ]
 GRADE_MANAGER_WRITE_TOOLS = [
     AddModuleToStudyPlanTool(),
@@ -800,7 +1101,12 @@ def _matching_modules(
             continue
         if _module_matches_query(module, query, normalized_query):
             result.append(module)
-    return result
+    exact = [
+        module
+        for module in result
+        if _module_exactly_matches_query(module, query, normalized_query)
+    ]
+    return exact or result
 
 
 def _module_matches_query(module: Module, raw_query: str, normalized_query: str) -> bool:
@@ -815,6 +1121,14 @@ def _module_matches_query(module: Module, raw_query: str, normalized_query: str)
     if normalized_query == _normalize(module.name):
         return True
     return normalized_query in _normalize(module.name)
+
+
+def _module_exactly_matches_query(module: Module, raw_query: str, normalized_query: str) -> bool:
+    if module.id == raw_query:
+        return True
+    if module.moses_number and _normalize(module.moses_number) == normalized_query:
+        return True
+    return normalized_query == _normalize(module.name)
 
 
 def _module_state_or_error(value: str | ModuleState) -> ModuleState:

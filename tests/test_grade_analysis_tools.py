@@ -140,6 +140,126 @@ def test_target_grade_optimizer_reports_missing_projection_and_does_not_write(mo
     assert "does not write estimates or modules" in output
 
 
+def test_target_grade_optimizer_accepts_constraints_default_and_optimize_only(monkeypatch, tmp_path):
+    modules = [
+        _module("completed", "Completed Elective", 54, 1.0, "Elective"),
+        _module("thesis", "Master Thesis", 30, None, "Master Thesis", state=ModuleState.PLANNED, estimated_grade=2.0),
+        _module("quality", "Quality & Usability", 6, None, "Elective", state=ModuleState.IN_PROGRESS, estimated_grade=2.0),
+        _module("web", "Web-Service Engineering", 30, None, "Elective", state=ModuleState.PLANNED, estimated_grade=3.0),
+    ]
+    _setup_profile(monkeypatch, tmp_path, modules)
+    before = persistence.modules_path("primary").read_text(encoding="utf-8")
+
+    output = grade_analysis_tools.run_target_grade_optimizer(
+        target_grade=1.1,
+        program_key=CS_PROGRAM,
+        default_open_grade=1.0,
+        optimize_only=["Master Thesis"],
+        constraints=[
+            grade_analysis_tools.GradeConstraintInput(
+                module_query="Quality & Usability",
+                best_grade=1.7,
+                worst_grade=2.0,
+            ),
+            grade_analysis_tools.GradeConstraintInput(
+                module_query="Web-Service Engineering",
+                fixed_grade=1.3,
+            ),
+        ],
+        include_breakdown=True,
+    )
+
+    after = persistence.modules_path("primary").read_text(encoding="utf-8")
+    assert before == after
+    assert "Default open-grade assumption: `1.0`" in output
+    assert "Only optimize `Master Thesis`" in output
+    assert "`Quality & Usability` allowed range `1.7` to `2.0`" in output
+    assert "`Web-Service Engineering` fixed at `1.3`" in output
+    assert "Suggested result counted modules" in output
+    assert "does not write estimates or modules" in output
+
+
+def test_grade_what_if_scenario_applies_fixed_grade_without_writing(monkeypatch, tmp_path):
+    modules = [
+        _module("thesis", "Master Thesis", 30, None, "Master Thesis", state=ModuleState.PLANNED, estimated_grade=2.0),
+        _module("web", "Web-Service Engineering", 30, None, "Elective", state=ModuleState.PLANNED, estimated_grade=2.3),
+        _module("elective", "Other Elective", 60, 1.0, "Elective"),
+    ]
+    _setup_profile(monkeypatch, tmp_path, modules)
+    before = persistence.modules_path("primary").read_text(encoding="utf-8")
+
+    output = grade_analysis_tools.run_grade_what_if_scenario(
+        program_key=CS_PROGRAM,
+        constraints=[
+            grade_analysis_tools.GradeConstraintInput(
+                module_query="Web-Service Engineering",
+                fixed_grade=1.3,
+            )
+        ],
+    )
+
+    after = persistence.modules_path("primary").read_text(encoding="utf-8")
+    assert before == after
+    assert "Grade what-if scenario" in output
+    assert "Web-Service Engineering" in output
+    assert "What-if grade" in output
+    assert "does not write grades, estimates, or modules" in output
+
+
+def test_grade_contribution_breakdown_lists_excluded_sections(monkeypatch, tmp_path):
+    modules = _partial_boundary_modules()
+    modules.append(
+        _module(
+            "additional",
+            "Additional Psychology",
+            6,
+            2.0,
+            "Additional Courses",
+            state=ModuleState.PLANNED,
+        )
+    )
+    _setup_profile(monkeypatch, tmp_path, modules)
+
+    output = grade_analysis_tools.get_degree_grade_contribution_breakdown(
+        program_key=CS_PROGRAM,
+        scenario="Forecast",
+    )
+
+    assert "Grade contribution breakdown" in output
+    assert "Counted degree modules" in output
+    assert "Discarded degree modules" in output
+    assert "Additional/non-degree modules" in output
+    assert "Additional Psychology" in output
+    assert "Possible candidate modules" in output
+    assert "Possible Candidate" in output
+
+
+def test_grade_constraint_ambiguous_module_query_reports_choices(monkeypatch, tmp_path):
+    _setup_profile(
+        monkeypatch,
+        tmp_path,
+        [
+            _module("quality-a", "Quality & Usability", 3, None, "Elective", state=ModuleState.PLANNED, estimated_grade=2.0),
+            _module("quality-b", "Study Project Quality & Usability", 9, None, "Elective", state=ModuleState.PLANNED, estimated_grade=2.0),
+            _module("thesis", "Master Thesis", 30, None, "Master Thesis", state=ModuleState.PLANNED, estimated_grade=2.0),
+        ],
+    )
+
+    output = grade_analysis_tools.run_grade_what_if_scenario(
+        program_key=CS_PROGRAM,
+        constraints=[
+            grade_analysis_tools.GradeConstraintInput(
+                module_query="Quality",
+                fixed_grade=1.7,
+            )
+        ],
+    )
+
+    assert "ambiguous" in output
+    assert "Quality & Usability" in output
+    assert "Study Project Quality & Usability" in output
+
+
 def test_target_grade_optimizer_reports_unreachable_without_open_grades(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path, _completed_degree_modules())
 

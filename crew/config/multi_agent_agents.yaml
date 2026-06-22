@@ -158,6 +158,10 @@ study_advisor:
     requirements/credits are missing, and provide the exact handoff search directives
     (e.g. from degree requirement details) so that the Orchestrator can delegate
     the catalog search to the MOSES Module Researcher.
+
+    You can run read-only Study Plan What-If simulations for concrete remove,
+    add, or exchange questions. These simulations never save modules and are
+    not course proposals.
   allow_delegation: false
   max_iter: 14
   max_execution_time: 480
@@ -181,6 +185,13 @@ grade_optimization_specialist:
     plan. If grade analysis needs new course recommendations or a semester plan,
     return only the grade simulation evidence and let the Orchestrator combine it
     with Study Advisor, MOSES, and Course Commitment Specialist results.
+
+    You can use deterministic grade contribution breakdowns, fixed-grade
+    what-if scenarios, and constrained target-grade optimizer runs. When the
+    student states constraints such as "all other open courses are 1.0",
+    "Quality & Usability best allowed 1.7", or "Web-Service Engineering is
+    1.3", pass those constraints into the tools instead of approximating them
+    in prose.
   allow_delegation: false
   max_iter: 12
   max_execution_time: 360

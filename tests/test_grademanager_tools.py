@@ -462,6 +462,138 @@ def test_remove_module_from_study_plan_removes_only_unique_planned_module(monkey
     assert [module.id for module in persistence.load_modules("primary")] == ["ana1"]
 
 
+def test_study_plan_what_if_remove_is_read_only_and_reports_broken_rules(monkeypatch, tmp_path):
+    modules = [
+        _module(
+            module_id="project",
+            name="Study Project Quality & Usability",
+            state=ModuleState.PLANNED,
+            cp=9,
+            module_types=["Project"],
+        ),
+        _module(
+            module_id="seminar",
+            name="Quality & Usability",
+            state=ModuleState.IN_PROGRESS,
+            cp=3,
+            module_types=["Seminar"],
+        ),
+        _module(
+            module_id="thesis",
+            name="Master Thesis",
+            state=ModuleState.PLANNED,
+            cp=30,
+            area="Master Thesis",
+        ),
+    ]
+    _setup_profile(monkeypatch, tmp_path, modules)
+    before = persistence.modules_path("primary").read_text(encoding="utf-8")
+
+    output = grademanager_tools.run_study_plan_what_if(
+        program_key=CS_PROGRAM,
+        operations=[
+            grademanager_tools.StudyPlanWhatIfOperationInput(
+                action="remove",
+                module_query="Quality & Usability",
+            )
+        ],
+    )
+
+    after = persistence.modules_path("primary").read_text(encoding="utf-8")
+    assert before == after
+    assert "Study-plan what-if" in output
+    assert "Removed `Quality & Usability`" in output
+    assert "Newly broken rules" in output
+    assert "Seminar (>=1 module)" in output
+    assert "does not add, remove, update, or save" in output
+
+
+def test_study_plan_what_if_remove_robotics_is_read_only(monkeypatch, tmp_path):
+    modules = [
+        _module(
+            module_id="robotics",
+            name="Robotics",
+            state=ModuleState.PLANNED,
+            cp=6,
+            term="WS 26/27",
+            moses_number="40686",
+            moses_version=1,
+        ),
+        _module(
+            module_id="thesis",
+            name="Master Thesis",
+            state=ModuleState.PLANNED,
+            cp=30,
+            area="Master Thesis",
+        ),
+    ]
+    _setup_profile(monkeypatch, tmp_path, modules)
+    before = persistence.modules_path("primary").read_text(encoding="utf-8")
+
+    output = grademanager_tools.run_study_plan_what_if(
+        program_key=CS_PROGRAM,
+        operations=[
+            grademanager_tools.StudyPlanWhatIfOperationInput(
+                action="remove",
+                module_query="Robotics",
+            )
+        ],
+    )
+
+    after = persistence.modules_path("primary").read_text(encoding="utf-8")
+    assert before == after
+    assert "Removed `Robotics`" in output
+    assert "Simulated degree-plan LP" in output
+
+
+def test_study_plan_what_if_exchange_uses_moses_replacement_without_writing(monkeypatch, tmp_path):
+    modules = [
+        _module(
+            module_id="python",
+            name="Python for Machine Learning",
+            state=ModuleState.PLANNED,
+            cp=6,
+            term="WS 26/27",
+            moses_number="41143",
+            moses_version=1,
+        ),
+        _module(
+            module_id="thesis",
+            name="Master Thesis",
+            state=ModuleState.PLANNED,
+            cp=30,
+            area="Master Thesis",
+        ),
+    ]
+    _setup_profile(monkeypatch, tmp_path, modules)
+    monkeypatch.setattr(
+        grademanager_tools.moses_provider,
+        "fetch_course_details_for_query",
+        lambda *args, **kwargs: _fake_moses_result(),
+    )
+    before = persistence.modules_path("primary").read_text(encoding="utf-8")
+
+    output = grademanager_tools.run_study_plan_what_if(
+        program_key=CS_PROGRAM,
+        operations=[
+            grademanager_tools.StudyPlanWhatIfOperationInput(
+                action="exchange",
+                module_query="Python for Machine Learning",
+                replacement_query="40967",
+                term="WS 26/27",
+                estimated_grade=1.7,
+            )
+        ],
+        include_modules=True,
+    )
+
+    after = persistence.modules_path("primary").read_text(encoding="utf-8")
+    assert before == after
+    assert "Exchanged `Python for Machine Learning` for `Machine Learning 2`" in output
+    assert "Machine Learning 2" in output
+    assert "does not add, remove, update, or save" in output
+
+
 def test_program_alias_and_core_module_area_are_canonicalized_for_writes(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path, [])
     monkeypatch.setattr(

@@ -49,6 +49,7 @@ def test_study_advisor_crew_uses_grade_manager_tools_only(monkeypatch):
     assert "Add Module To Study Plan" in write_names
     assert "Update Module In Study Plan" in write_names
     assert "Remove Module From Study Plan" in write_names
+    assert "Run Study Plan What-If" in agent_tool_names
     assert "Add Module To Study Plan" not in agent_tool_names
     assert "Update Module In Study Plan" not in agent_tool_names
     assert "Remove Module From Study Plan" not in agent_tool_names

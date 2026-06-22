@@ -41,7 +41,9 @@ def test_grade_optimization_crew_uses_grade_analysis_tools_only(monkeypatch):
     agent_tool_names = [tool.name for tool in built_crew.agents[0].tools]
     assert agent_tool_names == [tool.name for tool in GRADE_ANALYSIS_TOOLS]
     assert "Get Grade Scenario Outlook" in agent_tool_names
+    assert "Get Degree Grade Contribution Breakdown" in agent_tool_names
     assert "Run Grade Sensitivity Analysis" in agent_tool_names
+    assert "Run Grade What-If Scenario" in agent_tool_names
     assert "Run Target Grade Optimizer" in agent_tool_names
     assert "Get Study Plan Snapshot" not in agent_tool_names
     assert "Add Module To Study Plan" not in agent_tool_names

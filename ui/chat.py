@@ -143,6 +143,23 @@ def render_chat_page() -> None:
         threads.insert(0, t_active)
         thread_options[active_tid] = thread_label(t_active)
         
+    def on_new_chat(slug: str):
+        new_t = reset_chat_thread(slug)
+        st.session_state[f"active_thread_id_{slug}"] = new_t.thread_id
+        st.session_state[f"chat_session_selector_{slug}"] = new_t.thread_id
+        _set_profile_messages(slug, [])
+        _clear_all_course_card_state(slug)
+
+    def on_delete_chat(slug: str, tid: str):
+        if tid == "default":
+            clear_chat_thread(slug, thread_id="default")
+        else:
+            clear_chat_thread(slug, thread_id=tid)
+            st.session_state[f"active_thread_id_{slug}"] = "default"
+            st.session_state[f"chat_session_selector_{slug}"] = "default"
+        _set_profile_messages(slug, [])
+        _clear_all_course_card_state(slug)
+
     col_sel, col_new, col_del = st.columns([3, 1, 1])
     with col_sel:
         selected_tid = st.selectbox(
@@ -158,27 +175,26 @@ def render_chat_page() -> None:
             st.rerun()
             
     with col_new:
-        if st.button("＋ New Chat", key=f"chat_new_btn_header_{profile_slug}", use_container_width=True, type="secondary"):
-            new_t = reset_chat_thread(profile_slug)
-            st.session_state[f"active_thread_id_{profile_slug}"] = new_t.thread_id
-            st.session_state[f"chat_session_selector_{profile_slug}"] = new_t.thread_id
-            _set_profile_messages(profile_slug, [])
-            _clear_all_course_card_state(profile_slug)
-            st.rerun()
+        st.button(
+            "＋ New Chat",
+            key=f"chat_new_btn_header_{profile_slug}",
+            use_container_width=True,
+            type="secondary",
+            on_click=on_new_chat,
+            args=(profile_slug,)
+        )
             
     with col_del:
         is_default = (active_tid == "default")
         btn_label = "🗑️ Clear" if is_default else "🗑️ Delete"
-        if st.button(btn_label, key=f"chat_del_btn_header_{profile_slug}", use_container_width=True, type="secondary"):
-            if is_default:
-                clear_chat_thread(profile_slug, thread_id="default")
-            else:
-                clear_chat_thread(profile_slug, thread_id=active_tid)
-                st.session_state[f"active_thread_id_{profile_slug}"] = "default"
-                st.session_state[f"chat_session_selector_{profile_slug}"] = "default"
-            _set_profile_messages(profile_slug, [])
-            _clear_all_course_card_state(profile_slug)
-            st.rerun()
+        st.button(
+            btn_label,
+            key=f"chat_del_btn_header_{profile_slug}",
+            use_container_width=True,
+            type="secondary",
+            on_click=on_delete_chat,
+            args=(profile_slug, active_tid)
+        )
             
     st.markdown("<div style='margin-bottom: 0.8rem;'></div>", unsafe_allow_html=True)
 

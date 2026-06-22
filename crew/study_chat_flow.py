@@ -628,13 +628,16 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                             "- simple_moses: Single questions about module catalog, prerequisites, workload\n"
                             "- simple_isis: Read-only questions about deadlines/assignments/info in a known ISIS course\n"
                             "- simple_degree_regulations: Single questions about AllgStuPO, StuPO, degree rules, exam regulations, free-choice/elective rules, or Regelstudienplan from local PDFs\n"
-                            "- recommendation: Semester/course planning, follow-ups to active proposals, course selection, and any request to enroll/register/add/save/write course actions for confirmation\n"
-                            "- deep_dive: Broad/multi-source queries, unclear intent, or when combining multiple sources makes sense\n"
+                            "- recommendation: Explicit requests for new course alternatives, course replacements, concrete course recommendations to add/register/enroll, follow-ups to active proposals, or any request to enroll/register/add/save/write course actions for confirmation\n"
+                            "- deep_dive: Broad/multi-source queries, current-plan evaluation, best-grade planning with existing planned/in-progress courses, unclear intent, or when combining multiple sources makes sense\n"
                             "Prefer simple routes only when the selected single specialist can fully answer the request "
                             "without coordination. Never use a simple_* route for write_intent=true, course planning, "
                             "semester planning, course selection/recommendations, active proposal follow-ups, or any "
                             "request that combines multiple sources. Use recommendation or deep_dive when the answer "
-                            "needs coordination across Grade Manager, grade optimization, MOSES, ISIS, or regulations."
+                            "needs coordination across Grade Manager, grade optimization, MOSES, ISIS, or regulations. "
+                            "Use deep_dive, not recommendation, for open questions that ask how the current planned study plan looks, "
+                            "how to optimize grades in already planned/in-progress modules, or whether the current plan can reach a target grade. "
+                            "Use recommendation only when the user explicitly wants specific new courses, alternatives, replacements, enrollment, or saved plan changes."
                         ),
                     },
                     {

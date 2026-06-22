@@ -235,17 +235,19 @@ def get_degree_requirement_details(
         shown = [
             requirement
             for requirement in program.requirements
-            if include_satisfied or not requirement.satisfied
+            if include_satisfied or not _requirement_is_completed(requirement)
         ]
         if not shown:
             lines.append("- No requirements to show with the current filter.")
         else:
-            lines.append("| Status | Severity | Rule | Message |")
-            lines.append("|---|---|---|---|")
+            lines.append("| Status | Severity | Rule | Coverage evidence | Message |")
+            lines.append("|---|---|---|---|---|")
             for requirement in shown:
-                status = "satisfied" if requirement.satisfied else "missing"
+                status = _requirement_status_label(requirement)
                 lines.append(
-                    f"| {status} | {_cell(requirement.severity)} | {_cell(requirement.rule_name)} | {_cell(requirement.message)} |"
+                    f"| {_cell(status)} | {_cell(_requirement_display_severity(requirement))} | "
+                    f"{_cell(requirement.rule_name)} | {_cell(_format_requirement_evidence(requirement) or '-')} | "
+                    f"{_cell(_requirement_with_assumptions(requirement))} |"
                 )
         if program.search_directives:
             lines.extend(["", "### Moses handoff directives"])
@@ -843,6 +845,19 @@ def _build_program_summary(program_key: str, modules: list[Module]) -> StudyPlan
                 satisfied=item.satisfied,
                 message=item.message,
                 severity=item.severity,
+                coverage_status=item.coverage_status,
+                scope_results={
+                    key: value.model_dump(mode="json")
+                    for key, value in item.scope_results.items()
+                },
+                evidence=[
+                    _validation_evidence_brief(evidence, program_key=program_key)
+                    for evidence in item.evidence
+                ],
+                assumptions=[
+                    assumption.model_dump(mode="json")
+                    for assumption in item.assumptions
+                ],
             )
             for item in validations
         ]
@@ -903,6 +918,77 @@ def _module_briefs(modules: Iterable[Module], *, max_modules: int) -> list[Stude
         )
         for module in _sort_modules(list(modules))[: _clamp(max_modules, 1, MAX_OUTPUT_MODULES)]
     ]
+
+
+def _validation_evidence_brief(evidence, *, program_key: str) -> StudentModuleBrief:
+    name = str(getattr(evidence, "name", "") or "Unknown module")
+    state = str(getattr(evidence, "state", "") or "not listed")
+    term = getattr(evidence, "term", None)
+    return StudentModuleBrief(
+        id=_normalize(f"{program_key}-{name}-{state}-{term}"),
+        name=name,
+        state=state,
+        program_key=program_key,
+        credits=float(getattr(evidence, "credits", 0.0) or 0.0),
+        area=str(getattr(evidence, "area", "") or "not listed"),
+        term=term,
+        catalogs=list(getattr(evidence, "catalogs", []) or []),
+        module_types=list(getattr(evidence, "module_types", []) or []),
+    )
+
+
+def _requirement_is_completed(requirement: RequirementBrief) -> bool:
+    coverage = (requirement.coverage_status or "").strip()
+    if coverage:
+        return requirement.satisfied and coverage == "completed"
+    return requirement.satisfied
+
+
+def _requirement_status_label(requirement: RequirementBrief) -> str:
+    coverage = (requirement.coverage_status or "").strip()
+    if coverage == "completed":
+        return "completed"
+    if coverage == "in_progress":
+        return "covered by in-progress"
+    if coverage == "planned":
+        return "covered by planned"
+    if coverage == "missing":
+        return "missing"
+    return "satisfied" if requirement.satisfied else "missing"
+
+
+def _requirement_display_severity(requirement: RequirementBrief) -> str:
+    if requirement.satisfied and requirement.coverage_status in {"in_progress", "planned"}:
+        return "info"
+    return requirement.severity
+
+
+def _format_requirement_evidence(requirement: RequirementBrief) -> str:
+    if not requirement.evidence:
+        return ""
+    parts = []
+    for module in requirement.evidence[:8]:
+        term = f", {module.term}" if module.term else ""
+        parts.append(f"{module.name} ({module.state}, {_fmt_cp(module.credits)}{term})")
+    if len(requirement.evidence) > 8:
+        parts.append(f"+{len(requirement.evidence) - 8} more")
+    return ", ".join(parts)
+
+
+def _format_requirement_assumptions(requirement: RequirementBrief) -> str:
+    messages = [
+        str(item.get("message") or "").strip()
+        for item in requirement.assumptions
+        if isinstance(item, dict) and str(item.get("message") or "").strip()
+    ]
+    return " ".join(messages)
+
+
+def _requirement_with_assumptions(requirement: RequirementBrief) -> str:
+    assumptions = _format_requirement_assumptions(requirement)
+    if not assumptions:
+        return requirement.message
+    return f"{requirement.message} Assumption: {assumptions}"
 
 
 def _apply_module_filters(
@@ -986,38 +1072,46 @@ def _search_directives(program_key: str, requirements: list[RequirementBrief]) -
             continue
         if requirement.rule_name.startswith("Completion status"):
             continue
-        text = _normalize(" ".join([requirement.rule_name, requirement.message]))
-        if "automaticrebalancing" in text:
+        rule_text = _normalize(requirement.rule_name)
+        full_text = _normalize(" ".join([requirement.rule_name, requirement.message]))
+        if "automaticrebalancing" in rule_text or "automaticrebalancing" in full_text:
             directives.append(
                 "Review the Elective/Free Choice balance in the Grade Manager. This warning is about classification, not immediate MOSES discovery."
             )
-        elif "additionalcourses" in text or "zusatz" in text:
+        elif "additionalcourses" in rule_text or "zusatz" in rule_text:
             directives.append(
                 f"Review modules classified as Additional Courses for `{program_key}`. If the area is over its limit, do not search for more modules; reclassify or remove candidates instead."
             )
-        elif "project" in text or "projekt" in text:
+        elif "project" in rule_text or "projekt" in rule_text:
             directives.append(
                 f"Ask the MOSES Module Researcher for project modules in `{program_key}`, preferably in Wahlpflichtbereich/Elective; use course_type=project and min_credits=9 when appropriate."
             )
-        elif "seminar" in text:
+        elif "seminar" in rule_text:
             directives.append(
                 f"Ask the MOSES Module Researcher for seminar modules in `{program_key}`, preferably in Wahlpflichtbereich/Elective; use course_type=seminar."
             )
-        elif "thesis" in text or "arbeit" in text:
+        elif "thesis" in rule_text or "arbeit" in rule_text:
             directives.append("This is a thesis planning requirement, not a MOSES search task. Confirm thesis timing and supervisor process with the student.")
-        elif "mandatory" in text or "pflicht" in text:
+        elif "mandatory" in rule_text or "pflicht" in rule_text:
             directives.append(
                 f"Ask the Degree Regulations Specialist first for the `{program_key}` Regelstudienplan/Modulplan semester mapping and StuPO-listed Pflicht modules, then ask the MOSES Module Researcher to verify current module details, offerings, and catalog membership for the missing Pflichtbereich/Mandatory modules."
             )
-        elif "freechoice" in text or "wahlbereich" in text:
+        elif "freechoice" in rule_text or "wahlbereich" in rule_text:
             directives.append(
                 f"Ask the MOSES Module Researcher for broad-interest modules that can be used as Free Choice for `{program_key}`; verify with `Check Module Against Study Plan` before adding."
             )
-        elif "internship" in text or "praktikum" in text:
+        elif "internship" in rule_text or "praktikum" in rule_text:
             directives.append(
                 f"Ask for internship/praktikum options for `{program_key}` and verify whether the degree strategy counts them as Internship."
             )
-        elif "elective" in text or "profile" in text or "wahlpflicht" in text:
+        elif (
+            "elective" in rule_text
+            or "profile" in rule_text
+            or "wahlpflicht" in rule_text
+            or "studyarea" in rule_text
+            or "mainstudyarea" in rule_text
+            or "breadth" in rule_text
+        ):
             directives.append(
                 f"Ask the MOSES Module Researcher for degree-linked Wahlpflichtbereich/Elective modules for `{program_key}` matching the student's interests."
             )
@@ -1047,14 +1141,26 @@ def _format_student_plan_context(context: StudentPlanContext, *, include_modules
         )
 
     for program in context.programs:
-        missing = [item for item in program.requirements if not item.satisfied]
+        missing = [
+            item for item in program.requirements
+            if not _requirement_is_completed(item)
+        ]
         lines.extend(["", f"## Requirements: {program.program_key}"])
         if program.warnings:
             lines.extend(["Warnings:", *[f"- {warning}" for warning in program.warnings], ""])
         if missing:
             lines.append("Missing or open requirements:")
             for requirement in missing[:10]:
-                lines.append(f"- {requirement.rule_name} ({requirement.severity}): {requirement.message}")
+                lines.append(
+                    f"- {requirement.rule_name} ({_requirement_status_label(requirement)}, "
+                    f"{_requirement_display_severity(requirement)}): {requirement.message}"
+                )
+                evidence = _format_requirement_evidence(requirement)
+                if evidence:
+                    lines.append(f"  Evidence: {evidence}")
+                assumptions = _format_requirement_assumptions(requirement)
+                if assumptions:
+                    lines.append(f"  Assumptions: {assumptions}")
         else:
             lines.append("No missing requirements reported by the degree validator.")
         if program.search_directives:

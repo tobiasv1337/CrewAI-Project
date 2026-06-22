@@ -163,13 +163,14 @@ def test_planned_modules_create_completed_only_advisories(monkeypatch, tmp_path)
         include_satisfied=False,
     )
 
-    assert "Completion status (completed only): Project (>=9 credits)" in output
-    assert "Completion status (completed + in progress): Project (>=9 credits)" in output
-    assert "9 LP still open in the completed only view" in output
+    assert "Completion status (completed only): Project (>=9 credits)" not in output
+    assert "Completion status (completed + in progress): Project (>=9 credits)" not in output
+    assert "covered by planned" in output
+    assert "9 LP still open" in output
     assert "Project Lab (Planned, 9 LP, WS 26/27)" in output
-    assert "Completion status (completed only): Seminar (>=1 module)" in output
-    assert "Completion status (completed + in progress): Seminar (>=1 module)" in output
-    assert "1 module still open in the completed only view" in output
+    assert "Completion status (completed only): Seminar (>=1 module)" not in output
+    assert "Completion status (completed + in progress): Seminar (>=1 module)" not in output
+    assert "1 module still open" in output
     assert "Security Seminar (Planned, 3 LP, SS 27)" in output
     assert "Ask the MOSES Module Researcher for project modules" not in output
     assert "Ask the MOSES Module Researcher for seminar modules" not in output

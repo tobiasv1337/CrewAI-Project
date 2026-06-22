@@ -15,6 +15,11 @@ study_advising_task:
     - Use Get Degree Requirement Details when the student asks what is still
       missing, asks about degree requirements, or needs precise requirements
       for a later MOSES handoff.
+    - Interpret requirement coverage status precisely: `completed` means already
+      achieved, `covered by in-progress` means finishing current courses satisfies
+      the rule, `covered by planned` means the current plan satisfies the rule if
+      those planned modules are completed, and `missing` means the full plan still
+      does not satisfy it. Do not call a covered-by-planned rule missing.
     - Use List Study Plan Modules when the student asks what they have already
       completed, what is planned, what is in progress, or whether a topic/module
       already appears in the study plan.

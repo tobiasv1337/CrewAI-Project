@@ -282,8 +282,12 @@ class TestTUBerlinLogic(unittest.TestCase):
 
         validations = self._validation_map(modules)
         self.assertTrue(validations["Main study area (30-42 credits)"].satisfied)
-        self.assertIn("Data and Software Engineering", validations["Main study area (30-42 credits)"].message)
-        self.assertIn("Foundations of Computing", validations["Main study area (30-42 credits)"].message)
+        main_area = validations["Main study area (30-42 credits)"]
+        self.assertIn("Data and Software Engineering", main_area.message)
+        self.assertIn("Foundations of Computing", main_area.message)
+        self.assertIn("Candidate evidence", main_area.message)
+        self.assertIn("Multi0", main_area.message)
+        self.assertEqual(len(main_area.evidence), 10)
 
     def test_additional_courses_are_excluded_from_degree_and_gpa(self):
         normal = Module(
@@ -447,10 +451,13 @@ class TestTUBerlinLogic(unittest.TestCase):
         self.assertTrue(validations["Study areas total (60-66 credits)"].satisfied)
         self.assertTrue(validations["Free choice (24-30 credits)"].satisfied)
         self.assertIn("Automatic Electives Rebalancing", validations)
-        self.assertIn(
-            "Overflow Module",
-            validations["Automatic Electives Rebalancing"].message,
-        )
+        rebalancing = validations["Automatic Electives Rebalancing"]
+        self.assertIn("Grade Manager internally assumes", rebalancing.message)
+        self.assertIn("registered as Free Choice", rebalancing.message)
+        self.assertIn("All rule and grade results depend on this exact rebalancing", rebalancing.message)
+        self.assertIn("Overflow Module", rebalancing.message)
+        self.assertEqual(rebalancing.assumptions[0].kind, "automatic_elective_free_choice_rebalancing")
+        self.assertEqual(rebalancing.assumptions[0].modules[0].name, "Overflow Module")
 
     def test_offering_matches_term(self):
         self.assertTrue(offering_matches_term(ModuleOffering.BOTH, "WS 26/27"))
@@ -520,16 +527,54 @@ class TestTUBerlinLogic(unittest.TestCase):
 
         validations = self._validation_map(modules)
 
-        completed_only = validations["Completion status (completed only): Project (>=9 credits)"]
-        self.assertFalse(completed_only.satisfied)
-        self.assertEqual(completed_only.severity, "info")
-        self.assertIn("9 LP still open in the completed only view", completed_only.message)
-        self.assertIn("Planned Project (Planned, 9 LP, WS 26/27)", completed_only.message)
+        self.assertNotIn("Completion status (completed only): Project (>=9 credits)", validations)
+        self.assertNotIn("Completion status (completed + in progress): Project (>=9 credits)", validations)
 
-        completed_running = validations["Completion status (completed + in progress): Project (>=9 credits)"]
-        self.assertFalse(completed_running.satisfied)
-        self.assertEqual(completed_running.severity, "info")
-        self.assertIn("9 LP still open in the completed + in progress view", completed_running.message)
+        project = validations["Project (>=9 credits)"]
+        self.assertTrue(project.satisfied)
+        self.assertEqual(project.coverage_status, "planned")
+        self.assertFalse(project.scope_results["completed"].satisfied)
+        self.assertFalse(project.scope_results["completed_in_progress"].satisfied)
+        self.assertTrue(project.scope_results["full_plan"].satisfied)
+        self.assertIn("Coverage status: covered only after planned modules are completed", project.message)
+        self.assertIn("9 LP still open", project.message)
+        self.assertIn("Planned Project (Planned, 9 LP, WS 26/27)", project.message)
+        self.assertEqual([module.name for module in project.evidence], ["Planned Project"])
+
+    def test_in_progress_requirement_has_single_in_progress_coverage_status(self):
+        modules = [
+            Module(
+                id="running-project",
+                name="Running Project",
+                cp=9,
+                area="Electives",
+                term="SS 26",
+                state=ModuleState.IN_PROGRESS,
+                catalogs=["Data and Software Engineering"],
+                module_types=["Project"],
+            )
+        ]
+
+        validations = self._validation_map(modules)
+
+        project = validations["Project (>=9 credits)"]
+        self.assertTrue(project.satisfied)
+        self.assertEqual(project.coverage_status, "in_progress")
+        self.assertFalse(project.scope_results["completed"].satisfied)
+        self.assertTrue(project.scope_results["completed_in_progress"].satisfied)
+        self.assertTrue(project.scope_results["full_plan"].satisfied)
+        self.assertIn("covered by in-progress modules", project.message)
+        self.assertIn("Running Project (In Progress, 9 LP, SS 26)", project.message)
+
+    def test_missing_requirement_keeps_single_missing_rule_status(self):
+        validations = self._validation_map([])
+
+        project = validations["Project (>=9 credits)"]
+        self.assertFalse(project.satisfied)
+        self.assertEqual(project.coverage_status, "missing")
+        self.assertFalse(project.scope_results["completed"].satisfied)
+        self.assertFalse(project.scope_results["completed_in_progress"].satisfied)
+        self.assertFalse(project.scope_results["full_plan"].satisfied)
 
     def test_technische_informatik_has_no_sustainability_requirement(self):
         manager = DegreeManager(TUBerlinTechnischeInformatikBachelor())

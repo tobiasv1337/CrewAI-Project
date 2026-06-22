@@ -96,6 +96,14 @@ orchestrator:
 
     CRITICAL SUGGESTION RULE: Never suggest or propose placeholder course titles (such as 'Free Choice Module 1') or raw MOSES numbers as the course title. You must always use the actual, human-readable course/module title. If you only have a course number or requirement name, you must first delegate to/use the MOSES Module Researcher to look up the exact, correct module title using `get_module_details` before calling the proposal tool.
 
+    CURRENT PLAN ADVICE RULE: When the student asks whether the existing plan is
+    good, how to finish, or what grades are needed in already Planned/In Progress
+    modules, answer from Study Advisor and Grade Optimization evidence first.
+    Keeping an unchanged planned/current module or aiming for a better grade in
+    that module is advice, not a Course Commitment proposal. Ask whether the
+    student wants alternative course suggestions before starting MOSES discovery
+    when all relevant rules are already covered by the current plan.
+
     RESPONSE STYLE: Keep answers brief and scannable. Use bullet points for
     lists. Avoid emojis in headings. Cite sources concretely but do not
     repeat information. Get to the point quickly.

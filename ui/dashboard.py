@@ -24,7 +24,7 @@ from core.calculation_variants import (
     discard_variant_options,
     discard_variants_differ,
 )
-from core.interfaces import Scenario
+from core.interfaces import Scenario, ValidationResult
 from core.grade_targets import (
     GradeTargetResult,
     format_grade_value,
@@ -76,6 +76,33 @@ def _format_optional_grade(value: object) -> str:
     if isinstance(value, (int, float)) and value > 0:
         return f"{float(value):.1f}"
     return "-"
+
+
+def _validation_completed(result: ValidationResult) -> bool:
+    coverage = (result.coverage_status or "").strip()
+    if coverage:
+        return result.satisfied and coverage == "completed"
+    return result.satisfied
+
+
+def _validation_display_severity(result: ValidationResult) -> str:
+    if result.satisfied and result.coverage_status in {"in_progress", "planned"}:
+        return "info"
+    return result.severity
+
+
+def _validation_display_status(result: ValidationResult) -> str:
+    if _validation_completed(result):
+        return "OK"
+    if result.coverage_status == "in_progress":
+        return "Info: covered by in-progress"
+    if result.coverage_status == "planned":
+        return "Info: covered by planned"
+    if result.severity == "info":
+        return "Info"
+    if result.severity == "warning":
+        return "Warning"
+    return "Error"
 
 
 def _format_optional_decimal(value: object) -> str:
@@ -1090,8 +1117,12 @@ def _combined_degree_summary_rows(
         validations = manager.validate(modules_all) if modules_all else []
         error_count = sum(1 for result in validations if (not result.satisfied) and result.severity == "error")
         warning_count = sum(1 for result in validations if (not result.satisfied) and result.severity == "warning")
-        info_count = sum(1 for result in validations if (not result.satisfied) and result.severity == "info")
-        ok_count = sum(1 for result in validations if result.satisfied)
+        info_count = sum(
+            1
+            for result in validations
+            if not _validation_completed(result) and _validation_display_severity(result) == "info"
+        )
+        ok_count = sum(1 for result in validations if _validation_completed(result))
         required_cp = float(manager.get_total_cp_required())
         progress = progress_stats(degree_modules)
         required_progress = (
@@ -2390,12 +2421,12 @@ def _render_combined_dashboard(programs: list[str]) -> None:
             if manager is None:
                 continue
             for result in manager.validate(projected_modules_for_program(program_key, all_modules)):
-                if result.satisfied:
+                if _validation_completed(result):
                     continue
                 issue_rows.append(
                     {
                         "Degree": short_program_label(program_key),
-                        "Severity": result.severity.title(),
+                        "Severity": _validation_display_severity(result).title(),
                         "Rule": result.rule_name,
                         "Message": result.message,
                     }
@@ -2493,8 +2524,12 @@ def _render_dashboard_content(program_key: str, *, show_header: bool) -> None:
     planned_terms = len({m.term or "Unknown" for m in counted_modules})
     error_count = sum(1 for v in validations if (not v.satisfied) and v.severity == "error")
     warning_count = sum(1 for v in validations if (not v.satisfied) and v.severity == "warning")
-    info_count = sum(1 for v in validations if (not v.satisfied) and v.severity == "info")
-    ok_count = sum(1 for v in validations if v.satisfied)
+    info_count = sum(
+        1
+        for v in validations
+        if not _validation_completed(v) and _validation_display_severity(v) == "info"
+    )
+    ok_count = sum(1 for v in validations if _validation_completed(v))
 
     if missing_degree_cp > 0:
         best_fill_modules = add_completion_projection(
@@ -2985,15 +3020,16 @@ def _render_dashboard_content(program_key: str, *, show_header: bool) -> None:
         summary_cols[2].metric("Info", str(info_count))
         summary_cols[3].metric("Satisfied", str(ok_count))
         for res in validations:
-            if res.satisfied:
+            display_severity = _validation_display_severity(res)
+            if _validation_completed(res):
                 cls = "nm-rule-ok"
                 badge = "OK"
-            elif res.severity == "error":
+            elif display_severity == "error":
                 cls = "nm-rule-err"
                 badge = "Error"
-            elif res.severity == "info":
+            elif display_severity == "info":
                 cls = "nm-rule-info"
-                badge = "Info"
+                badge = _validation_display_status(res)
             else:
                 cls = "nm-rule-warn"
                 badge = "Warning"

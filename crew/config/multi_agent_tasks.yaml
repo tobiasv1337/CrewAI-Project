@@ -50,8 +50,11 @@ study_assistant_task:
            sensitivity, or forecast risk for the proposed/current plan, delegate
            to the Grade Optimization Specialist for deterministic grade
            simulation evidence.
-         - Step F: Delegate to the Course Commitment Specialist to propose the
-           final verified combination.
+         - Step F: Delegate to the Course Commitment Specialist only when the
+           answer contains concrete new course additions, removals, replacements,
+           enrollment, or other plan changes that need UI confirmation. Do not
+           create commitment proposals for advice to keep the existing current
+           plan unchanged.
        - If the request is only a grade forecast, target-grade optimizer,
          sensitivity, or scenario question, delegate only to the Grade
          Optimization Specialist.
@@ -96,11 +99,15 @@ study_assistant_task:
       use partial-boundary discard handling when available and must not compare
       against alternate discard behavior. If the user asks only a grade
       simulation question, no MOSES, ISIS, regulations, or proposal specialist
-      is needed. If the user asks how to change their course plan to achieve a
-      grade target, keep the workflow hierarchical: get grade evidence from the
-      Grade Optimization Specialist, progress/requirements from the Study
-      Advisor, concrete modules from MOSES when needed, and proposal cards from
-      the Course Commitment Specialist only after module fit is verified.
+      is needed. If the user asks how to optimize grades with already planned
+      or in-progress modules, combine Grade Optimization evidence with Study
+      Advisor requirement coverage and answer directly. If the user asks how to
+      change their course plan to achieve a grade target, keep the workflow
+      hierarchical: get grade evidence from the Grade Optimization Specialist,
+      progress/requirements from the Study Advisor, concrete modules from MOSES
+      only when real missing requirements or explicit alternative-course
+      discovery require it, and proposal cards from the Course Commitment
+      Specialist only after module fit is verified.
     - RULE A — ISIS needs Grade Manager course list first.
       Any request touching current-semester courses, workload, deadlines, or
       assignments REQUIRES the Study Advisor to run first. Extract from its
@@ -117,7 +124,22 @@ study_assistant_task:
       from the Study Advisor's output so MOSES can look up real catalog data
       instead of estimating from LP alone.
     - RULE C — Course Commitment Specialist owns proposal and execution actions.
-      Whenever you recommend, suggest, or select specific courses for the student's study plan or enrollment (e.g. during course planning, semester planning, or course recommendations), you MUST delegate to the Course Commitment Specialist to call `Propose Course Actions For Confirmation` to create explicit UI confirmation proposals for those recommended courses. Do NOT just list recommended courses in prose without generating a UI proposal. Course proposals should include Study Manager enrollment by default. Include ISIS enrollment only when the proposal tool can verify an unambiguous ISIS course for the intended term, either from a verified ISIS id/url, a unique MOSES-to-ISIS candidate, or current ISIS lookup. If the ISIS course is not available yet, the proposal must be Study Manager-only and your answer must tell the student that ISIS enrollment is not included yet. Do NOT ask another specialist to call a write tool.
+      Whenever you recommend, suggest, or select specific NEW courses,
+      replacements, removals, area changes, or enrollment actions for the
+      student's study plan, you MUST delegate to the Course Commitment
+      Specialist to call `Propose Course Actions For Confirmation` to create
+      explicit UI confirmation proposals for those recommended changes. Do NOT
+      create proposal cards for unchanged modules that are already Planned or
+      In Progress and should simply be kept. It is allowed to advise the student
+      to keep the current plan, improve a grade in an already planned/current
+      module, or finish an in-progress module without Course Commitment. Course
+      proposals should include Study Manager enrollment by default. Include ISIS
+      enrollment only when the proposal tool can verify an unambiguous ISIS
+      course for the intended term, either from a verified ISIS id/url, a unique
+      MOSES-to-ISIS candidate, or current ISIS lookup. If the ISIS course is not
+      available yet, the proposal must be Study Manager-only and your answer
+      must tell the student that ISIS enrollment is not included yet. Do NOT ask
+      another specialist to call a write tool.
       No-op duplicate constraint: Existing Planned or In Progress modules from
       the Grade Manager are not new additions when they already match the same
       term and area. The student can still ask for changes; represent those as
@@ -130,7 +152,7 @@ study_assistant_task:
       If the MOSES Module Researcher returned ISIS course candidates from MOSES detail data, pass the MOSES module number/title/term accurately to the Course Commitment Specialist. The proposal tool can reuse unique verified MOSES-to-ISIS candidates and turn them into direct ISIS Enrollment actions.
       If the context contains "Actions already executed in this turn", summarize those execution results exactly and do not re-run the same actions. If active course-card actions are APPROVED or DECLINED but not listed as executed, retain approved actions and revise declined actions only when the user requested replacement, but do not claim that Grade Manager writes or ISIS enrollments happened.
     - RULE D — Study Advisor cannot discover new modules in the catalog.
-      For any task requiring finding, suggesting, or planning new modules or courses (e.g. semester planning, course planning, or course recommendations), you MUST NEVER delegate to the Study Advisor to search for or suggest new modules. The Study Advisor only knows about modules already in the student's plan and cannot search the catalog. You must first delegate to the Study Advisor to identify missing requirements/handoff search directives, then delegate to the MOSES Module Researcher with those directives to search the MOSES catalog and find matching modules, and finally delegate back to the Study Advisor with specific module numbers/names using `Check Module Against Study Plan` to verify degree area fit before proposing them to the student.
+      For any task requiring finding, suggesting, or planning new modules or courses (e.g. semester planning, course planning, or course recommendations), you MUST NEVER delegate to the Study Advisor to search for or suggest new modules. The Study Advisor only knows about modules already in the student's plan and cannot search the catalog. You must first delegate to the Study Advisor to identify missing requirements/handoff search directives, then delegate to the MOSES Module Researcher with those directives to search the MOSES catalog and find matching modules, and finally delegate back to the Study Advisor with specific module numbers/names using `Check Module Against Study Plan` to verify degree area fit before proposing them to the student. If Study Advisor reports that all relevant rules are already covered by completed, in-progress, or planned modules, do not force catalog discovery. Summarize the current plan, grade risks, and ask whether the student wants alternative course suggestions.
     - RULE E — Program Switch / Explore Rule.
       If the student's query explicitly asks about or mentions a specific degree program (e.g. "Technische Informatik") that differs from the active profile program (or if the active profile is empty/unlinked), do NOT force the active profile's program. Instead, delegate to the Degree Regulations Specialist to read the regulations and the MOSES Module Researcher to inspect the structure and modules of the requested program directly, rather than relying on the active profile's Study Advisor output.
     - RULE F — Structured Search Prioritization.
@@ -234,7 +256,15 @@ study_assistant_task:
       Regulations Specialist a focused follow-up about permissible alternatives
       and relevant StuPO/AllgStuPO/Regelstudienplan constraints? If not,
       re-delegate before proposing a revised plan.
-    - If you recommended or suggested new courses/modules to the student, did you delegate to the Course Commitment Specialist to create a UI proposal via `Propose Course Actions For Confirmation`? If you recommended courses but no proposal was created, you MUST delegate to the Course Commitment Specialist to create the proposal before producing the final answer. If no proposal was created, do not claim that the UI will show a confirmation banner.
+    - If you recommended or suggested new courses/modules or concrete plan
+      changes to the student, did you delegate to the Course Commitment
+      Specialist to create a UI proposal via `Propose Course Actions For
+      Confirmation`? If you only advised keeping existing Planned/In Progress
+      modules, or improving grades in those modules, no proposal is required.
+      If you recommended courses but no proposal was created, you MUST delegate
+      to the Course Commitment Specialist to create the proposal before
+      producing the final answer. If no proposal was created, do not claim that
+      the UI will show a confirmation banner.
     - If the plan keeps modules already Planned or In Progress in the Grade
       Manager, did you avoid describing those unchanged modules as new additions?
       If a module is already in the same term/area, the answer should say keep

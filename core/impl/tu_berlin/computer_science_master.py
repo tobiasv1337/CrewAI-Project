@@ -3,7 +3,14 @@ from __future__ import annotations
 from typing import List, Optional
 
 from ...calculations import calculate_grade
-from ...interfaces import CalculationResult, DegreeStrategy, Scenario, ValidationResult
+from ...interfaces import (
+    CalculationResult,
+    DegreeStrategy,
+    Scenario,
+    ValidationAssumption,
+    ValidationEvidence,
+    ValidationResult,
+)
 from ...module_filters import exclude_possible_courses
 from ...models import Module
 from ...rules import (
@@ -24,6 +31,32 @@ from ...rules import (
 
 def _normalize(text: str) -> str:
     return "".join((text or "").split()).lower()
+
+
+def _format_cp(value: float) -> str:
+    return f"{value:.0f} LP" if float(value).is_integer() else f"{value:.1f} LP"
+
+
+def _format_module_refs(modules: List[Module]) -> str:
+    if not modules:
+        return "no modules"
+    parts: list[str] = []
+    for module in sorted(modules, key=lambda item: (item.term or "", item.name.lower())):
+        term = f", {module.term}" if module.term else ""
+        parts.append(f"{module.name} ({module.state.value}, {_format_cp(module.cp)}{term})")
+    return ", ".join(parts)
+
+
+def _module_validation_evidence(module: Module) -> ValidationEvidence:
+    return ValidationEvidence(
+        name=module.name,
+        state=module.state.value,
+        credits=module.cp,
+        term=module.term,
+        area=module.area,
+        catalogs=list(module.catalogs),
+        module_types=list(module.module_types),
+    )
 
 
 class TUBerlinComputerScienceMaster(DegreeStrategy):
@@ -268,10 +301,26 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
         after_free = float(info.get("after_free_choice_cp", 0.0) or 0.0)
 
         return (
-            "Automatic rebalancing moved "
-            f"{moved_cp:.0f} elective credits into Free Choice "
+            "Grade Manager internally assumes these Elective modules are registered as Free Choice: "
+            f"{shown}. All rule and grade results depend on this exact rebalancing. "
+            f"This moves {moved_cp:.0f} LP from Electives to Free Choice "
             f"({before_elective:.0f}->{after_elective:.0f} Electives, "
-            f"{before_free:.0f}->{after_free:.0f} Free Choice): {shown}."
+            f"{before_free:.0f}->{after_free:.0f} Free Choice). "
+            "Suggested registration: store these exact modules as Free Choice instead of Elective."
+        )
+
+    def _effective_rebalance_assumption(self, info: dict[str, object]) -> Optional[ValidationAssumption]:
+        message = self._effective_rebalance_message(info)
+        if not message:
+            return None
+        return ValidationAssumption(
+            kind="automatic_elective_free_choice_rebalancing",
+            message=message,
+            modules=[
+                _module_validation_evidence(module)
+                for module in list(info.get("moved_modules", []) or [])
+                if isinstance(module, Module)
+            ],
         )
 
     def _move_priority_cost(self, module: Module) -> int:
@@ -385,6 +434,7 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
                 "moved_cp": moved_cp,
                 "moved_module_ids": [module.id for module in shifted_modules],
                 "moved_module_names": [module.name for module in shifted_modules],
+                "moved_modules": shifted_modules,
             }
         )
         return working_modules, info
@@ -501,6 +551,41 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
 
         return valid_candidates, [], elective_total_cp
 
+    def _study_area_modules_by_catalog(self, modules: List[Module]) -> dict[str, List[Module]]:
+        by_catalog: dict[str, List[Module]] = {catalog: [] for catalog in self._study_areas}
+        for module in self._elective_modules(modules):
+            for catalog in self._matching_catalogs(module, self._study_areas):
+                by_catalog[catalog].append(module)
+        return by_catalog
+
+    def _study_area_distribution_message(
+        self,
+        modules: List[Module],
+        *,
+        catalogs: List[str] | None = None,
+    ) -> str:
+        by_catalog = self._study_area_modules_by_catalog(modules)
+        selected_catalogs = catalogs or [
+            catalog for catalog in self._study_areas if by_catalog.get(catalog)
+        ]
+        if not selected_catalogs:
+            return "No elective modules with valid study-area catalogs are currently counted."
+
+        parts: list[str] = []
+        for catalog in selected_catalogs:
+            catalog_modules = by_catalog.get(catalog, [])
+            cp_sum = sum(module.cp for module in catalog_modules)
+            module_text = _format_module_refs(catalog_modules) if catalog_modules else "no modules"
+            parts.append(f"{catalog}: {cp_sum:.0f} LP from {module_text}")
+        return "; ".join(parts)
+
+    def _study_area_evidence(self, modules: List[Module]) -> List[ValidationEvidence]:
+        return [
+            _module_validation_evidence(module)
+            for module in self._elective_modules(modules)
+            if self._matching_catalogs(module, self._study_areas)
+        ]
+
     def get_dashboard_analysis(self, modules: List[Module]) -> Optional[dict[str, object]]:
         analysis = self._study_area_analysis(modules)
         valid_candidates = list(analysis.get("valid_primary_candidates", []) or [])
@@ -596,12 +681,14 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
         msg = f"{elective_total_cp:.0f} credits in compulsory elective study areas (required 60-66)."
         if valid_candidates:
             msg += " Valid primary study areas: " + ", ".join(valid_candidates) + "."
+        msg += " Study-area module distribution: " + self._study_area_distribution_message(modules) + "."
 
         return ValidationResult(
             rule_name="Study areas total (60-66 credits)",
             satisfied=ok,
             message=msg,
             severity="error",
+            evidence=self._study_area_evidence(modules),
         )
 
     def _main_study_area_validation(self, modules: List[Module]) -> ValidationResult:
@@ -628,12 +715,23 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
                 severity="error",
             )
 
-        msg = "Possible primary study areas: " + ", ".join(valid_candidates) + "."
+        candidate_details = self._study_area_distribution_message(
+            modules,
+            catalogs=valid_candidates,
+        )
+        msg = (
+            "Possible primary study areas: "
+            + ", ".join(valid_candidates)
+            + ". Candidate evidence: "
+            + candidate_details
+            + "."
+        )
         return ValidationResult(
             rule_name="Main study area (30-42 credits)",
             satisfied=True,
             message=msg,
             severity="error",
+            evidence=self._study_area_evidence(modules),
         )
 
     def _breadth_validation(self, modules: List[Module]) -> ValidationResult:
@@ -660,13 +758,20 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
                 severity="error",
             )
 
-        msg = "Breadth can be satisfied with primary study area(s): " + ", ".join(valid_candidates) + "."
+        msg = (
+            "Breadth can be satisfied with primary study area(s): "
+            + ", ".join(valid_candidates)
+            + ". Study-area module distribution: "
+            + self._study_area_distribution_message(modules)
+            + "."
+        )
 
         return ValidationResult(
             rule_name="Breadth (18-36 credits)",
             satisfied=True,
             message=msg,
             severity="error",
+            evidence=self._study_area_evidence(modules),
         )
 
     def _additional_courses_validation(self, modules: List[Module]) -> ValidationResult:
@@ -711,6 +816,7 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
         results.insert(7, self._breadth_validation(relevant_modules))
         rebalance_message = self._effective_rebalance_message(rebalance_info)
         if rebalance_message:
+            rebalance_assumption = self._effective_rebalance_assumption(rebalance_info)
             results.insert(
                 8,
                 ValidationResult(
@@ -718,6 +824,8 @@ class TUBerlinComputerScienceMaster(DegreeStrategy):
                     satisfied=False,
                     message=rebalance_message,
                     severity="warning",
+                    coverage_status="missing",
+                    assumptions=[rebalance_assumption] if rebalance_assumption else [],
                 ),
             )
         return results

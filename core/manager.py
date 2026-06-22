@@ -1,7 +1,15 @@
 from typing import Any, Dict, Iterable, List, Optional
 import re
 
-from .interfaces import DegreeStrategy, Module, CalculationResult, ValidationResult, Scenario
+from .interfaces import (
+    DegreeStrategy,
+    Module,
+    CalculationResult,
+    ValidationEvidence,
+    ValidationResult,
+    ValidationScopeResult,
+    Scenario,
+)
 from .models import ModuleState
 from .module_filters import exclude_non_degree_modules, exclude_possible_courses
 from .registry import create_program, list_programs
@@ -29,10 +37,7 @@ class DegreeManager:
     def validate(self, modules: List[Module]) -> List[ValidationResult]:
         validation_modules = exclude_possible_courses(modules)
         results = self.strategy.validate_constraints(validation_modules)
-        return [
-            *results,
-            *self._completion_status_validations(validation_modules, results),
-        ]
+        return self._enrich_completion_status(validation_modules, results)
 
     def filter_degree_modules(self, modules: List[Module]) -> List[Module]:
         return self.strategy.filter_degree_modules(exclude_non_degree_modules(modules))
@@ -43,7 +48,7 @@ class DegreeManager:
     def get_dashboard_analysis(self, modules: List[Module]) -> Optional[Dict[str, Any]]:
         return self.strategy.get_dashboard_analysis(modules)
 
-    def _completion_status_validations(
+    def _enrich_completion_status(
         self,
         modules: List[Module],
         full_plan_results: List[ValidationResult],
@@ -64,71 +69,92 @@ class DegreeManager:
             for module in modules
             if module.state in {ModuleState.IN_PROGRESS, ModuleState.PLANNED}
         ]
-        if not unfinished:
-            return []
-
-        advisories: list[ValidationResult] = []
-        advisories.extend(
-            self._completion_scope_validations(
-                scope_label="completed only",
-                full_plan_modules=modules,
-                scoped_modules=completed,
-                bridge_modules=unfinished,
-                full_plan_results=full_plan_results,
-            )
+        completed_results = _validation_by_rule(self.strategy.validate_constraints(completed))
+        completed_running_results = _validation_by_rule(
+            self.strategy.validate_constraints(completed_or_running)
         )
-        if planned:
-            advisories.extend(
-                self._completion_scope_validations(
-                    scope_label="completed + in progress",
-                    full_plan_modules=modules,
-                    scoped_modules=completed_or_running,
-                    bridge_modules=planned,
-                    full_plan_results=full_plan_results,
+
+        enriched: list[ValidationResult] = []
+        for result in full_plan_results:
+            completed_result = completed_results.get(result.rule_name)
+            completed_running_result = completed_running_results.get(result.rule_name)
+            scope_results = {
+                "completed": _scope_result(completed_result),
+                "completed_in_progress": _scope_result(completed_running_result),
+                "full_plan": _scope_result(result),
+            }
+            coverage_status = _coverage_status(
+                full_plan_result=result,
+                completed_result=completed_result,
+                completed_running_result=completed_running_result,
+            )
+            evidence_modules = self._evidence_modules_for_rule(
+                rule_name=result.rule_name,
+                coverage_status=coverage_status,
+                completed_modules=completed,
+                in_progress_modules=[
+                    module for module in modules if module.state == ModuleState.IN_PROGRESS
+                ],
+                planned_modules=planned,
+                completed_or_running_modules=completed_or_running,
+                full_plan_modules=modules,
+            )
+            evidence = _merge_evidence(
+                result.evidence,
+                [_module_evidence(module) for module in evidence_modules],
+            )
+            message = _coverage_message(
+                result=result,
+                coverage_status=coverage_status,
+                scope_results=scope_results,
+                evidence_modules=evidence_modules,
+                has_unfinished=bool(unfinished),
+            )
+            enriched.append(
+                result.model_copy(
+                    update={
+                        "message": message,
+                        "coverage_status": coverage_status,
+                        "scope_results": scope_results,
+                        "evidence": evidence,
+                    }
                 )
             )
-        return advisories
+        return enriched
 
-    def _completion_scope_validations(
+    def _evidence_modules_for_rule(
         self,
         *,
-        scope_label: str,
+        rule_name: str,
+        coverage_status: str,
+        completed_modules: List[Module],
+        in_progress_modules: List[Module],
+        planned_modules: List[Module],
+        completed_or_running_modules: List[Module],
         full_plan_modules: List[Module],
-        scoped_modules: List[Module],
-        bridge_modules: List[Module],
-        full_plan_results: List[ValidationResult],
-    ) -> List[ValidationResult]:
-        if not bridge_modules:
-            return []
-
-        scoped_results = self.strategy.validate_constraints(scoped_modules)
-        scoped_by_rule = _validation_by_rule(scoped_results)
-        advisories: list[ValidationResult] = []
-        for full_plan_result in full_plan_results:
-            if not full_plan_result.satisfied:
-                continue
-            scoped_result = scoped_by_rule.get(full_plan_result.rule_name)
-            if scoped_result is None or scoped_result.satisfied:
-                continue
-
-            carrying_modules = self._modules_carrying_rule(
+    ) -> List[Module]:
+        if coverage_status == "completed":
+            carrying = self._modules_carrying_rule(
+                full_plan_modules=completed_modules,
+                bridge_modules=completed_modules,
+                rule_name=rule_name,
+            )
+            return carrying or _related_rule_modules(completed_modules, rule_name)
+        if coverage_status == "in_progress":
+            carrying = self._modules_carrying_rule(
+                full_plan_modules=completed_or_running_modules,
+                bridge_modules=in_progress_modules,
+                rule_name=rule_name,
+            )
+            return carrying or _related_rule_modules(in_progress_modules, rule_name)
+        if coverage_status == "planned":
+            carrying = self._modules_carrying_rule(
                 full_plan_modules=full_plan_modules,
-                bridge_modules=bridge_modules,
-                rule_name=full_plan_result.rule_name,
+                bridge_modules=planned_modules,
+                rule_name=rule_name,
             )
-            advisories.append(
-                ValidationResult(
-                    rule_name=f"Completion status ({scope_label}): {full_plan_result.rule_name}",
-                    satisfied=False,
-                    severity="info",
-                    message=_completion_status_message(
-                        scope_label=scope_label,
-                        scoped_result=scoped_result,
-                        bridge_modules=carrying_modules or bridge_modules,
-                    ),
-                )
-            )
-        return advisories
+            return carrying or _related_rule_modules(planned_modules, rule_name)
+        return _related_rule_modules(full_plan_modules, rule_name)
 
     def _modules_carrying_rule(
         self,
@@ -156,26 +182,102 @@ def _validation_by_rule(
     return {item.rule_name: item for item in validations}
 
 
-def _completion_status_message(
+def _scope_result(result: ValidationResult | None) -> ValidationScopeResult:
+    if result is None:
+        return ValidationScopeResult(
+            satisfied=False,
+            message="This rule is not reported in this completion scope.",
+            severity="info",
+        )
+    return ValidationScopeResult(
+        satisfied=result.satisfied,
+        message=result.message,
+        severity=result.severity,
+    )
+
+
+def _coverage_status(
     *,
-    scope_label: str,
-    scoped_result: ValidationResult,
-    bridge_modules: List[Module],
+    full_plan_result: ValidationResult,
+    completed_result: ValidationResult | None,
+    completed_running_result: ValidationResult | None,
 ) -> str:
-    gap = _completion_gap_text(scoped_result)
-    prefix = (
-        f"{gap} still open in the {scope_label} view."
-        if gap
-        else f"This requirement is still open in the {scope_label} view."
-    )
+    if not full_plan_result.satisfied:
+        return "missing"
+    if completed_result is not None and completed_result.satisfied:
+        return "completed"
+    if completed_running_result is not None and completed_running_result.satisfied:
+        return "in_progress"
+    return "planned"
+
+
+def _coverage_message(
+    *,
+    result: ValidationResult,
+    coverage_status: str,
+    scope_results: dict[str, ValidationScopeResult],
+    evidence_modules: List[Module],
+    has_unfinished: bool,
+) -> str:
+    if coverage_status in {"completed", "missing"} or not has_unfinished:
+        return result.message
+
+    completed_result = scope_results["completed"]
+    completed_running_result = scope_results["completed_in_progress"]
+    relevant = _format_module_list(evidence_modules)
+    if coverage_status == "in_progress":
+        return (
+            f"{result.message} Coverage status: not completed yet, but covered by in-progress modules. "
+            f"Completed-only check: {_completion_gap_sentence(completed_result)} "
+            f"If the in-progress modules are completed, this rule is satisfied. "
+            f"Relevant modules: {relevant}."
+        )
+
     return (
-        f"{prefix} {scope_label.capitalize()} validation says: {scoped_result.message} "
-        "The full study plan satisfies this rule because of modules outside that view. "
-        f"Relevant modules if completed: {_format_module_list(bridge_modules)}."
+        f"{result.message} Coverage status: covered only after planned modules are completed. "
+        f"Completed-only check: {_completion_gap_sentence(completed_result)} "
+        f"Completed + in-progress check: {_completion_gap_sentence(completed_running_result)} "
+        f"Relevant planned modules: {relevant}."
     )
 
 
-def _completion_gap_text(result: ValidationResult) -> str | None:
+def _completion_gap_sentence(result: ValidationScopeResult) -> str:
+    gap = _completion_gap_text(result)
+    if gap:
+        return f"{gap} still open ({result.message})"
+    if result.satisfied:
+        return f"satisfied ({result.message})"
+    return f"not satisfied ({result.message})"
+
+
+def _merge_evidence(
+    existing: Iterable[ValidationEvidence],
+    added: Iterable[ValidationEvidence],
+) -> List[ValidationEvidence]:
+    merged: list[ValidationEvidence] = []
+    seen: set[tuple[str, str, str | None]] = set()
+    for item in [*existing, *added]:
+        key = (item.name, item.state, item.term)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(item)
+    return merged
+
+
+def _module_evidence(module: Module) -> ValidationEvidence:
+    return ValidationEvidence(
+        name=module.name,
+        state=module.state.value,
+        credits=module.cp,
+        term=module.term,
+        area=module.area,
+        catalogs=list(module.catalogs),
+        module_types=list(module.module_types),
+    )
+
+
+def _completion_gap_text(result: ValidationResult | ValidationScopeResult) -> str | None:
     credit_gap = _gap_from_patterns(
         result.message,
         [
@@ -225,6 +327,57 @@ def _format_module_list(modules: List[Module]) -> str:
     return ", ".join(parts)
 
 
+def _related_rule_modules(modules: Iterable[Module], rule_name: str) -> List[Module]:
+    normalized_rule = _normalize(rule_name)
+    candidates = list(modules)
+
+    if "project" in normalized_rule or "projekt" in normalized_rule:
+        return _sort_modules(
+            module
+            for module in candidates
+            if _has_module_type(module, {"project", "projekt", "pj", "proj", "pws"})
+        )
+    if "seminar" in normalized_rule:
+        return _sort_modules(
+            module
+            for module in candidates
+            if _has_module_type(module, {"seminar", "sem", "se"})
+        )
+    if "thesis" in normalized_rule or "arbeit" in normalized_rule:
+        return _sort_modules(
+            module
+            for module in candidates
+            if "thesis" in _normalize(module.area)
+            or "arbeit" in _normalize(module.area)
+            or "thesis" in _normalize(module.name)
+            or "arbeit" in _normalize(module.name)
+        )
+    if (
+        "elective" in normalized_rule
+        or "studyarea" in normalized_rule
+        or "mainstudyarea" in normalized_rule
+        or "breadth" in normalized_rule
+        or "wahlpflicht" in normalized_rule
+    ):
+        return _sort_modules(
+            module
+            for module in candidates
+            if "elective" in _normalize(module.area) or "wahlpflicht" in _normalize(module.area)
+        )
+    if "freechoice" in normalized_rule or "wahlbereich" in normalized_rule:
+        return _sort_modules(
+            module
+            for module in candidates
+            if "freechoice" in _normalize(module.area) or "wahlbereich" in _normalize(module.area)
+        )
+    return []
+
+
+def _has_module_type(module: Module, aliases: set[str]) -> bool:
+    normalized_types = {_normalize(value) for value in module.module_types}
+    return any(_normalize(alias) in normalized_types for alias in aliases)
+
+
 def _sort_modules(modules: Iterable[Module]) -> List[Module]:
     order = {
         ModuleState.COMPLETED: 0,
@@ -241,6 +394,10 @@ def _sort_modules(modules: Iterable[Module]) -> List[Module]:
             module.name or "",
         ),
     )
+
+
+def _normalize(value: object) -> str:
+    return "".join(ch for ch in str(value or "").casefold() if ch.isalnum())
 
 
 def _format_cp(value: float) -> str:

@@ -6,10 +6,11 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from hashlib import sha1
+import re
 from typing import Any, Literal, Type
 
 from crewai.tools import BaseTool
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from crew.chat_models import CourseProposal, ProposedAction
 from crew.tools import grademanager_tools
@@ -72,6 +73,27 @@ class ProposalCourseInput(BaseModel):
             "Set this to false only when the user explicitly wants a study-plan-only course action."
         ),
     )
+
+    @field_validator("course_title")
+    @classmethod
+    def reject_placeholder_course_titles(cls, value: str) -> str:
+        title = str(value or "").strip()
+        normalized = re.sub(r"\s+", " ", title).casefold()
+        compact = re.sub(r"[^a-z0-9]+", "", normalized)
+        placeholder_patterns = [
+            r"^(free choice|elective|wahlpflicht|wahlbereich)?\s*module\s*\d*$",
+            r"^(course|kurs|veranstaltung)\s*\d*$",
+            r"^(placeholder|tbd|to be decided|unknown|unbekannt)$",
+        ]
+        if not title:
+            raise ValueError("course_title must be a concrete human-readable module title.")
+        if re.fullmatch(r"(moses\s*)?\d{4,6}(?:\s*v\d+)?", normalized):
+            raise ValueError("course_title must not be a raw MOSES number; use the human-readable module title.")
+        if any(re.fullmatch(pattern, normalized) for pattern in placeholder_patterns):
+            raise ValueError("course_title must be a concrete module title, not a placeholder.")
+        if compact in {"freechoicemodule", "electivemodule", "wahlpflichtmodul", "wahlbereichmodul"}:
+            raise ValueError("course_title must be a concrete module title, not a placeholder.")
+        return title
 
 
 class ProposeCourseActionsInput(BaseModel):

@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -66,6 +66,10 @@ class RequirementBrief(BaseModel):
     satisfied: bool
     message: str
     severity: str = "error"
+    coverage_status: str | None = None
+    scope_results: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    evidence: list[StudentModuleBrief] = Field(default_factory=list)
+    assumptions: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class StudyPlanProgramSummary(BaseModel):

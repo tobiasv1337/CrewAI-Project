@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import crew.runtime
 from core import persistence
 from core.models import MosesIsisCandidate, MosesModuleData, Module, ModuleOffering, ModuleState
@@ -60,6 +62,38 @@ def test_proposal_tool_records_explicit_ui_actions_only_inside_collection_contex
     assert proposal.actions[0].grade_manager_payload["module_query"] == "40967"
     assert proposal.actions[1].isis_payload["course_id"] == 48000
     assert proposal.actions[0].action_id == proposal.actions[0].action_id
+
+
+def test_proposal_tool_rejects_placeholder_or_raw_course_titles():
+    tool = ProposeCourseActionsTool()
+
+    with pytest.raises(ValueError, match="concrete module title|raw MOSES number"):
+        tool._run(
+            proposal_title="Bad recommendation",
+            proposal_summary="This should not become a UI card.",
+            courses=[
+                {
+                    "course_title": "Free Choice Module 1",
+                    "rationale": "Placeholder recommendation.",
+                    "module_query": "40017",
+                    "term": "WS 26/27",
+                }
+            ],
+        )
+
+    with pytest.raises(ValueError, match="raw MOSES number"):
+        tool._run(
+            proposal_title="Bad recommendation",
+            proposal_summary="This should not become a UI card.",
+            courses=[
+                {
+                    "course_title": "40017",
+                    "rationale": "Raw module number without title.",
+                    "module_query": "40017",
+                    "term": "WS 26/27",
+                }
+            ],
+        )
 
 
 def test_proposal_tool_omits_isis_action_when_id_is_unverified_and_course_unavailable(monkeypatch, tmp_path):

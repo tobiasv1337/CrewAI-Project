@@ -1,6 +1,6 @@
 from typing import List, Protocol, Dict, Optional, Any
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from .models import Module
 
 
@@ -20,12 +20,42 @@ class CalculationResult(BaseModel):
     calculation_details: Dict[str, Any]  # Arbitrary details for debugging/display
     scenario: Optional[Scenario] = None
 
+
+class ValidationScopeResult(BaseModel):
+    """Validation result for one completion scope of a rule."""
+    satisfied: bool
+    message: str
+    severity: str = "error"
+
+
+class ValidationEvidence(BaseModel):
+    """Module-level evidence explaining why a rule is or is not covered."""
+    name: str
+    state: str
+    credits: float
+    term: Optional[str] = None
+    area: Optional[str] = None
+    catalogs: List[str] = Field(default_factory=list)
+    module_types: List[str] = Field(default_factory=list)
+
+
+class ValidationAssumption(BaseModel):
+    """Explicit assumption applied by degree logic while evaluating rules."""
+    kind: str
+    message: str
+    modules: List[ValidationEvidence] = Field(default_factory=list)
+
+
 class ValidationResult(BaseModel):
     """Result of a single constraint check."""
     rule_name: str
     satisfied: bool
     message: str
     severity: str = "error"  # "error", "warning", "info"
+    coverage_status: Optional[str] = None  # "completed", "in_progress", "planned", "missing"
+    scope_results: Dict[str, ValidationScopeResult] = Field(default_factory=dict)
+    evidence: List[ValidationEvidence] = Field(default_factory=list)
+    assumptions: List[ValidationAssumption] = Field(default_factory=list)
 
 class DegreeStrategy(Protocol):
     """

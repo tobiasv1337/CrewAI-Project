@@ -231,6 +231,73 @@ def test_llm_classifier_prompt_includes_grade_optimization_route_and_boundary(mo
     assert "Never use a simple_* route" in captured["system"]
     assert "course selection/recommendations" in captured["system"]
     assert "combines multiple sources" in captured["system"]
+    assert "Use deep_dive, not recommendation, for open questions" in captured["system"]
+    assert "current planned study plan" in captured["system"]
+
+
+def test_llm_classifier_routes_current_plan_grade_advice_to_deep_dive(monkeypatch):
+    import crew.study_chat_flow as flow_module
+
+    captured = {}
+
+    class FakeLlm:
+        def call(self, messages, response_model):
+            captured["system"] = messages[0]["content"]
+            captured["user"] = messages[1]["content"]
+            return IntentClassification(
+                route="deep_dive",
+                complexity="deep",
+                required_sources=["grade_manager", "grade_optimization"],
+                rationale="Current-plan grade advice needs Study Advisor plus grade optimization.",
+            )
+
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setattr(flow_module, "get_default_llm", lambda **kwargs: FakeLlm())
+
+    flow = StudyChatFlow(
+        runtime=StudyChatFlowRuntime(
+            use_llm_classifier=True,
+            use_llm_decision_interpreter=False,
+        )
+    )
+    result = flow._classify_with_llm_or_heuristics(
+        StudyChatFlowState(
+            query="Was kann ich dieses und nächstes Semester am besten machen um eine bestmögliche Endnote im Bachelor und Master zu bekommen?"
+        )
+    )
+
+    assert result.route == "deep_dive"
+    assert result.required_sources == ["grade_manager", "grade_optimization"]
+    assert "Use deep_dive, not recommendation" in captured["system"]
+    assert "bestmögliche Endnote" in captured["user"]
+
+
+def test_current_plan_advice_deep_dive_does_not_create_commitment_proposals(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+
+    from crew.tools.proposal_tools import collect_course_proposals
+
+    flow = _flow(
+        classifier=_classifier_for(
+            "deep_dive",
+            required_sources=["grade_manager", "grade_optimization"],
+            complexity="deep",
+        ),
+        runner_overrides={
+            "deep_dive": lambda flow: "Keep the current plan and aim for 1.3 in the seminar.",
+            "recommendation": lambda flow: (_ for _ in ()).throw(AssertionError("wrong route")),
+        },
+    )
+    with collect_course_proposals():
+        flow.kickoff(
+            inputs=StudyChatFlowState(
+                query="Ist mein aktueller Plan gut und welche Noten brauche ich?",
+                profile_slug="primary",
+            ).model_dump(mode="json")
+        )
+
+    assert flow.state.intent.route == "deep_dive"
+    assert flow.state.proposed_actions == []
 
 
 def test_non_llm_classifier_routes_to_deep_dive_with_warning(monkeypatch, tmp_path):
@@ -1339,8 +1406,8 @@ def test_approved_grade_manager_update_executes_deterministically(monkeypatch, t
         proposal_title="placeholder",
         proposal_summary="placeholder",
         courses=[
-            ProposalCourseInput(
-                course_title="Placeholder",
+                ProposalCourseInput(
+                    course_title="Analysis II für Ingenieurwissenschaften",
                 rationale="placeholder",
                 module_query="99999",
                 term="WS 26/27",
@@ -1413,8 +1480,8 @@ def test_analysis_two_update_flow_moves_existing_module_to_summer(monkeypatch, t
         proposal_title="placeholder",
         proposal_summary="placeholder",
         courses=[
-            ProposalCourseInput(
-                course_title="Placeholder",
+                ProposalCourseInput(
+                    course_title="Analysis II für Ingenieurwissenschaften",
                 rationale="placeholder",
                 module_query="99999",
                 term="WS 26/27",

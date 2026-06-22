@@ -22,8 +22,10 @@ grade_optimization_task:
     - Use Run Target Grade Optimizer when the student asks whether a target
       grade is reachable or what grades they need in open modules. Pass
       constraints when the user mentions fixed grades, best/worst allowed
-      grades, "all other open courses are 1.0", or only optimizing a specific
-      module such as the thesis.
+      grades, or only optimizing a specific module such as the thesis.
+      Never pass a default_open_grade parameter (especially not 1.0 or the
+      target grade itself) unless the student has explicitly requested to assume
+      a specific default grade for all other/open modules.
     - Use only the deterministic tool output. Do not invent grades, modules,
       requirement status, or official policy claims beyond what the tool says.
     - The tools use the partial-boundary discard strategy when available.

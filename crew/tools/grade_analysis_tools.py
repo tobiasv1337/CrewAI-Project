@@ -65,7 +65,13 @@ class TargetGradeOptimizerInput(GradeAnalysisToolInput):
     )
     default_open_grade: float | None = Field(
         default=None,
-        description="Optional grade to assign to all open/in-progress/planned degree modules before optimizing, e.g. 1.0.",
+        description=(
+            "Optional grade to assign to all open/in-progress/planned degree modules before optimizing. "
+            "WARNING: Do NOT set this parameter unless the student has explicitly requested a default grade assumption "
+            "for all unspecified open courses (e.g. 'assume I get a 2.0 in all other courses'). Setting this parameter "
+            "to the target grade (e.g. 1.0) is a mistake because it restricts the optimizer's search space to exactly "
+            "that grade, making optimization trivial and preventing the optimizer from suggesting weaker required grades."
+        ),
     )
     optimize_only: list[str] = Field(
         default_factory=list,

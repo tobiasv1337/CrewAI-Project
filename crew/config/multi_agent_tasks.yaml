@@ -111,8 +111,9 @@ study_assistant_task:
       discovery require it, and proposal cards from the Course Commitment
       Specialist only after module fit is verified.
       For constrained questions, pass constraints explicitly: fixed grades,
-      best/worst allowed grades, default grade assumptions for all open modules,
-      and optimize-only module lists.
+      best/worst allowed grades, and optimize-only module lists. Only pass
+      default grade assumptions for open modules (default_open_grade) when
+      explicitly requested by the student (e.g. 'assume a default grade of 2.0').
     - RULE A — ISIS needs Grade Manager course list first.
       Any request touching current-semester courses, workload, deadlines, or
       assignments REQUIRES the Study Advisor to run first. Extract from its

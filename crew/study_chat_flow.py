@@ -303,6 +303,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         runner = self._runner_overrides.get(route)
         if runner:
             return runner(self)
+        lang = "German" if (self.state.intent and self.state.intent.language == "de") else "English"
         if route == "simple_grade_manager":
             from crew.study_advisor_crew import StudyAdvisorCrew
 
@@ -310,6 +311,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 inputs={
                     "query": self._contextual_query(),
                     "student_context": self.state.student_context or "No student context supplied.",
+                    "language": lang,
                 }
             )
             return str(getattr(result, "raw", result))
@@ -320,6 +322,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 inputs={
                     "query": self._contextual_query(),
                     "student_context": self.state.student_context or "No student context supplied.",
+                    "language": lang,
                 }
             )
             return str(getattr(result, "raw", result))
@@ -330,6 +333,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 inputs={
                     "query": self._contextual_query(),
                     "student_context": self.state.student_context or "No student context supplied.",
+                    "language": lang,
                 }
             )
             return str(getattr(result, "raw", result))
@@ -337,6 +341,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             from crew.isis_crew import IsisCourseInfoCrew
 
             inputs = self._simple_isis_inputs()
+            inputs["language"] = lang
             result = IsisCourseInfoCrew(
                 **self._crew_kwargs(),
                 allow_temp_enrollment=self._runtime.allow_temp_enrollment,
@@ -351,6 +356,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 inputs={
                     "query": self._contextual_query(),
                     "student_context": self.state.student_context or "No student context supplied.",
+                    "language": lang,
                 }
             )
             return str(getattr(result, "raw", result))
@@ -369,6 +375,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 "query": self._contextual_query(),
                 "student_context": student_context,
                 "isis_context": self.state.isis_context_json or "{}",
+                "language": lang,
             }
         )
         return str(getattr(result, "raw", result))

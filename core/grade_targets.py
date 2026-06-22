@@ -516,21 +516,23 @@ def simulate_target_grade(
 
     for variable in variables:
         baseline_index = forecast_indices[variable.id]
-        if optimizable_ids is not None and variable.id not in optimizable_ids:
-            min_indices[variable.id] = baseline_index
-            max_indices[variable.id] = baseline_index
-            fixed_indices[variable.id] = baseline_index
-            continue
-
         if variable.id in grade_bounds:
             min_index, max_index = _bounds_to_indices(variable, *grade_bounds[variable.id])
-            min_indices[variable.id] = min_index
-            max_indices[variable.id] = max_index
-            if min_index == max_index:
-                fixed_indices[variable.id] = min_index
         else:
-            min_indices[variable.id] = 0
-            max_indices[variable.id] = baseline_index
+            min_index = 0
+            max_index = baseline_index
+
+        if optimizable_ids is not None and variable.id not in optimizable_ids:
+            freeze_index = min_index if min_index == max_index else baseline_index
+            min_indices[variable.id] = freeze_index
+            max_indices[variable.id] = freeze_index
+            fixed_indices[variable.id] = freeze_index
+            continue
+
+        min_indices[variable.id] = min_index
+        max_indices[variable.id] = max_index
+        if min_index == max_index:
+            fixed_indices[variable.id] = min_index
 
     forecast_result = _calculate_with_assignments(
         modules,

@@ -270,3 +270,27 @@ def test_grade_formatter_handles_missing_values() -> None:
     assert format_grade_value(float("nan")) == "-"
     assert format_grade_value(1.85) == "1.85"
     assert format_grade_value(2.0) == "2.0"
+
+
+def test_target_simulation_respects_fixed_grades_on_non_optimizable_modules() -> None:
+    # open-a has baseline_grade (estimated_grade) = 2.0. We fix it to 3.0, but exclude it from optimizable_ids.
+    # open-b has baseline_grade (estimated_grade) = 2.0. We do not restrict it, but exclude it from optimizable_ids.
+    # This means open-a should be frozen at 3.0, and open-b should be frozen at 2.0.
+    result = simulate_target_grade(
+        _simple_modules(),
+        _calculate,
+        target_grade=1.4,
+        fixed_grades={"open-a": 3.0},
+        optimizable_ids=set(),  # none of them are optimizable
+    )
+
+    fixed = {row.id: row for row in result.assignments}
+
+    # Since none are optimizable, best reachable grade is based on frozen grades:
+    # open-a = 3.0, open-b = 2.0, completed = 1.0.
+    # average: (1.0*60 + 3.0*30 + 2.0*30) / 120 = 210 / 120 = 1.75 -> rounds to 1.8.
+    assert fixed["open-a"].required_grade == 3.0
+    assert fixed["open-b"].required_grade == 2.0
+    assert fixed["open-a"].fixed_grade == 3.0
+    assert fixed["open-b"].fixed_grade == 2.0
+

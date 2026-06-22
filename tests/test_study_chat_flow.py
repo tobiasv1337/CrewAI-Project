@@ -1975,3 +1975,48 @@ def test_isis_candidates_persisted_to_next_turn(monkeypatch, tmp_path):
     context_data = json.loads(flow2.state.isis_context_json)
     assert "preferred_course_candidates" in context_data
     assert context_data["preferred_course_candidates"][0]["course_id"] == 47025
+
+
+def test_failed_action_execution_falls_back_to_crew(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    proposal = build_course_proposal(
+        proposal_title="Confirmed plan",
+        proposal_summary="One course.",
+        courses=[
+            ProposalCourseInput(
+                course_title="Machine Learning 2",
+                rationale="Fits ML preference.",
+                module_query="40967",
+                term="WS 26/27",
+                include_isis=False,
+            )
+        ],
+    )
+    append_turn(
+        "primary",
+        user_content="Suggest courses.",
+        assistant_content="Please confirm.",
+        proposals=[proposal],
+        rolling_summary="Planning next semester.",
+    )
+
+    import crew.study_chat_flow as flow_module
+
+    monkeypatch.setattr(
+        flow_module,
+        "_execute_grade_manager_action",
+        lambda action: action.model_copy(update={"status": "failed", "result": "Unknown program cs_msc."}),
+    )
+
+    flow = _flow(runner_overrides={"recommendation": lambda f: "Crew explanation of failure."})
+    flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="Klingt gut!",
+            profile_slug="primary",
+            ui_decisions=[ActionDecision(action_id=proposal.actions[0].action_id, approved=True)],
+        ).model_dump(mode="json")
+    )
+
+    assert flow.state.route == "recommendation"
+    assert flow.state.executed_actions[0].status == "failed"
+    assert flow.state.answer_markdown == "Crew explanation of failure."

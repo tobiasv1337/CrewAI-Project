@@ -293,7 +293,8 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         if approved_execution_actions:
             self.state.executed_actions = self._execute_approved_actions(approved_execution_actions)
             self.state.proposed_actions = self._remaining_proposals()
-            if self._execution_only_turn():
+            any_failed = any(action.status == "failed" for action in self.state.executed_actions)
+            if self._execution_only_turn() and not any_failed:
                 return _format_execution_answer(
                     self.state.executed_actions,
                     language=(self.state.intent.language if self.state.intent else "en"),
@@ -446,7 +447,19 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         decision = self.state.decision_interpretation
         if decision is not None:
             return decision.intent == "apply_selected"
-        return bool(self.state.approved_actions)
+        
+        # If no decision interpreter was run (e.g., in fallback or test modes),
+        # only bypass the Crew if the query is a simple, explicit confirmation phrase.
+        # Custom query messages must fall through to the Crew to be answered.
+        query = (self.state.query or "").strip().lower()
+        allowed_phrases = {
+            "apply selected", "apply", "confirm", "yes", "ok", "okay",
+            "sounds good", "klingt gut", "perfect", "perfekt", 
+            "add it", "add them"
+        }
+        if query in allowed_phrases:
+            return bool(self.state.approved_actions)
+        return False
 
     def _crew_kwargs(self) -> dict[str, Any]:
         return {

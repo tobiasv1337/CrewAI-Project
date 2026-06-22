@@ -161,6 +161,7 @@ def render_chat_page() -> None:
         if st.button("＋ New Chat", key=f"chat_new_btn_header_{profile_slug}", use_container_width=True, type="secondary"):
             new_t = reset_chat_thread(profile_slug)
             st.session_state[f"active_thread_id_{profile_slug}"] = new_t.thread_id
+            st.session_state[f"chat_session_selector_{profile_slug}"] = new_t.thread_id
             _set_profile_messages(profile_slug, [])
             _clear_all_course_card_state(profile_slug)
             st.rerun()
@@ -174,6 +175,7 @@ def render_chat_page() -> None:
             else:
                 clear_chat_thread(profile_slug, thread_id=active_tid)
                 st.session_state[f"active_thread_id_{profile_slug}"] = "default"
+                st.session_state[f"chat_session_selector_{profile_slug}"] = "default"
             _set_profile_messages(profile_slug, [])
             _clear_all_course_card_state(profile_slug)
             st.rerun()
@@ -310,23 +312,6 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                     help="Render observable Orchestrator-to-specialist delegation above the final chat answer.",
                     key=f"chat_show_agent_chat_{profile_slug}",
                 )
-
-        st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
-        col_new, col_clear = st.columns(2)
-        if col_new.button("New chat", type="secondary", key=f"chat_new_{profile_slug}", use_container_width=True):
-            new_t = reset_chat_thread(profile_slug)
-            st.session_state[f"active_thread_id_{profile_slug}"] = new_t.thread_id
-            _set_profile_messages(profile_slug, [])
-            _clear_all_course_card_state(profile_slug)
-            st.rerun()
-        if col_clear.button("Clear persisted chat", type="secondary", key=f"chat_clear_{profile_slug}", use_container_width=True):
-            clear_chat_thread(profile_slug, thread_id=active_tid)
-            if active_tid != "default":
-                st.session_state[f"active_thread_id_{profile_slug}"] = "default"
-            _set_profile_messages(profile_slug, [])
-            _clear_all_course_card_state(profile_slug)
-            st.rerun()
-
     trace_mode = str(st.session_state.get(f"chat_trace_mode_{profile_slug}") or "Preview")
     return ChatRuntimeSettings(
         specialist_model=specialist_model or None,

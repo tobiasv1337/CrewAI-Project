@@ -668,6 +668,27 @@ def _run_ask_study_assistant(args: argparse.Namespace) -> str:
     return format_study_assistant_run(result)
 
 
+def detect_query_language(query: str) -> str:
+    # A simple, robust heuristic to distinguish German vs English.
+    # We look for common German words that are unlikely to appear in English queries.
+    german_indicators = {
+        "ich", "ist", "und", "die", "der", "das", "ein", "eine", "ist", "sind", 
+        "habe", "hast", "hat", "haben", "war", "waren", "wurde", "wurden",
+        "mit", "von", "zu", "in", "auf", "aus", "bei", "nach", "vor", "ueber", 
+        "unter", "zwischen", "wie", "was", "wer", "wo", "wann", "warum", "welche",
+        "welcher", "welches", "mein", "meine", "meinen", "meinem", "meiner",
+        "nicht", "ja", "nein", "noch", "schon", "jetzt", "heute", "morgen", 
+        "gestern", "im", "am", "zum", "zur", "für", "fuer", "über", "unter",
+        "kann", "können", "koennen", "muss", "müssen", "mussen", "soll", "sollen",
+        "darf", "dürfen", "durfen", "will", "wollen", "möchte", "moechte"
+    }
+    # Clean query and split into words
+    words = [w.strip("?,.:;!\"'()[]{}").lower() for w in query.split()]
+    german_word_count = sum(1 for w in words if w in german_indicators)
+    # If we find at least one strong indicator, or ratio is high enough
+    return "German" if german_word_count > 0 else "English"
+
+
 def run_moses_agent_query(
     *,
     query: str,
@@ -698,6 +719,7 @@ def run_moses_agent_query(
     inputs = {
         "query": query,
         "student_context": student_context or "No student context supplied.",
+        "language": detect_query_language(query),
     }
     with collect_moses_state_artifacts() as moses_artifacts, capture_tool_traces(
         enabled=trace,
@@ -764,6 +786,7 @@ def run_isis_agent_query(
         "query": query,
         "student_context": student_context or "No student context supplied.",
         "isis_context": validated_context,
+        "language": detect_query_language(query),
     }
     with capture_tool_traces(
         enabled=trace,
@@ -829,6 +852,7 @@ def run_study_advisor_query(
     inputs = {
         "query": query,
         "student_context": student_context or "No student context supplied.",
+        "language": detect_query_language(query),
     }
     with capture_tool_traces(
         enabled=trace,

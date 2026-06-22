@@ -908,6 +908,51 @@ def _render_proposals_panel(profile_slug: str, proposals: list[Any]) -> None:
             with column:
                 _render_course_choice_card(profile_slug, card)
 
+    st.markdown("<div style='margin-top: 1rem;'></div>", unsafe_allow_html=True)
+    proposal_decisions = _collect_course_card_decisions(profile_slug, typed_proposals)
+    ui_decisions = _action_decisions_from_course_card_decisions(proposal_decisions)
+    has_decisions = len(ui_decisions) > 0
+
+    col_submit, col_clear, _ = st.columns([1.2, 1.2, 1.6])
+    with col_submit:
+        if st.button(
+            "Confirm & Execute",
+            key=f"submit_proposals_panel_{profile_slug}",
+            type="primary",
+            use_container_width=True,
+            disabled=not has_decisions,
+            help="Submit decisions for execution (adds accepted courses, removes rejected ones)."
+        ):
+            st.session_state[PENDING_PROMPT_KEY] = {
+                "profile_slug": profile_slug,
+                "prompt": "apply selected",
+                "display_prompt": "Executing confirmed actions...",
+                "proposal_decisions": proposal_decisions,
+                "ui_decisions": [d.model_dump(mode="json") for d in ui_decisions],
+                "approved_actions": [],
+            }
+            st.session_state["nm_clear_proposals_flag"] = True
+            st.rerun()
+
+    with col_clear:
+        if st.button(
+            "Clear Suggestions",
+            key=f"clear_proposals_panel_btn_{profile_slug}",
+            type="secondary",
+            use_container_width=True,
+            help="Discard these recommendations without executing."
+        ):
+            st.session_state[PENDING_PROMPT_KEY] = {
+                "profile_slug": profile_slug,
+                "prompt": "discard active proposals",
+                "display_prompt": "Discarding suggestions...",
+                "proposal_decisions": [],
+                "ui_decisions": [],
+                "approved_actions": [],
+            }
+            st.session_state["nm_clear_proposals_flag"] = True
+            st.rerun()
+
 
 def _course_cards_from_proposals(proposals: list[CourseProposal]) -> list[dict[str, Any]]:
     cards_by_key: dict[str, dict[str, Any]] = {}

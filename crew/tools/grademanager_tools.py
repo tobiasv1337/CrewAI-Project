@@ -183,6 +183,20 @@ class StudyPlanWhatIfInput(GradeManagerToolInput):
     max_modules: int = Field(default=40, description=f"Maximum module rows. Absolute max: {MAX_OUTPUT_MODULES}.")
 
 
+def _parse_what_if_operations(
+    operations: list[StudyPlanWhatIfOperationInput] | list[dict] | None,
+) -> list[StudyPlanWhatIfOperationInput]:
+    if not operations:
+        return []
+    parsed = []
+    for item in operations:
+        if isinstance(item, dict):
+            parsed.append(StudyPlanWhatIfOperationInput.model_validate(item))
+        else:
+            parsed.append(item)
+    return parsed
+
+
 class ProgramResolutionError(ValueError):
     pass
 
@@ -379,16 +393,17 @@ def check_module_against_study_plan(
 
 
 def run_study_plan_what_if(
-    operations: list[StudyPlanWhatIfOperationInput],
+    operations: list[StudyPlanWhatIfOperationInput] | list[dict],
     program_key: str | None = None,
     include_satisfied: bool = False,
     include_modules: bool = False,
     max_modules: int = 40,
 ) -> str:
     """Run read-only degree-rule validation after copied study-plan changes."""
-    if not operations:
-        return "Could not run study-plan what-if: at least one operation is required."
     try:
+        operations = _parse_what_if_operations(operations)
+        if not operations:
+            return "Could not run study-plan what-if: at least one operation is required."
         profile, modules = _load_primary_profile_modules()
         resolved_program = _resolve_program_key(program_key, modules, require_single=True)
         baseline_modules = modules_for_program(resolved_program, modules)

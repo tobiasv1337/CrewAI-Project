@@ -615,3 +615,29 @@ def test_program_alias_and_core_module_area_are_canonicalized_for_writes(monkeyp
     assert "under `TU Berlin - Technische Informatik (B.Sc.)`" in added
     assert module.program_key == TI_PROGRAM
     assert module.area == "Mandatory"
+
+
+def test_study_plan_what_if_accepts_dict_operations(monkeypatch, tmp_path):
+    modules = [
+        _module(
+            module_id="robotics",
+            name="Robotics",
+            state=ModuleState.PLANNED,
+            cp=6,
+            term="WS 26/27",
+            moses_number="40686",
+            moses_version=1,
+        ),
+    ]
+    _setup_profile(monkeypatch, tmp_path, modules)
+    output = grademanager_tools.run_study_plan_what_if(
+        program_key=CS_PROGRAM,
+        operations=[
+            {
+                "action": "remove",
+                "module_query": "Robotics",
+            }
+        ],
+    )
+    assert "Removed `Robotics`" in output
+

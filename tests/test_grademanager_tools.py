@@ -641,3 +641,18 @@ def test_study_plan_what_if_accepts_dict_operations(monkeypatch, tmp_path):
     )
     assert "Removed `Robotics`" in output
 
+
+def test_resolve_program_key_shorthands():
+    from crew.tools import grademanager_tools
+    modules = []
+    
+    assert grademanager_tools._resolve_program_key("cs_msc", modules) == CS_PROGRAM
+    assert grademanager_tools._resolve_program_key("csmsc", modules) == CS_PROGRAM
+    assert grademanager_tools._resolve_program_key("cs", modules) == CS_PROGRAM
+    assert grademanager_tools._resolve_program_key("mi", modules) == "TU Berlin - Medieninformatik (M.Sc.)"
+    assert grademanager_tools._resolve_program_key("mi_msc", modules) == "TU Berlin - Medieninformatik (M.Sc.)"
+    assert grademanager_tools._resolve_program_key("mt_bsc", modules) == "TU Berlin - Medientechnik (B.Sc.)"
+    assert grademanager_tools._resolve_program_key("mt", modules) == "TU Berlin - Medientechnik (B.Sc.)"
+    assert grademanager_tools._resolve_program_key("ti", modules) == TI_PROGRAM
+    assert grademanager_tools._resolve_program_key("ti_bsc", modules) == TI_PROGRAM
+

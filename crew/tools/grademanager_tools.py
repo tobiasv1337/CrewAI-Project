@@ -1022,9 +1022,13 @@ def _resolve_program_key(
         alias = PROGRAM_KEY_ALIASES.get(normalized)
         if alias:
             return alias
-        matches = [program for program in programs if normalized in _normalize(program)]
+        matches = [program for program in programs if _is_shorthand_match(normalized, program)]
         if len(matches) == 1:
             return matches[0]
+        if not matches:
+            matches = [program for program in programs if normalized in _normalize(program)]
+            if len(matches) == 1:
+                return matches[0]
         if matches:
             raise ProgramResolutionError(
                 f"Program query `{query}` is ambiguous. Matching programs: {', '.join(matches)}."
@@ -1046,6 +1050,49 @@ def _resolve_program_key(
             "No degree program can be inferred from the active profile. Provide program_key explicitly."
         )
     raise ProgramResolutionError("program_key is required for this operation.")
+
+
+def _is_shorthand_match(query: str, program: str) -> bool:
+    import re
+    q = "".join(ch for ch in query.lower() if ch.isalnum())
+    p = program.lower()
+
+    # Extract degree type: bsc or msc
+    is_master = "m.sc." in p or "master" in p
+    is_bachelor = "b.sc." in p or "bachelor" in p
+    degree_suffix = "msc" if is_master else "bsc" if is_bachelor else ""
+
+    # Extract core words
+    core_part = p.split("-")[-1].strip()
+    core_words = [w for w in re.split(r"[^a-z]+", core_part) if w and w not in {"m", "sc", "b"}]
+
+    # Generic list of common German/English academic compound word components
+    components = [
+        "medien", "technik", "informatik", "wirtschaft", "maschinen",
+        "bau", "elektro", "sozial", "natur", "wissenschaft", "kognition", "system"
+    ]
+
+    def get_word_initials(word: str) -> str:
+        found = []
+        for comp in components:
+            idx = word.find(comp)
+            if idx != -1:
+                found.append((idx, comp))
+        found.sort()
+        if found:
+            return "".join(comp[0] for _, comp in found)
+        return word[0] if word else ""
+
+    # Combine initials of core words
+    initials = "".join(get_word_initials(w) for w in core_words)
+    basic_initials = "".join(w[0] for w in core_words if w)
+
+    for cand in {initials, basic_initials}:
+        if not cand:
+            continue
+        if q == cand or q == f"{cand}{degree_suffix}":
+            return True
+    return False
 
 
 def _select_existing_module(

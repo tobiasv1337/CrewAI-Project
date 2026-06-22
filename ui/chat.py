@@ -468,14 +468,15 @@ def _safe_int(val: Any) -> int:
 
 
 def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
+    if message.get("role") == "assistant":
+        # Extract workbench from metadata or direct field
+        workbench = message.get("workbench") or (message.get("metadata") or {}).get("workbench")
+        if workbench:
+            _render_trace_panel(workbench, expanded=False)
+        elif message.get("trace_dir"):
+            st.caption(f"📊 Trace artifacts: `{message.get('trace_dir')}`")
+            
     with st.chat_message(message.get("role", "assistant")):
-        if message.get("role") == "assistant":
-            # Extract workbench from metadata or direct field
-            workbench = message.get("workbench") or (message.get("metadata") or {}).get("workbench")
-            if workbench:
-                _render_trace_panel(workbench, expanded=False)
-            elif message.get("trace_dir"):
-                st.caption(f"📊 Trace artifacts: `{message.get('trace_dir')}`")
         st.markdown(str(message.get("content") or ""))
 
 
@@ -506,16 +507,18 @@ def _run_and_render_assistant_turn(
         with dialogue_placeholder.container():
             _render_agent_interactions_inline(extract_agent_interactions(events), live=True)
 
+    trace_placeholder = st.empty() if settings.trace_enabled else None
+
     with st.chat_message("assistant"):
-        trace_placeholder = st.empty()
         answer_placeholder = st.empty()
 
         def on_trace_event(event: dict[str, Any]) -> None:
             event_queue.put(event)
 
         try:
-            with trace_placeholder.container():
-                _render_live_trace(events)
+            if trace_placeholder is not None:
+                with trace_placeholder.container():
+                    _render_live_trace(events)
             with ThreadPoolExecutor(max_workers=1, thread_name_prefix="study-chat-crew") as executor:
                 future = executor.submit(
                     _run_chat_query,
@@ -542,19 +545,31 @@ def _run_and_render_assistant_turn(
                         if dialogue_placeholder is not None:
                             with dialogue_placeholder.container():
                                 _render_agent_interactions_inline(extract_agent_interactions(events), live=True)
-                        with trace_placeholder.container():
-                            _render_live_trace(events)
+                        if trace_placeholder is not None:
+                            with trace_placeholder.container():
+                                _render_live_trace(events)
                         last_render = now
                     time.sleep(0.2)
                 _drain_trace_queue(event_queue, events)
                 if dialogue_placeholder is not None:
                     with dialogue_placeholder.container():
                         _render_agent_interactions_inline(extract_agent_interactions(events), live=False)
-                with trace_placeholder.container():
-                    _render_live_trace(events, completed=True)
+                if trace_placeholder is not None:
+                    with trace_placeholder.container():
+                        _render_live_trace(events, completed=True)
                 result = future.result()
 
-            answer_placeholder.markdown(result.answer.rstrip())
+            if result.answer.strip():
+                with answer_placeholder.container():
+                    def _stream_generator():
+                        answer_text = result.answer.rstrip()
+                        words = re.split(r"(\s+)", answer_text)
+                        for word in words:
+                            yield word
+                            time.sleep(0.005)
+                    st.write_stream(_stream_generator)
+            else:
+                answer_placeholder.markdown("*(No answer returned)*")
             # Build the completed workbench directly from live events to keep all rich details
             workbench = live_workbench_from_events(events, completed=True)
             if result.intent:
@@ -1266,7 +1281,7 @@ def extract_agent_interactions(events: list[dict[str, Any]]) -> list[dict[str, A
                 started_at=call.get("started_at"),
                 finished_at=event.get("finished_at") or event.get("emitted_at"),
                 duration_ms=call.get("duration_ms"),
-                response=call.get("output_preview") or call.get("output"),
+                response=call.get("output") or call.get("output_preview"),
             )
             if existing:
                 existing.update(
@@ -1292,7 +1307,7 @@ def extract_agent_interactions(events: list[dict[str, Any]]) -> list[dict[str, A
                 started_at=event.get("started_at"),
                 finished_at=event.get("finished_at"),
                 duration_ms=event.get("duration_ms"),
-                response=event.get("output_preview") or event.get("output"),
+                response=event.get("output") or event.get("output_preview"),
             )
             interactions[call_id] = interaction
             order.append(call_id)
@@ -1388,9 +1403,9 @@ def _interaction_from_tool_payload(
         "receiver": receiver_label,
         "receiver_avatar": receiver_avatar,
         "receiver_class": receiver_class,
-        "question": _preview_dialogue_text(question_full, limit=1400),
+        "question": _preview_dialogue_text(question_full, limit=3000),
         "question_full": question_full,
-        "response": _preview_dialogue_text(response_full, limit=1800),
+        "response": _preview_dialogue_text(response_full, limit=5000),
         "response_full": response_full,
         "status": status,
         "elapsed_ms": _optional_int(elapsed_ms),
@@ -1553,7 +1568,7 @@ def _render_agent_interactions_panel(interactions: list[dict[str, Any]], *, live
 
 
 def _render_dialogue_body_html(preview_text: str, full_text: str | None = None) -> str:
-    md = MarkdownIt()
+    md = MarkdownIt("gfm-like")
     preview_str = str(preview_text or "").strip()
     full_str = str(full_text or "").strip()
     
@@ -1665,7 +1680,7 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
 
 def _dialogue_text_html(text: str) -> str:
     # Kept as fallback for any external caller, but dialogue body html now renders markdown.
-    md = MarkdownIt()
+    md = MarkdownIt("gfm-like")
     return md.render(text or "")
 
 
@@ -1819,7 +1834,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
             # Sort calls by call_id in ascending execution order
             calls = sorted(calls, key=lambda c: _safe_int(c.get("call_id")))
 
-            md = MarkdownIt()
+            md = MarkdownIt("gfm-like")
             tool_items_html = ""
             for call in calls:
                 call_id = call.get("call_id") or 0
@@ -3605,6 +3620,22 @@ def inject_chat_css() -> None:
             color: var(--ink);
             font-size: 0.82rem;
             line-height: 1.46;
+        }
+        .agent-dialogue-body table {
+            border-collapse: collapse;
+            width: 100%;
+            margin: 0.5rem 0;
+            font-size: 0.76rem;
+        }
+        .agent-dialogue-body th, 
+        .agent-dialogue-body td {
+            border: 1px solid var(--border);
+            padding: 0.35rem 0.5rem;
+            text-align: left;
+        }
+        .agent-dialogue-body th {
+            background-color: var(--surface-2);
+            font-weight: 700;
         }
         @media (max-width: 760px) {
             .agent-dialogue-message {

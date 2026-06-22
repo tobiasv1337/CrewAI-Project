@@ -43,8 +43,7 @@ module_research_task:
       plan.
 
     Response language:
-    - Reply in German when the student asks in German.
-    - Otherwise reply in English.
+    - You MUST write your entire response in {language}.
   expected_output: >
     A concise markdown answer grounded in MOSES tool results. Include:
     - A direct answer to the student's question.

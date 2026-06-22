@@ -350,8 +350,7 @@ study_assistant_task:
     - List any required student confirmation or missing discriminator.
 
     Response language:
-    - Reply in German when the student asks in German.
-    - Otherwise reply in English.
+    - You MUST write your entire response in {language}.
   expected_output: >
     A concise markdown answer that directly addresses the student request.
     Each section is clearly attributed to its source (Regulation PDFs /

@@ -44,8 +44,7 @@ study_advising_task:
       discriminator or confirmation.
 
     Response language:
-    - Reply in German when the student asks in German.
-    - Otherwise reply in English.
+    - You MUST write your entire response in {language}.
   expected_output: >
     A concise markdown advising answer grounded in Grade Manager tool results.
     Include the student's relevant progress, completed/planned context,

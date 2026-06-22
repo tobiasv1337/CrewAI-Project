@@ -55,8 +55,7 @@ isis_course_info_task:
       complete, unenroll existing courses, or edit course data.
 
     Response language:
-    - Reply in German when the student asks in German.
-    - Otherwise reply in English.
+    - You MUST write your entire response in {language}.
   expected_output: >
     A concise markdown answer grounded in ISIS tool results. Include verified
     ISIS course IDs/titles when course-specific data was used, concrete dates

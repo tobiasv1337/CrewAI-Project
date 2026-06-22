@@ -69,6 +69,7 @@ class ToolCallSummary:
     source_system: str = "Other"
     status: str = "ok"
     badges: list[str] = field(default_factory=list)
+    output: str | None = None
 
 
 @dataclass
@@ -215,14 +216,13 @@ class ToolTraceRecorder:
         pending = self._pop_pending(context.tool_name)
         result_text = "" if context.tool_result is None else str(context.tool_result)
         output_preview = preview_text(result_text, self.preview_chars)
-        output_value = result_text if self.trace_full else output_preview
         output_truncated = len(result_text) > self.preview_chars
         record = {
             "event": "tool_call",
             "call_id": pending.get("call_id", self._next_call_id),
             "tool_name": context.tool_name,
             "tool_input": pending.get("tool_input", safe_jsonable(context.tool_input)),
-            "output": output_value,
+            "output": result_text,
             "output_preview": output_preview,
             "output_chars": len(result_text),
             "output_truncated": output_truncated,
@@ -248,6 +248,7 @@ class ToolTraceRecorder:
             source_system=source_system_for_tool(str(record["tool_name"])),
             status=status_for_tool_output(str(record["tool_name"]), output_preview),
             badges=badges_for_tool_output(str(record["tool_name"]), output_preview),
+            output=result_text,
         )
         with self._trace_lock:
             self._append_jsonl(record)
@@ -356,7 +357,7 @@ class ToolTraceRecorder:
                     "**Result**",
                     "",
                     "```text",
-                    call.output_preview,
+                    call.output if (self.trace_full and call.output is not None) else call.output_preview,
                     "```",
                     "",
                     f"Result length: {call.output_chars} chars"
@@ -845,6 +846,7 @@ def tool_call_summary_from_event(event: dict[str, Any]) -> ToolCallSummary:
         source_system=source_system_for_tool(tool_name),
         status=status_for_tool_output(tool_name, output_preview),
         badges=badges_for_tool_output(tool_name, output_preview),
+        output=event.get("output"),
     )
 
 

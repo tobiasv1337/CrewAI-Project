@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import html
 import json
+from math import ceil
 from pathlib import Path
 from queue import Empty, Queue
 import re
@@ -648,6 +649,14 @@ def _render_live_answer_status(placeholder: Any, events: list[dict[str, Any]]) -
 
 
 def _live_run_status(events: list[dict[str, Any]]) -> tuple[str, str]:
+    rate_limit_wait = _active_rate_limit_wait(events)
+    if rate_limit_wait is not None:
+        agent = _event_agent_label(rate_limit_wait)
+        remaining = max(0, ceil(float(rate_limit_wait["retry_at_unix"]) - time.time()))
+        return (
+            "Waiting for the API rate limit",
+            f"{agent} will retry in {remaining} seconds after the provider's requested cooldown.",
+        )
     observer_report = _latest_observer_report(events)
     if observer_report:
         return (
@@ -705,6 +714,23 @@ def _live_run_status(events: list[dict[str, Any]]) -> tuple[str, str]:
     if route:
         return "Coordination in progress", "Awaiting the next verified specialist or tool result."
     return "CrewAI Flow accepted the turn", "Loading context and starting intent classification."
+
+
+def _active_rate_limit_wait(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Return an unfinished provider-directed cooldown, if the trace has one."""
+    for event in reversed(events):
+        event_name = str(event.get("event") or "")
+        if event_name == "llm_rate_limit_retry_started":
+            return None
+        if event_name != "llm_rate_limit_wait":
+            continue
+        try:
+            if float(event.get("retry_at_unix")) > time.time():
+                return event
+        except (TypeError, ValueError):
+            return None
+        return None
+    return None
 
 
 def _latest_observer_report(events: list[dict[str, Any]]) -> dict[str, Any] | None:

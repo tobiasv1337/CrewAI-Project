@@ -993,6 +993,7 @@ def run_study_assistant_query(
 ) -> MultiAgentStudyAssistantRunResult:
     from crew.chat_models import ActionDecision, StudyChatFlowState
     from crew.chat_persistence import add_trace_artifact
+    from crew.config.llm import report_rate_limit_waits
     from crew.isis_client import use_default_isis_client
     from crew.profile_context import use_grade_manager_profile, use_chat_thread_id
     from crew.state import collect_moses_state_artifacts
@@ -1055,7 +1056,8 @@ def run_study_assistant_query(
             on_trace_event=trace_event_sink,
             stream=stream_answer,
         )
-        kickoff_output = flow.kickoff(inputs=inputs)
+        with report_rate_limit_waits(trace_event_sink):
+            kickoff_output = flow.kickoff(inputs=inputs)
         if stream_answer:
             raw_result = _consume_flow_streaming_output(
                 kickoff_output,

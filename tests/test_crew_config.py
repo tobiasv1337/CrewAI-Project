@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -178,3 +179,42 @@ def test_llm_calls_to_same_endpoint_and_model_are_serialized(monkeypatch):
     first_thread.join(timeout=1)
     second_thread.join(timeout=1)
     assert second_entered.is_set()
+
+
+def test_llm_retries_provider_retry_after_and_emits_wait_event(monkeypatch):
+    sleeps = []
+    events = []
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+        response = SimpleNamespace(headers={"retry-after": "75"})
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.calls = 0
+
+        def call(self, messages, **kwargs):
+            del messages, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise FakeRateLimitError()
+            return "recovered"
+
+    monkeypatch.setattr(llm_config, "LLM", FakeLLM)
+    monkeypatch.setattr(llm_config.time, "sleep", sleeps.append)
+    monkeypatch.setattr(llm_config.time, "time", lambda: 1_000.0)
+    llm = llm_config.get_default_llm(
+        model="shared-model",
+        api_key="test-key",
+        base_url="https://gwdg.example.test/v1",
+    )
+
+    with llm_config.report_rate_limit_waits(events.append):
+        assert llm.call("retry this") == "recovered"
+
+    assert sleeps == [75]
+    assert events[0]["event"] == "llm_rate_limit_wait"
+    assert events[0]["retry_after_seconds"] == 75
+    assert events[0]["retry_at_unix"] == 1_075.0
+    assert events[1]["event"] == "llm_rate_limit_retry_started"

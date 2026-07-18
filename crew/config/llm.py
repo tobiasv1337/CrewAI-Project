@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 import threading
+import time
+from math import ceil
 from dataclasses import dataclass
 from functools import wraps
-from typing import Any
+from typing import Any, Callable, Iterator
 
 from crewai import LLM
 from dotenv import load_dotenv
@@ -28,10 +32,26 @@ DEFAULT_OBSERVER_TIMEOUT_SECONDS = 120
 # remains independent.
 _LLM_CALL_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
 _LLM_CALL_LOCKS_GUARD = threading.Lock()
+_RATE_LIMIT_WAIT_NOTIFIER: ContextVar[Callable[[dict[str, Any]], None] | None] = ContextVar(
+    "rate_limit_wait_notifier",
+    default=None,
+)
 
 
 class LLMConfigurationError(RuntimeError):
     """Raised when the study assistant cannot build an LLM configuration."""
+
+
+@contextmanager
+def report_rate_limit_waits(
+    notifier: Callable[[dict[str, Any]], None] | None,
+) -> Iterator[None]:
+    """Publish bounded LLM rate-limit waits to the active runtime trace."""
+    token = _RATE_LIMIT_WAIT_NOTIFIER.set(notifier)
+    try:
+        yield
+    finally:
+        _RATE_LIMIT_WAIT_NOTIFIER.reset(token)
 
 
 @dataclass(frozen=True)
@@ -116,6 +136,32 @@ def _positive_timeout(value: str | int | None, *, default: int, setting: str) ->
     return timeout
 
 
+def _retry_after_seconds(error: Exception) -> int | None:
+    """Extract a provider-supplied Retry-After value from an OpenAI client error."""
+    response = getattr(error, "response", None)
+    status_code = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+    if status_code != 429:
+        return None
+    headers = getattr(response, "headers", None) or {}
+    value = headers.get("retry-after") or headers.get("Retry-After")
+    try:
+        seconds = ceil(float(value))
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def _notify_rate_limit_wait(event: dict[str, Any]) -> None:
+    notifier = _RATE_LIMIT_WAIT_NOTIFIER.get()
+    if notifier is None:
+        return
+    try:
+        notifier(event)
+    except Exception:
+        # User-facing trace callbacks must never alter a model request.
+        return
+
+
 def resolve_llm_settings(
     *,
     model: str | None = None,
@@ -177,7 +223,46 @@ def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
     @wraps(original_call)
     def serialized_call(*args: Any, **kwargs: Any) -> Any:
         with call_lock:
-            return original_call(*args, **kwargs)
+            attempt = 0
+            while True:
+                try:
+                    return original_call(*args, **kwargs)
+                except Exception as error:
+                    retry_after = _retry_after_seconds(error)
+                    if retry_after is None:
+                        raise
+                    attempt += 1
+                    agent = kwargs.get("from_agent")
+                    agent_role = getattr(agent, "role", None)
+                    _notify_rate_limit_wait(
+                        {
+                            "event": "llm_rate_limit_wait",
+                            "agent_role": agent_role,
+                            "agent_label": "Orchestrator",
+                            "model": settings.model,
+                            "phase": "rate_limit",
+                            "status": "waiting",
+                            "retry_after_seconds": retry_after,
+                            "retry_at_unix": time.time() + retry_after,
+                            "attempt": attempt,
+                            "activity": (
+                                f"API rate limit reached; waiting {retry_after} seconds before retry {attempt}."
+                            ),
+                        }
+                    )
+                    time.sleep(retry_after)
+                    _notify_rate_limit_wait(
+                        {
+                            "event": "llm_rate_limit_retry_started",
+                            "agent_role": agent_role,
+                            "agent_label": "Orchestrator",
+                            "model": settings.model,
+                            "phase": "rate_limit",
+                            "status": "running",
+                            "attempt": attempt,
+                            "activity": "API rate-limit wait ended; retrying the LLM request.",
+                        }
+                    )
 
     try:
         setattr(llm, "call", serialized_call)

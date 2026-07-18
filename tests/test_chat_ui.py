@@ -197,6 +197,23 @@ def test_current_settings_leaves_model_selection_to_env_by_default():
     assert settings.observer_enabled is True
 
 
+def test_live_status_shows_provider_rate_limit_countdown(monkeypatch):
+    monkeypatch.setattr(chat.time, "time", lambda: 1_000.0)
+
+    assert chat._live_run_status(
+        [
+            {
+                "event": "llm_rate_limit_wait",
+                "agent_label": "Orchestrator",
+                "retry_at_unix": 1_075.0,
+            }
+        ]
+    ) == (
+        "Waiting for the API rate limit",
+        "Orchestrator will retry in 75 seconds after the provider's requested cooldown.",
+    )
+
+
 def test_intent_scope_keeps_full_roster_and_marks_excluded_agents():
     events = [
         {

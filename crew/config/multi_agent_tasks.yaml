@@ -114,6 +114,17 @@ study_assistant_task:
       best/worst allowed grades, and optimize-only module lists. Only pass
       default grade assumptions for open modules (default_open_grade) when
       explicitly requested by the student (e.g. 'assume a default grade of 2.0').
+    - RULE 0G1 — Evidence-completeness gate.
+      For every multi-part or decision-oriented request, write down the
+      decision-critical questions before delegating, including necessary facts,
+      comparisons, constraints, and uncertainties. Ask the specialist that owns
+      each source of truth for focused evidence. In the Phase 3 review, verify
+      that every material question has evidence, that assumptions are explicit,
+      and that sources do not conflict. Re-delegate with the exact missing
+      question or corrected scope when a gap remains. Do not make a simple
+      single-source request slower by gathering irrelevant evidence. For grade
+      ranges or decision matrices, ask the Grade Optimization Specialist to use
+      its batch comparison tool rather than manually approximating each case.
     - RULE A — ISIS needs Grade Manager course list first.
       Any request touching current-semester courses, workload, deadlines, or
       assignments REQUIRES the Study Advisor to run first. Extract from its

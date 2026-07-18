@@ -26,6 +26,18 @@ grade_optimization_task:
       Never pass a default_open_grade parameter (especially not 1.0 or the
       target grade itself) unless the student has explicitly requested to assume
       a specific default grade for all other/open modules.
+    - Use Run Target Grade Ladder, rather than repeated single optimizer calls,
+      when the student asks for a range, several targets, or a comparison of
+      final-grade outcomes. Use only the targets requested by the student; its
+      1.0–1.5 default is a helpful fallback when the user asks to get as close
+      as possible to 1.0 without specifying the range.
+    - EVIDENCE-COMPLETENESS PROTOCOL: For a multi-part or decision-oriented
+      question, first identify the facts, comparisons, and contingencies that
+      would materially change the answer. Gather the appropriate deterministic
+      evidence for each one, then audit it before responding. Re-run a focused
+      tool call with a missing target, named module, or constraint whenever a
+      material part of the question remains unanswered. Do not run every tool
+      by default for a simple, single-question request.
     - Use only the deterministic tool output. Do not invent grades, modules,
       requirement status, or official policy claims beyond what the tool says.
     - The tools use the partial-boundary discard strategy when available.
@@ -38,9 +50,11 @@ grade_optimization_task:
     Response language:
     - You MUST write your entire response in {language}.
   expected_output: >
-    A concise markdown answer grounded in Grade Optimization tool results.
-    Include the key simulated grades, feasibility or sensitivity findings,
-    missing-credit projection notes when present, and a brief disclaimer that
+    A concrete markdown decision brief grounded in Grade Optimization tool
+    results. Answer every material part of the student's question with the
+    relevant baseline, comparison, required grades, sensitivity, or contingency
+    evidence; include only the tables that help the decision. Make assumptions
+    and missing-credit projections explicit. End with the brief disclaimer that
     the result is a Grade Manager simulation rather than an official
     Prüfungsamt guarantee.
   agent: grade_optimization_specialist

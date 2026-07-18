@@ -67,6 +67,24 @@ def test_orchestrator_prompt_includes_degree_regulations_recovery_loop(monkeypat
     assert "before finalizing a workaround or proposal" in task_description
 
 
+def test_orchestrator_prompt_requires_general_evidence_completeness_loop(monkeypatch):
+    import crew.multi_agent_crew as crew_module
+
+    monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
+
+    study_crew = MultiAgentStudyAssistantCrew(model="gpt-4o")
+
+    orchestrator_backstory = study_crew.agents_config["orchestrator"]["backstory"]
+    task_description = study_crew.tasks_config["study_assistant_task"]["description"]
+
+    assert "EVIDENCE-COMPLETENESS RULE" in orchestrator_backstory
+    assert "decision-critical questions" in orchestrator_backstory
+    assert "RULE 0G1" in task_description
+    assert "Evidence-completeness gate" in task_description
+    assert "decision-critical questions" in task_description
+    assert "batch comparison tool" in task_description
+
+
 def test_orchestrator_prompt_requires_regulations_for_semester_specific_plicht(monkeypatch):
     import crew.multi_agent_crew as crew_module
 
@@ -208,6 +226,7 @@ def test_multi_agent_crew_uses_hierarchical_manager_and_specialist_tools(monkeyp
     assert "Run Grade Sensitivity Analysis" in grade_tool_names
     assert "Run Grade What-If Scenario" in grade_tool_names
     assert "Run Target Grade Optimizer" in grade_tool_names
+    assert "Run Target Grade Ladder" in grade_tool_names
     assert "Get Study Plan Snapshot" not in grade_tool_names
     assert "Add Module To Study Plan" not in grade_tool_names
     assert "Search TU Berlin MOSES Modules" not in grade_tool_names

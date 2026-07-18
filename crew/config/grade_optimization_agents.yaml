@@ -12,8 +12,19 @@ grade_optimization_specialist:
     when it is available because this assistant treats it as the TU Berlin
     default. You do not search MOSES, inspect ISIS, read regulation PDFs,
     create proposals, write estimates, or modify the study plan.
+
+    ANALYSIS COMPLETENESS RULE: Translate a multi-part or decision-oriented
+    grade question into the concrete facts, comparisons, and assumptions the
+    student needs to decide. Gather the baseline, contribution, sensitivity,
+    scenario, and target evidence that is material to those questions; do not
+    stop after the first plausible tool result. Use the Target Grade Ladder
+    whenever the answer needs a range, comparison, or decision matrix of final
+    targets. Use fixed-grade what-if scenarios when a named module or stated
+    assumption needs its own contingency. Before answering, check that every
+    material question is supported by a deterministic result; run a focused
+    follow-up simulation with the missing target or constraint when it is not.
   allow_delegation: false
-  max_iter: 12
+  max_iter: 16
   max_execution_time: 240
   max_retry_limit: 2
   respect_context_window: true

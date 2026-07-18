@@ -83,6 +83,41 @@ class TargetGradeOptimizerInput(GradeAnalysisToolInput):
     )
 
 
+class TargetGradeLadderInput(GradeAnalysisToolInput):
+    target_grades: list[float] = Field(
+        default_factory=lambda: [1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
+        description="Final-grade targets to simulate. Defaults to the 1.0 through 1.5 decision ladder.",
+    )
+    max_rows_per_target: int = Field(
+        default=20,
+        description=f"Maximum required-grade rows to show per target. Absolute max: {MAX_OPTIMIZER_ROWS}.",
+    )
+    constraints: list["GradeConstraintInput"] = Field(
+        default_factory=list,
+        description="Optional per-module fixed grades or allowed grade ranges applied consistently to every target.",
+    )
+    default_open_grade: float | None = Field(
+        default=None,
+        description="Optional default for all unspecified open grades; use only when the student explicitly requested that assumption.",
+    )
+    optimize_only: list[str] = Field(
+        default_factory=list,
+        description="Optional module queries restricting which open grades the optimizer may change for every target.",
+    )
+
+    @model_validator(mode="after")
+    def validate_targets(self) -> "TargetGradeLadderInput":
+        normalized = sorted({round(float(target), 1) for target in self.target_grades})
+        if not normalized:
+            raise ValueError("At least one target grade is required.")
+        if len(normalized) > 12:
+            raise ValueError("At most 12 target grades can be simulated in one ladder.")
+        if any(target < 1.0 or target > 4.0 for target in normalized):
+            raise ValueError("Target grades must be between 1.0 and 4.0.")
+        self.target_grades = normalized
+        return self
+
+
 class GradeConstraintInput(grademanager_tools.GradeManagerToolInput):
     module_query: str = Field(
         ...,
@@ -508,6 +543,115 @@ def run_target_grade_optimizer(
     return "\n".join(lines).rstrip()
 
 
+def run_target_grade_ladder(
+    target_grades: list[float] | None = None,
+    program_key: str | None = None,
+    max_rows_per_target: int = 20,
+    constraints: list[GradeConstraintInput] | None = None,
+    default_open_grade: float | None = None,
+    optimize_only: list[str] | None = None,
+) -> str:
+    """Compare several final-grade targets with the same deterministic constraints."""
+    try:
+        request = TargetGradeLadderInput(
+            target_grades=target_grades or [1.0, 1.1, 1.2, 1.3, 1.4, 1.5],
+            program_key=program_key,
+            max_rows_per_target=max_rows_per_target,
+            constraints=constraints or [],
+            default_open_grade=default_open_grade,
+            optimize_only=optimize_only or [],
+        )
+        parsed_constraints = _parse_grade_constraints(request.constraints)
+        ctx = _analysis_context(request.program_key)
+        base_modules = _with_default_open_grade(ctx.degree_modules, request.default_open_grade)
+        simulation_modules = (
+            add_completion_projection(
+                base_modules,
+                missing_cp=ctx.missing_degree_cp,
+                fill_grade=float(request.default_open_grade if request.default_open_grade is not None else 4.0),
+            )
+            if ctx.missing_degree_cp > 0
+            else list(base_modules)
+        )
+        variables = build_grade_target_variables(simulation_modules)
+        fixed_grades, grade_bounds, optimizable_ids, constraint_notes = _optimizer_constraint_maps(
+            ctx.degree_modules,
+            variables,
+            parsed_constraints,
+            request.optimize_only,
+        )
+        simulations = [
+            simulate_target_grade(
+                simulation_modules,
+                ctx.calculate,
+                target_grade=target,
+                fixed_grades=fixed_grades,
+                grade_bounds=grade_bounds,
+                optimizable_ids=optimizable_ids,
+                discard_variant_key=PARTIAL_BOUNDARY_DISCARD_VARIANT,
+            )
+            for target in request.target_grades
+        ]
+    except Exception as exc:
+        return f"Could not run target grade ladder: {exc}"
+
+    limit = _clamp(request.max_rows_per_target, 1, MAX_OPTIMIZER_ROWS)
+    lines = [
+        f"# Target grade ladder for {ctx.program_key}",
+        "",
+        f"- Profile: `{ctx.profile_display_name}` (`{ctx.profile_slug}`)",
+        f"- Targets: {', '.join(format_grade_value(target) for target in request.target_grades)}",
+        (
+            f"- Missing degree credits simulated: {_fmt_cp(ctx.missing_degree_cp)}"
+            if ctx.missing_degree_cp > 0
+            else "- No missing degree-credit projection needed."
+        ),
+        "- Discard strategy: `Partial boundary` when available.",
+        "",
+        "## Target overview",
+        "",
+        "| Target | Feasible | Best reachable | Suggested result | Changed open grades | Weighted improvement |",
+        "|---:|---|---:|---:|---:|---:|",
+    ]
+    for simulation in simulations:
+        lines.append(
+            f"| {format_grade_value(simulation.target_grade)} | {'yes' if simulation.feasible else 'no'} | "
+            f"{_fmt_grade(simulation.best_result.final_grade)} | {_fmt_grade(simulation.solution_result.final_grade)} | "
+            f"{simulation.changed_count} | {simulation.total_weighted_improvement:.1f} |"
+        )
+
+    if constraint_notes:
+        lines.extend(["", "## Applied constraints", ""])
+        lines.extend(f"- {note}" for note in constraint_notes)
+
+    lines.extend(
+        [
+            "",
+            "## Required grades by target",
+            "",
+            "| Target | Module | LP | Plan grade | Required grade | Status |",
+            "|---:|---|---:|---:|---:|---|",
+        ]
+    )
+    for simulation in simulations:
+        assignments = sorted(
+            simulation.assignments,
+            key=lambda row: (not row.is_projected, -row.credits, row.name.lower()),
+        )
+        for row in assignments[:limit]:
+            lines.append(
+                f"| {format_grade_value(simulation.target_grade)} | {_cell(row.name)} | {_fmt_cp(row.credits)} | "
+                f"{format_grade_value(row.baseline_grade)} | {format_grade_value(row.required_grade)} | {_cell(row.status)} |"
+            )
+    lines.extend(
+        [
+            "",
+            "Note: This is a read-only, deterministic Grade Manager simulation. It does not write estimates, grades, or modules.",
+        ]
+    )
+    return "\n".join(lines).rstrip()
+
+
 class GetGradeScenarioOutlookTool(BaseTool):
     name: str = "Get Grade Scenario Outlook"
     description: str = (
@@ -567,12 +711,25 @@ class RunTargetGradeOptimizerTool(BaseTool):
         return run_target_grade_optimizer(**kwargs)
 
 
+class RunTargetGradeLadderTool(BaseTool):
+    name: str = "Run Target Grade Ladder"
+    description: str = (
+        "Read-only Grade Manager batch simulation for a ladder of final-degree targets (default 1.0 to 1.5). "
+        "Use it when the student wants a concrete target overview or asks how close to 1.0 they can get."
+    )
+    args_schema: Type[BaseModel] = TargetGradeLadderInput
+
+    def _run(self, **kwargs) -> str:
+        return run_target_grade_ladder(**kwargs)
+
+
 GRADE_ANALYSIS_TOOLS = [
     GetGradeScenarioOutlookTool(),
     GetDegreeGradeContributionBreakdownTool(),
     RunGradeSensitivityAnalysisTool(),
     RunGradeWhatIfScenarioTool(),
     RunTargetGradeOptimizerTool(),
+    RunTargetGradeLadderTool(),
 ]
 
 

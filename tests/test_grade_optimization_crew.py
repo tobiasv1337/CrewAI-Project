@@ -45,6 +45,7 @@ def test_grade_optimization_crew_uses_grade_analysis_tools_only(monkeypatch):
     assert "Run Grade Sensitivity Analysis" in agent_tool_names
     assert "Run Grade What-If Scenario" in agent_tool_names
     assert "Run Target Grade Optimizer" in agent_tool_names
+    assert "Run Target Grade Ladder" in agent_tool_names
     assert "Get Study Plan Snapshot" not in agent_tool_names
     assert "Add Module To Study Plan" not in agent_tool_names
     assert "Search TU Berlin MOSES Modules" not in agent_tool_names

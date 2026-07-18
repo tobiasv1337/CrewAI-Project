@@ -140,6 +140,22 @@ def test_target_grade_optimizer_reports_missing_projection_and_does_not_write(mo
     assert "does not write estimates or modules" in output
 
 
+def test_target_grade_ladder_compares_default_top_grade_targets_without_writing(monkeypatch, tmp_path):
+    modules = _partial_boundary_modules()
+    _setup_profile(monkeypatch, tmp_path, modules)
+    before = persistence.modules_path("primary").read_text(encoding="utf-8")
+
+    output = grade_analysis_tools.run_target_grade_ladder(program_key=CS_PROGRAM)
+
+    after = persistence.modules_path("primary").read_text(encoding="utf-8")
+    assert before == after
+    assert "Target grade ladder" in output
+    assert "| 1.0 |" in output
+    assert "| 1.5 |" in output
+    assert "Required grades by target" in output
+    assert "does not write estimates, grades, or modules" in output
+
+
 def test_target_grade_optimizer_accepts_constraints_default_and_optimize_only(monkeypatch, tmp_path):
     modules = [
         _module("completed", "Completed Elective", 54, 1.0, "Elective"),

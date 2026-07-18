@@ -32,6 +32,37 @@ def test_resolve_manager_model_allows_explicit_override(monkeypatch):
     )
 
 
+def test_resolve_observer_model_prefers_lightweight_override(monkeypatch):
+    monkeypatch.setenv("STUDY_ASSISTANT_OBSERVER_MODEL", "openai/meta-llama-3.1-8b-instruct")
+
+    assert (
+        llm_config.resolve_study_assistant_observer_model(
+            manager_model="qwen3.5-122b-a10b",
+            specialist_model="devstral",
+        )
+        == "meta-llama-3.1-8b-instruct"
+    )
+
+
+def test_resolve_observer_model_uses_dedicated_lightweight_default(monkeypatch):
+    monkeypatch.delenv("STUDY_ASSISTANT_OBSERVER_MODEL", raising=False)
+    monkeypatch.setattr(llm_config, "load_dotenv", lambda: None)
+
+    assert (
+        llm_config.resolve_study_assistant_observer_model(
+            manager_model="openai/qwen3.6-35b-a3b",
+            specialist_model="devstral",
+        )
+        == "qwen3-30b-a3b-instruct-2507"
+    )
+
+
+def test_resolve_observer_timeout_is_independently_configurable(monkeypatch):
+    monkeypatch.setenv("STUDY_ASSISTANT_OBSERVER_TIMEOUT_SECONDS", "145")
+
+    assert llm_config.resolve_study_assistant_observer_timeout() == 145
+
+
 def test_resolve_llm_settings_uses_env_and_strips_openai_prefix(monkeypatch):
     monkeypatch.setenv("GWDG_API_KEY", "test-key")
     monkeypatch.setenv("GWDG_API_BASE", "https://gwdg.example.test/v1")
@@ -45,6 +76,23 @@ def test_resolve_llm_settings_uses_env_and_strips_openai_prefix(monkeypatch):
     assert settings.temperature == 0.3
     assert settings.top_p == 0.8
     assert settings.provider == "openai"
+
+
+def test_resolve_llm_settings_uses_configurable_main_timeout(monkeypatch):
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setenv("STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS", "360")
+
+    settings = llm_config.resolve_llm_settings(model="devstral")
+
+    assert settings.timeout == 360
+
+
+def test_resolve_llm_settings_rejects_invalid_timeout(monkeypatch):
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setenv("STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS", "never")
+
+    with pytest.raises(llm_config.LLMConfigurationError, match="positive integer"):
+        llm_config.resolve_llm_settings(model="devstral")
 
 
 def test_resolve_llm_settings_requires_api_key():

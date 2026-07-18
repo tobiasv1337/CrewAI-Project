@@ -5,7 +5,75 @@ from types import SimpleNamespace
 
 from crewai.hooks import get_after_tool_call_hooks, get_before_tool_call_hooks
 
-from crew.tracing import build_trace_workbench, capture_tool_traces, load_trace_workbench, tool_call_summary_from_event
+from crew.tracing import (
+    build_trace_workbench,
+    capture_tool_traces,
+    load_trace_workbench,
+    suppress_trace_events,
+    suppress_trace_events_from,
+    tool_call_summary_from_event,
+)
+
+
+def test_auxiliary_llm_trace_events_can_be_suppressed(tmp_path):
+    events = []
+
+    with capture_tool_traces(
+        enabled=True,
+        query="Observe progress",
+        logs_root=tmp_path,
+        run_id="suppressed-observer-trace",
+        on_event=events.append,
+    ) as recorder:
+        with suppress_trace_events():
+            recorder._emit_event(
+                {
+                    "event": "llm_started",
+                    "agent_label": "Orchestrator",
+                    "model": "observer-model",
+                    "status": "running",
+                }
+            )
+
+    assert events == []
+
+
+def test_auxiliary_llm_source_events_are_suppressed_across_event_bus_threads(tmp_path):
+    events = []
+    auxiliary_llm = SimpleNamespace()
+    suppress_trace_events_from(auxiliary_llm)
+
+    with capture_tool_traces(
+        enabled=True,
+        query="Observe progress",
+        logs_root=tmp_path,
+        run_id="suppressed-observer-source",
+        on_event=events.append,
+    ) as recorder:
+        recorder._on_llm_started(
+            auxiliary_llm,
+            SimpleNamespace(
+                agent_role=None,
+                call_id="observer-1",
+                model="observer-model",
+                task_name=None,
+                tools=[],
+            ),
+        )
+        recorder._on_llm_completed(
+            auxiliary_llm,
+            SimpleNamespace(
+                agent_role=None,
+                call_id="observer-1",
+                model="observer-model",
+                task_name=None,
+                usage={"total_tokens": 8},
+                finish_reason="stop",
+            ),
+        )
+
+    assert events == []
+    assert not (tmp_path / "suppressed-observer-source" / "events.jsonl").exists()
 
 
 def test_capture_tool_traces_registers_unregisters_and_writes_files(tmp_path):
@@ -106,6 +174,67 @@ def test_capture_tool_traces_emits_live_events_and_workbench(tmp_path):
     assert summary["workbench"]["groups"][0]["tool_calls"][0]["status"] == "ok"
 
 
+def test_lifecycle_journal_is_written_before_tool_returns(tmp_path):
+    with capture_tool_traces(
+        enabled=True,
+        query="Inspect the Regelstudienplan",
+        logs_root=tmp_path,
+        run_id="immediate-lifecycle-journal",
+    ) as recorder:
+        context = SimpleNamespace(
+            tool_name="Extract Regelstudienplan Table",
+            tool_input={"program_query": "M.Sc. Computer Science"},
+            tool=None,
+            agent=SimpleNamespace(role="TU Berlin Degree Regulations Specialist"),
+            task=SimpleNamespace(name="degree_regulations_task", description="Extract the plan"),
+            tool_result="Page 12: 4. Sem. Masterarbeit, 30 LP",
+        )
+
+        recorder.before_tool_call(context)
+
+        journal_path = tmp_path / "immediate-lifecycle-journal" / "events.jsonl"
+        started_events = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+        assert started_events[-1]["event"] == "tool_start"
+        assert started_events[-1]["agent_label"] == "Degree Regulations Specialist"
+        assert not (tmp_path / "immediate-lifecycle-journal" / "trace.jsonl").exists()
+
+        recorder.after_tool_call(context)
+
+    journal = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+    assert [event["event"] for event in journal[-2:]] == ["tool_start", "tool_finish"]
+    assert "Masterarbeit" in journal[-1]["tool_call"]["output"]
+
+
+def test_public_event_sink_journals_flow_and_agent_output_events(tmp_path):
+    with capture_tool_traces(
+        enabled=True,
+        query="Inspect live events",
+        logs_root=tmp_path,
+        run_id="unified-event-sink",
+    ) as recorder:
+        recorder.emit_event(
+            {
+                "event": "route_execution_started",
+                "agent_label": "Orchestrator",
+                "status": "running",
+            }
+        )
+        recorder.emit_event(
+            {
+                "event": "task_completed",
+                "agent_label": "Degree Regulations Specialist",
+                "status": "ok",
+                "output_preview": "The fourth semester contains the 30 LP Masterarbeit.",
+            }
+        )
+
+    journal_path = tmp_path / "unified-event-sink" / "events.jsonl"
+    journal = [json.loads(line) for line in journal_path.read_text(encoding="utf-8").splitlines()]
+    assert [event["event"] for event in journal] == ["route_execution_started", "task_completed"]
+    assert journal[1]["output_preview"].endswith("Masterarbeit.")
+    assert [event["event_id"] for event in journal] == [1, 2]
+
+
 def test_trace_pairing_preserves_fifo_for_same_tool_calls(tmp_path):
     with capture_tool_traces(
         enabled=True,
@@ -204,7 +333,7 @@ def test_capture_tool_traces_emits_lifecycle_events(tmp_path):
                 agent_role="TU Berlin Personal Study Advisor",
                 call_id="llm-1",
                 model="devstral",
-                task_name="study_assistant_task",
+                task_name="PRIVATE PLANNING PROMPT " * 500,
                 tools=[{"function": {"name": "Get Study Plan Snapshot"}}],
             ),
         )
@@ -230,6 +359,9 @@ def test_capture_tool_traces_emits_lifecycle_events(tmp_path):
     ]
     assert events[1]["agent_label"] == "Study Advisor"
     assert events[2]["tool_choices"] == ["Get Study Plan Snapshot"]
+    assert events[2]["task_name"].startswith("PRIVATE PLANNING PROMPT")
+    assert "PRIVATE PLANNING PROMPT" not in events[2]["activity"]
+    assert "llm-1" not in events[2]["activity"]
     assert events[-1]["status"] == "ok"
 
 

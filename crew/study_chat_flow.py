@@ -23,7 +23,11 @@ from crew.chat_models import (
     UserDecisionInterpretation,
 )
 from crew.chat_persistence import append_turn, load_chat_thread, reset_chat_thread, save_chat_thread
-from crew.config.llm import get_default_llm, resolve_study_assistant_manager_model
+from crew.config.llm import (
+    get_default_llm,
+    resolve_study_assistant_manager_model,
+    resolve_study_assistant_observer_model,
+)
 from crew.runtime import ensure_crewai_storage_writable
 from crew.semester_context import semester_reference_context
 from crew.tools.grademanager_tools import (
@@ -47,6 +51,7 @@ ACTIVE_PROPOSAL_STATUSES = {"proposed", "approved", "needs_clarification"}
 class StudyChatFlowRuntime:
     model: str | None = None
     manager_model: str | None = None
+    observer_model: str | None = None
     temperature: float | None = None
     top_p: float | None = None
     allow_temp_enrollment: bool = False
@@ -116,9 +121,29 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 thread.isis_context = merged
                 save_chat_thread(thread)
         self.state.conversation_context = _conversation_context(thread)
+        if self._on_trace_event:
+            self._on_trace_event(
+                {
+                    "event": "flow_context_ready",
+                    "agent_label": "Orchestrator",
+                    "phase": "context",
+                    "status": "ok",
+                    "activity": "Conversation, profile, and active proposal context loaded.",
+                }
+            )
 
     @router(ingest_turn)
     def classify_intent(self) -> str:
+        if self._on_trace_event:
+            self._on_trace_event(
+                {
+                    "event": "intent_classification_started",
+                    "agent_label": "Orchestrator",
+                    "phase": "routing",
+                    "status": "running",
+                    "activity": "Classifying intent and computing the specialist execution scope.",
+                }
+            )
         if self.state.approved_actions:
             intent = IntentClassification(
                 route="recommendation",
@@ -129,14 +154,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             )
             self.state.intent = intent
             self.state.route = "recommendation"
-            if self._on_trace_event:
-                self._on_trace_event(
-                    {
-                        "event": "intent_classified",
-                        "intent": intent.model_dump(mode="json"),
-                        "status": "ok",
-                    }
-                )
+            self._emit_intent_classified(intent)
             return "recommendation"
 
         decision = self._interpret_active_proposal_decision()
@@ -161,6 +179,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                     )
                     self.state.intent = intent
                     self.state.route = intent.route
+                    self._emit_intent_classified(intent)
                     return "discard_active_proposals"
 
             # If the decision is unclear or needs clarification, fall through to
@@ -178,6 +197,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                     )
                     self.state.intent = intent
                     self.state.route = "recommendation"
+                    self._emit_intent_classified(intent)
                     return "recommendation"
 
             if decision.intent == "revise_only":
@@ -190,6 +210,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 )
                 self.state.intent = intent
                 self.state.route = "recommendation"
+                self._emit_intent_classified(intent)
                 return "recommendation"
 
         classifier = self._classifier or self._classify_with_llm_or_heuristics
@@ -198,12 +219,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         intent = _normalize_simple_isis_sources(intent)
         self.state.intent = intent
         self.state.route = intent.route
-        if self._on_trace_event:
-            self._on_trace_event({
-                "event": "intent_classified",
-                "intent": intent.model_dump(mode="json"),
-                "status": "ok",
-            })
+        self._emit_intent_classified(intent)
         return intent.route
 
     @listen("simple_grade_manager")
@@ -260,6 +276,16 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         )
     )
     def persist_turn(self) -> StudyChatFlowState:
+        if self._on_trace_event:
+            self._on_trace_event(
+                {
+                    "event": "flow_turn_persisting",
+                    "agent_label": "Orchestrator",
+                    "phase": "persistence",
+                    "status": "running",
+                    "activity": "Persisting the answer, proposal state, and conversation memory.",
+                }
+            )
         summary = _summarize_thread(
             self.state.thread,
             self.state.query,
@@ -286,9 +312,46 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 self.state.thread.isis_context = merged
                 self.state.isis_context_json = json.dumps(merged.model_dump(mode="json"), ensure_ascii=False)
                 save_chat_thread(self.state.thread)
+        if self._on_trace_event:
+            self._on_trace_event(
+                {
+                    "event": "flow_turn_completed",
+                    "agent_label": "Orchestrator",
+                    "phase": "answer",
+                    "status": "ok",
+                    "activity": "Flow turn completed and the final answer is ready.",
+                }
+            )
         return self.state
 
+    def _emit_intent_classified(self, intent: IntentClassification) -> None:
+        if not self._on_trace_event:
+            return
+        self._on_trace_event(
+            {
+                "event": "intent_classified",
+                "agent_label": "Orchestrator",
+                "phase": "routing",
+                "intent": intent.model_dump(mode="json"),
+                "status": "ok",
+                "activity": (
+                    f"Intent classified as `{intent.route}`; specialist scope is now available."
+                ),
+            }
+        )
+
     def _run_route(self, route: str) -> str:
+        if self._on_trace_event:
+            self._on_trace_event(
+                {
+                    "event": "route_execution_started",
+                    "agent_label": "Orchestrator",
+                    "phase": "routing",
+                    "route": route,
+                    "status": "running",
+                    "activity": f"Route `{route}` selected; initializing its CrewAI execution path.",
+                }
+            )
         approved_execution_actions = self._approved_actions_for_execution()
         if approved_execution_actions:
             self.state.executed_actions = self._execute_approved_actions(approved_execution_actions)
@@ -368,7 +431,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             **self._crew_kwargs(),
             manager_model=self._runtime.manager_model,
             allow_temp_enrollment=self._runtime.allow_temp_enrollment,
-            planning_enabled=(self._runtime.planning_enabled or route in {"recommendation", "deep_dive"}),
+            planning_enabled=self._runtime.planning_enabled,
             planning_llm_model=self._runtime.planning_llm_model,
         ).crew().kickoff(
             inputs={
@@ -538,7 +601,8 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         if self._runtime.use_llm_decision_interpreter and os.getenv("GWDG_API_KEY"):
             try:
                 llm = get_default_llm(
-                    model=resolve_study_assistant_manager_model(
+                    model=resolve_study_assistant_observer_model(
+                        observer_model=self._runtime.observer_model,
                         manager_model=self._runtime.manager_model,
                         specialist_model=self._runtime.model,
                     ),
@@ -635,7 +699,8 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         
         try:
             llm = get_default_llm(
-                model=resolve_study_assistant_manager_model(
+                model=resolve_study_assistant_observer_model(
+                    observer_model=self._runtime.observer_model,
                     manager_model=self._runtime.manager_model,
                     specialist_model=self._runtime.model,
                 ),

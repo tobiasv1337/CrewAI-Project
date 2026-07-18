@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import main as cli
 from core import persistence
 from core.models import Module, ModuleState, MosesIsisCandidate, MosesModuleData
 from crew.chat_models import ActionDecision, IntentClassification, ProposedAction, StudyChatFlowState, UserDecisionInterpretation
@@ -10,6 +11,7 @@ from crew.chat_persistence import append_turn, load_chat_thread
 from crew.study_chat_flow import StudyChatFlow, StudyChatFlowRuntime
 from crew.tools.grademanager_tools import STUDY_PLAN_CONFIRMATION_TOKEN
 from crew.tools.proposal_tools import ProposalCourseInput, ProposeCourseActionsTool, build_course_proposal
+from crewai.types.streaming import StreamSession
 
 
 def _setup_profile(monkeypatch, tmp_path):
@@ -151,6 +153,35 @@ def test_simple_progress_question_routes_only_to_study_advisor(monkeypatch, tmp_
     assert load_chat_thread("primary").messages[-1].content == "You have 60 LP completed."
 
 
+def test_streaming_flow_kickoff_is_consumed_before_state_is_read(monkeypatch, tmp_path):
+    _setup_profile(monkeypatch, tmp_path)
+    flow = _flow(
+        stream=True,
+        classifier=_classifier_for(
+            "simple_grade_manager",
+            required_sources=["grade_manager"],
+        ),
+        runner_overrides={
+            "simple_grade_manager": lambda flow: "Streamed progress answer.",
+        },
+    )
+
+    kickoff_output = flow.kickoff(
+        inputs=StudyChatFlowState(
+            query="How many credits are still missing?",
+            profile_slug="primary",
+        ).model_dump(mode="json")
+    )
+
+    assert isinstance(kickoff_output, StreamSession)
+    cli._consume_flow_streaming_output(kickoff_output)
+
+    assert kickoff_output.is_exhausted is True
+    assert flow.state.query == "How many credits are still missing?"
+    assert flow.state.intent.route == "simple_grade_manager"
+    assert flow.state.answer_markdown == "Streamed progress answer."
+
+
 def test_simple_grade_optimization_routes_to_grade_optimization_crew(monkeypatch, tmp_path):
     _setup_profile(monkeypatch, tmp_path)
     import crew.grade_optimization_crew as grade_optimization_module
@@ -194,6 +225,52 @@ def test_simple_grade_optimization_routes_to_grade_optimization_crew(monkeypatch
     assert captured["inputs"]["student_context"] == "No student context supplied."
     assert "Can I still reach a 1.7 final grade?" in captured["inputs"]["query"]
     assert load_chat_thread("primary").messages[-1].content == "Target grade optimizer answer."
+
+
+def test_deep_dive_keeps_extra_crewai_planning_opt_in(monkeypatch):
+    import crew.multi_agent_crew as multi_agent_module
+
+    captured = []
+
+    class FakeMultiAgentStudyAssistantCrew:
+        def __init__(self, **kwargs):
+            captured.append(kwargs)
+
+        def crew(self):
+            return self
+
+        def kickoff(self, inputs):
+            return SimpleNamespace(raw="Coordinated answer.")
+
+    monkeypatch.setattr(
+        multi_agent_module,
+        "MultiAgentStudyAssistantCrew",
+        FakeMultiAgentStudyAssistantCrew,
+    )
+
+    default_flow = StudyChatFlow(
+        runtime=StudyChatFlowRuntime(
+            planning_enabled=False,
+            use_llm_classifier=False,
+            use_llm_decision_interpreter=False,
+        )
+    )
+    default_flow.state.query = "Review my Master's plan."
+    default_flow.state.intent = IntentClassification(route="deep_dive", language="en")
+    assert default_flow._run_route("deep_dive") == "Coordinated answer."
+
+    opted_in_flow = StudyChatFlow(
+        runtime=StudyChatFlowRuntime(
+            planning_enabled=True,
+            use_llm_classifier=False,
+            use_llm_decision_interpreter=False,
+        )
+    )
+    opted_in_flow.state.query = "Review my Master's plan."
+    opted_in_flow.state.intent = IntentClassification(route="deep_dive", language="en")
+    assert opted_in_flow._run_route("deep_dive") == "Coordinated answer."
+
+    assert [kwargs["planning_enabled"] for kwargs in captured] == [False, True]
 
 
 def test_llm_classifier_prompt_includes_grade_optimization_route_and_boundary(monkeypatch):

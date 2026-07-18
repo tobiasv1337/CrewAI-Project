@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 import html
@@ -26,8 +26,18 @@ from crew.chat_persistence import (
     save_chat_thread,
     list_chat_threads,
 )
-from crew.config.llm import resolve_study_assistant_manager_model, resolve_study_assistant_model
+from crew.config.llm import (
+    resolve_study_assistant_manager_model,
+    resolve_study_assistant_model,
+    resolve_study_assistant_observer_model,
+)
 from crew.isis_client import IsisCredentials, MoodleRestClient, login_via_playwright_sync
+from crew.runtime_observer import (
+    RuntimeObserverResult,
+    deterministic_runtime_observer_report,
+    generate_runtime_observer_report,
+    reconcile_runtime_observer_report,
+)
 from crew.semester_context import semester_reference_context
 from crew.tools.proposal_tools import ProposalCourseInput, build_course_proposal
 from crew.tracing import TraceWorkbench, load_trace_workbench
@@ -48,6 +58,25 @@ AGENT_LANES = [
     "ISIS Course Info Specialist",
     "Course Commitment Specialist",
 ]
+HIERARCHICAL_ROUTES = {"deep_dive", "recommendation"}
+HIERARCHICAL_SPECIALISTS = {
+    label for label in AGENT_LANES if label != "Orchestrator"
+}
+ROUTE_AGENT_MAP = {
+    "simple_grade_manager": "Study Advisor",
+    "simple_grade_optimization": "Grade Optimization Specialist",
+    "simple_moses": "MOSES Module Researcher",
+    "simple_isis": "ISIS Course Info Specialist",
+    "simple_degree_regulations": "Degree Regulations Specialist",
+}
+SOURCE_AGENT_MAP = {
+    "grade_manager": "Study Advisor",
+    "grade_optimization": "Grade Optimization Specialist",
+    "moses": "MOSES Module Researcher",
+    "degree_regulations": "Degree Regulations Specialist",
+    "isis": "ISIS Course Info Specialist",
+    "course_commitment": "Course Commitment Specialist",
+}
 
 
 @dataclass(frozen=True)
@@ -63,6 +92,8 @@ class ChatRuntimeSettings:
     allow_temp_enrollment: bool
     planning_enabled: bool = False
     show_agent_chat: bool = False
+    observer_model: str | None = None
+    observer_enabled: bool = True
 
 
 def _get_active_thread_id(profile_slug: str) -> str:
@@ -75,10 +106,8 @@ def _get_active_thread_id(profile_slug: str) -> str:
 def render_chat_page() -> None:
     inject_chat_css()
     profile_slug = str(st.session_state.get("active_profile") or "primary")
-    profile_name = _active_profile_display_name(profile_slug)
 
     active_tid = _get_active_thread_id(profile_slug)
-    settings = _render_chat_config_panel(profile_slug, active_tid=active_tid)
     thread = load_chat_thread(profile_slug, thread_id=active_tid)
     
     # Initialize UI decision state from on-disk active proposals if not present
@@ -106,9 +135,10 @@ def render_chat_page() -> None:
         _clean_html(
             f"""
             <section class="chat-hero">
-              <div>
-                <h1>Study Chat</h1>
-                <p>Active profile: <strong>{html.escape(profile_name)}</strong>. Multi-agent answers are grounded in Grade Manager, MOSES, degree-regulation PDFs, and ISIS tool traces.</p>
+              <div class="chat-hero-main">
+                <div class="chat-hero-kicker"><span></span>Multi-agent study assistant</div>
+                <h1>Agent Coordination Workbench</h1>
+                <p>Plan your studies, verify degree requirements, explore grade scenarios, and check course information. Inspect the live agent trace whenever you want to see how an answer was produced.</p>
               </div>
             </section>
             """
@@ -159,7 +189,7 @@ def render_chat_page() -> None:
         _set_profile_messages(slug, [])
         _clear_all_course_card_state(slug)
 
-    col_sel, col_new, col_del = st.columns([3, 1, 1])
+    col_sel, col_new, col_runtime, col_del = st.columns([6, 1.15, 1.55, 1])
     with col_sel:
         selected_tid = st.selectbox(
             "Session Selector",
@@ -175,17 +205,20 @@ def render_chat_page() -> None:
             
     with col_new:
         st.button(
-            "＋ New Chat",
+            "New chat",
             key=f"chat_new_btn_header_{profile_slug}",
             use_container_width=True,
             type="secondary",
             on_click=on_new_chat,
             args=(profile_slug,)
         )
+
+    with col_runtime:
+        settings = _render_chat_config_panel(profile_slug, active_tid=active_tid)
             
     with col_del:
         is_default = (active_tid == "default")
-        btn_label = "🗑️ Clear" if is_default else "🗑️ Delete"
+        btn_label = "Clear" if is_default else "Delete"
         st.button(
             btn_label,
             key=f"chat_del_btn_header_{profile_slug}",
@@ -195,7 +228,7 @@ def render_chat_page() -> None:
             args=(profile_slug, active_tid)
         )
             
-    st.markdown("<div style='margin-bottom: 0.8rem;'></div>", unsafe_allow_html=True)
+    st.markdown("<div class='chat-toolbar-spacer'></div>", unsafe_allow_html=True)
 
     if not messages:
         _render_empty_state(profile_slug)
@@ -213,6 +246,9 @@ def render_chat_page() -> None:
         if message.get("role") == "assistant" and settings.show_agent_chat:
             _render_agent_interactions_inline(get_interactions_for_message(message), live=False)
         _render_chat_message(message, is_latest_assistant=is_latest_assistant, run_active=run_active)
+
+    if messages and _message_error_detail(messages[-1]) and not run_active:
+        _render_empty_state(profile_slug, recovery=True)
 
     pending_prompt = st.session_state.get(PENDING_PROMPT_KEY)
     if isinstance(pending_prompt, dict) and pending_prompt.get("profile_slug") == profile_slug and not clear_pass:
@@ -235,7 +271,7 @@ def render_chat_page() -> None:
     if thread.active_proposals and not run_active and not clear_pass:
         _render_proposals_panel(profile_slug, thread.active_proposals)
 
-    prompt = st.chat_input("Ask, revise, or type 'apply selected'...")
+    prompt = st.chat_input("Ask the agent team, revise a proposal, or type 'apply selected'…")
     if prompt:
         run_prompt = prompt.strip()
         if run_prompt:
@@ -258,17 +294,25 @@ def render_chat_page() -> None:
 
 
 def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") -> ChatRuntimeSettings:
-    with st.expander("Configuration & Connections", expanded=False):
-        col_isis, col_agent = st.columns(2)
+    del active_tid
+    with st.popover(
+        "Runtime settings",
+        icon=":material/tune:",
+        use_container_width=True,
+        help="Models, tracing, agent behavior, and ISIS access.",
+    ):
+        st.caption("Advanced controls for the current profile")
+        tab_models, tab_execution, tab_isis = st.tabs(["Models", "Execution", "ISIS"])
 
-        with col_isis:
-            _render_isis_account_panel(profile_slug)
-
-        with col_agent:
-            st.markdown("#### Agent runtime settings")
+        with tab_models:
+            st.markdown("**Model roles**")
             configured_model = resolve_study_assistant_model()
             configured_manager_model = resolve_study_assistant_manager_model(
                 specialist_model=configured_model
+            )
+            configured_observer_model = resolve_study_assistant_observer_model(
+                manager_model=configured_manager_model,
+                specialist_model=configured_model,
             )
             specialist_model = st.text_input(
                 "Specialist model override",
@@ -289,6 +333,16 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 ),
                 key=f"chat_manager_model_{profile_slug}",
             ).strip()
+            observer_model = st.text_input(
+                "Progress summary model override",
+                value="",
+                placeholder=f".env default: {configured_observer_model}",
+                help=(
+                    "Optional lightweight model for intent classification, proposal-decision interpretation, "
+                    "and grounded live trace narration. It observes lifecycle evidence but never controls execution."
+                ),
+                key=f"chat_observer_model_{profile_slug}",
+            ).strip()
 
             col_temp, col_topp = st.columns(2)
             with col_temp:
@@ -308,6 +362,8 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                     else None
                 )
 
+        with tab_execution:
+            st.markdown("**Trace and execution**")
             trace_mode = st.segmented_control(
                 "Tracing level",
                 ["Preview", "Full", "Disabled"],
@@ -315,29 +371,43 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 key=f"chat_trace_mode_{profile_slug}",
             )
 
-            col_toggles1, col_toggles2 = st.columns(2)
-            with col_toggles1:
-                allow_temp_enrollment = st.toggle(
-                    "Temp ISIS enrollment",
-                    value=True,
-                    help="When enabled, read-only ISIS tools may enroll briefly, inspect course information, then unenroll.",
-                    key=f"chat_temp_enrollment_{profile_slug}",
-                )
-                verbose = st.toggle("CrewAI verbose logs", value=False, key=f"chat_verbose_{profile_slug}")
-            with col_toggles2:
-                cache = st.toggle("CrewAI cache", value=True, key=f"chat_cache_{profile_slug}")
-                planning_enabled = st.toggle(
-                    "CrewAI Planning",
-                    value=False,
-                    help="Enable CrewAI planning for complex/deep multi-agent runs.",
-                    key=f"chat_planning_{profile_slug}",
-                )
-                show_agent_chat = st.toggle(
-                    "Show bot-to-bot chat",
-                    value=False,
-                    help="Render observable Orchestrator-to-specialist delegation above the final chat answer.",
-                    key=f"chat_show_agent_chat_{profile_slug}",
-                )
+            allow_temp_enrollment = st.toggle(
+                "Temporary ISIS enrollment",
+                value=True,
+                help="Read-only ISIS tools may enroll briefly, inspect course information, then unenroll.",
+                key=f"chat_temp_enrollment_{profile_slug}",
+            )
+            observer_enabled = st.toggle(
+                "LLM progress summaries",
+                value=True,
+                help=(
+                    "Use the lightweight observer model to turn A2A delegation and tool lifecycle events "
+                    "into cumulative overall and per-agent progress reports. The first update runs when post-intent "
+                    "agent activity appears; later updates are throttled to 30 seconds and require new evidence. "
+                    "Immediate trace-derived summaries remain visible while the background LLM is pending."
+                ),
+                key=f"chat_observer_enabled_{profile_slug}",
+            )
+            show_agent_chat = st.toggle(
+                "Show internal agent chat",
+                value=False,
+                help="Render observable Orchestrator-to-specialist delegation above the final answer.",
+                key=f"chat_show_agent_chat_{profile_slug}",
+            )
+            planning_enabled = st.toggle(
+                "CrewAI planning",
+                value=False,
+                help=(
+                    "Add CrewAI's separate planning pass before the hierarchical manager starts. "
+                    "The orchestrator already plans and delegates without this optional extra call."
+                ),
+                key=f"chat_planning_{profile_slug}",
+            )
+            cache = st.toggle("CrewAI cache", value=True, key=f"chat_cache_{profile_slug}")
+            verbose = st.toggle("Verbose lifecycle logs", value=False, key=f"chat_verbose_{profile_slug}")
+
+        with tab_isis:
+            _render_isis_account_panel(profile_slug)
     trace_mode = str(st.session_state.get(f"chat_trace_mode_{profile_slug}") or "Preview")
     return ChatRuntimeSettings(
         specialist_model=specialist_model or None,
@@ -351,6 +421,8 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
         allow_temp_enrollment=allow_temp_enrollment,
         planning_enabled=planning_enabled,
         show_agent_chat=show_agent_chat,
+        observer_model=observer_model or None,
+        observer_enabled=observer_enabled,
     )
 
 
@@ -360,7 +432,7 @@ def _render_isis_account_panel(profile_slug: str) -> None:
     mode = str(session.get("mode") or "env")
     created_at = session.get("created_at")
 
-    st.markdown("#### ISIS connection")
+    st.markdown("**ISIS connection**")
     if mode == "session" and session.get("client") is not None:
         st.success(f"Session login active. Age: {_age_label(created_at)}")
     else:
@@ -409,58 +481,78 @@ def _render_isis_account_panel(profile_slug: str) -> None:
         st.rerun()
 
 
-def _render_empty_state(profile_slug: str) -> None:
+def _render_empty_state(profile_slug: str, *, recovery: bool = False) -> None:
     examples = [
-        ("🤖 What ML modules can I still take next semester?", "What ML modules can I still take next semester?"),
-        ("🎓 How many credits are still missing in my degree?", "How many credits are still missing in my degree?"),
-        ("🔄 Check whether Reinforcement Learning fits my study plan.", "Check whether Reinforcement Learning fits my study plan."),
-        ("📅 What deadlines are visible in my current ISIS courses?", "What deadlines are visible in my current ISIS courses?"),
+        (
+            "Plan my next semester",
+            "Build a realistic plan for my next semester using my completed modules, degree requirements, current grade forecast, and modules currently offered in MOSES. Explain any assumptions.",
+        ),
+        (
+            "Explore my path to a 1.7",
+            "Can I still reach a final grade of 1.7? Compare realistic scenarios, identify the modules with the greatest impact, and explain the constraints.",
+        ),
+        (
+            "Review upcoming deadlines",
+            "Check my active Grade Manager courses in ISIS for upcoming deadlines and summarize what I should prioritize.",
+        ),
     ]
-    st.markdown('<div class="empty-state-header">Suggested Questions</div>', unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    for idx, (label, prompt) in enumerate(examples):
-        target_col = col1 if idx % 2 == 0 else col2
-        with target_col:
-            if st.button(label, key=f"example_btn_{idx}_{profile_slug}", use_container_width=True):
-                st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": prompt}
-                st.rerun()
+    heading = "Try another question" if recovery else "What would you like to work on?"
+    subtitle = (
+        "The previous run is preserved above. Start a fresh request or use one of these examples."
+        if recovery
+        else "Ask in your own words, or start with an example."
+    )
+    with st.container(key="chat_prompt_starters"):
+        st.markdown(
+            _clean_html(
+                f"""
+                <section class="prompt-starters-heading">
+                  <h2>{heading}</h2>
+                  <p>{subtitle}</p>
+                </section>
+                """
+            ),
+            unsafe_allow_html=True,
+        )
+        columns = st.columns(len(examples))
+        for idx, ((label, prompt), target_col) in enumerate(zip(examples, columns, strict=True)):
+            with target_col:
+                if st.button(
+                    label,
+                    key=f"example_btn_{idx}_{profile_slug}",
+                    type="tertiary",
+                    icon=":material/arrow_outward:",
+                    icon_position="right",
+                    use_container_width=True,
+                ):
+                    st.session_state[PENDING_PROMPT_KEY] = {"profile_slug": profile_slug, "prompt": prompt}
+                    st.rerun()
+
+
 def _highlight_json(json_str: str) -> str:
-    # We will use temporary tokens that do not contain HTML special characters
-    # so they are unaffected by html.escape()
-    
-    # 1. Protect keys
-    def repl_key(match):
+    """Return HTML-safe JSON with lightweight key/value syntax coloring."""
+
+    def replace_key(match: re.Match[str]) -> str:
         return f'__K_START__"{match.group(1)}"__K_END__:'
-    
-    key_re = r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:'
-    temp = re.sub(key_re, repl_key, json_str)
-    
-    # 2. Protect string values
-    def repl_str(match):
+
+    def replace_string(match: re.Match[str]) -> str:
         return f': __S_START__"{match.group(1)}"__S_END__'
-    
-    str_re = r':\s*"([^"\\]*(?:\\.[^"\\]*)*)"'
-    temp = re.sub(str_re, repl_str, temp)
-    
-    # 3. Protect numeric/boolean/null values
-    def repl_val(match):
+
+    def replace_scalar(match: re.Match[str]) -> str:
         return f': __V_START__{match.group(1)}__V_END__'
-    
-    val_re = r':\s*(true|false|null|-?\d+(?:\.\d+)?)'
-    temp = re.sub(val_re, repl_val, temp)
-    
-    # 4. HTML escape the entire text
-    escaped = html.escape(temp)
-    
-    # 5. Replace placeholders with actual styled HTML tags
-    escaped = escaped.replace('__K_START__', '<span style="color: #60a5fa; font-weight: 600;">')
-    escaped = escaped.replace('__K_END__', '</span>')
-    escaped = escaped.replace('__S_START__', '<span style="color: #10b981;">')
-    escaped = escaped.replace('__S_END__', '</span>')
-    escaped = escaped.replace('__V_START__', '<span style="color: #f43f5e; font-weight: 600;">')
-    escaped = escaped.replace('__V_END__', '</span>')
-    
-    return escaped
+
+    protected = re.sub(r'"([^"\\]*(?:\\.[^"\\]*)*)"\s*:', replace_key, json_str)
+    protected = re.sub(r':\s*"([^"\\]*(?:\\.[^"\\]*)*)"', replace_string, protected)
+    protected = re.sub(r':\s*(true|false|null|-?\d+(?:\.\d+)?)', replace_scalar, protected)
+    escaped = html.escape(protected)
+    return (
+        escaped.replace("__K_START__", '<span style="color: #60a5fa; font-weight: 600;">')
+        .replace("__K_END__", "</span>")
+        .replace("__S_START__", '<span style="color: #10b981;">')
+        .replace("__S_END__", "</span>")
+        .replace("__V_START__", '<span style="color: #f43f5e; font-weight: 600;">')
+        .replace("__V_END__", "</span>")
+    )
 
 
 def _safe_int(val: Any) -> int:
@@ -478,17 +570,334 @@ def _safe_int(val: Any) -> int:
 
 
 
+def _message_error_detail(message: dict[str, Any]) -> str | None:
+    metadata = message.get("metadata") or {}
+    error = metadata.get("error") if isinstance(metadata, dict) else None
+    if isinstance(error, dict) and str(error.get("detail") or "").strip():
+        return str(error["detail"]).strip()
+    content = str(message.get("content") or "")
+    prefix = "Could not run the Study Assistant:"
+    if content.startswith(prefix):
+        return content[len(prefix) :].strip().strip("`")
+    return None
+
+
 def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
+    del is_latest_assistant, run_active
+    error_detail = _message_error_detail(message)
     if message.get("role") == "assistant":
         # Extract workbench from metadata or direct field
         workbench = message.get("workbench") or (message.get("metadata") or {}).get("workbench")
         if workbench:
-            _render_trace_panel(workbench, expanded=False)
+            _render_trace_panel(workbench, expanded=error_detail is not None)
         elif message.get("trace_dir"):
             st.caption(f"📊 Trace artifacts: `{message.get('trace_dir')}`")
-            
+
     with st.chat_message(message.get("role", "assistant")):
-        st.markdown(str(message.get("content") or ""))
+        if error_detail:
+            st.markdown(
+                _clean_html(
+                    """
+                    <div class="run-error-card">
+                      <span class="run-error-mark">!</span>
+                      <div>
+                        <strong>Run interrupted before answer synthesis</strong>
+                        <p>The trace above preserves the completed lifecycle events. Retry the prompt after inspecting the technical detail.</p>
+                      </div>
+                    </div>
+                    """
+                ),
+                unsafe_allow_html=True,
+            )
+            with st.expander("Technical failure detail", expanded=False):
+                st.code(error_detail, language=None)
+        else:
+            st.markdown(str(message.get("content") or ""))
+
+
+def _render_live_answer_status(placeholder: Any, events: list[dict[str, Any]]) -> str:
+    """Render a true token preview when safe, otherwise show deterministic run state."""
+    preview = _streaming_answer_preview(events)
+    if preview:
+        placeholder.markdown(f"{preview}\n\n▌")
+        return preview
+
+    label, detail = _live_run_status(events)
+    observer_report = _latest_observer_report(events)
+    observer_meta = (
+        '<div class="answer-runtime-observer-label">Live coordination summary</div>'
+        if observer_report
+        else ""
+    )
+    placeholder.markdown(
+        _clean_html(
+            f"""
+            <div class="answer-runtime-status">
+              <span class="answer-runtime-spinner" aria-hidden="true"></span>
+              <div>
+                {observer_meta}
+                <strong>{html.escape(label)}</strong>
+                <span class="answer-runtime-detail">{html.escape(detail)}</span>
+              </div>
+            </div>
+            """
+        ),
+        unsafe_allow_html=True,
+    )
+    return ""
+
+
+def _live_run_status(events: list[dict[str, Any]]) -> tuple[str, str]:
+    observer_report = _latest_observer_report(events)
+    if observer_report:
+        return (
+            str(observer_report.get("headline") or "Coordination update"),
+            str(observer_report.get("detail") or "The observer is interpreting the latest trace evidence."),
+        )
+    intent = _latest_intent(events)
+    route = str((intent or {}).get("route") or "")
+    last = next(
+        (
+            event
+            for event in reversed(events)
+            if event.get("event") not in {"heartbeat", "llm_stream_chunk", "agent_ready"}
+        ),
+        {},
+    )
+    event_name = str(last.get("event") or "")
+    agent = _event_agent_label(last)
+    if event_name == "observer_started":
+        return "Updating the coordination summary", "New delegation and execution evidence is being interpreted in the background."
+    if event_name == "observer_failed":
+        return "Trace-derived progress summary", "The LLM enrichment is temporarily unavailable; verified lifecycle state remains visible."
+    if event_name == "flow_turn_persisting":
+        return "Finalizing run state", "Persisting the answer, trace metadata, and proposal state."
+    if event_name == "intent_classification_started":
+        return "Computing execution scope", "The intent router is selecting specialists and source boundaries."
+    if event_name == "intent_classified":
+        sources = ", ".join(str(item) for item in ((intent or {}).get("required_sources") or []))
+        scope = f" Priority sources: {sources}." if sources else ""
+        eligibility = (
+            " All hierarchical specialists remain eligible for manager delegation."
+            if route in HIERARCHICAL_ROUTES
+            else ""
+        )
+        return f"Scope classified as {route or 'unclassified'}", f"Intent routing completed.{scope}{eligibility}"
+    if event_name == "route_execution_started":
+        return "Preparing the specialist workflow", "The orchestrator is applying the classified source scope and delegation strategy."
+    if event_name == "crew_started":
+        return "Specialist coordination started", "The orchestrator is preparing the first evidence-driven delegation."
+    if event_name in {"task_started", "task_completed"}:
+        if event_name == "task_started":
+            return f"{agent} analysis started", _agent_card_fallback_activity(agent, {"status": "running"})
+        return f"{agent} analysis completed", _agent_card_fallback_activity(agent, {"status": "ok"})
+    if event_name == "tool_start":
+        source = str(last.get("source_system") or "configured source")
+        return f"{agent} is checking {source}", _agent_card_fallback_activity(agent, {"status": "running"})
+    if event_name == "tool_finish":
+        call = last.get("tool_call") if isinstance(last.get("tool_call"), dict) else {}
+        source = str(call.get("source_system") or "configured source")
+        return f"{agent} received {source} evidence", "The result is available for the next coordination step."
+    if event_name == "llm_started":
+        return f"{agent} is interpreting current evidence", _agent_card_fallback_activity(agent, {"status": "running"})
+    if event_name == "llm_completed":
+        return f"{agent} completed an analysis step", "The result is being incorporated into the next delegation or final synthesis."
+    if route:
+        return "Coordination in progress", "Awaiting the next verified specialist or tool result."
+    return "CrewAI Flow accepted the turn", "Loading context and starting intent classification."
+
+
+def _latest_observer_report(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        report = event.get("report")
+        if event.get("event") == "observer_progress" and isinstance(report, dict):
+            try:
+                return reconcile_runtime_observer_report(events, report).model_dump(mode="json")
+            except Exception:
+                try:
+                    return deterministic_runtime_observer_report(events).model_dump(mode="json")
+                except Exception:
+                    return None
+    if not any(
+        event.get("event") not in {
+            "agent_ready",
+            "heartbeat",
+            "llm_stream_chunk",
+            "observer_started",
+            "observer_failed",
+        }
+        for event in events
+    ):
+        return None
+    try:
+        return deterministic_runtime_observer_report(events).model_dump(mode="json")
+    except Exception:
+        return None
+
+
+def _observer_agent_updates_from_report(report: dict[str, Any] | None) -> dict[str, dict[str, str]]:
+    updates: dict[str, dict[str, str]] = {}
+    for item in (report or {}).get("agent_updates") or []:
+        if not isinstance(item, dict):
+            continue
+        label, _, _ = _clean_agent_label(str(item.get("agent") or ""))
+        summary = " ".join(str(item.get("summary") or "").split())
+        if label not in AGENT_LANES or not summary:
+            continue
+        updates[label] = {
+            "summary": summary,
+            "state": str(item.get("state") or "active"),
+        }
+    return updates
+
+
+def _latest_observer_agent_updates(events: list[dict[str, Any]]) -> dict[str, dict[str, str]]:
+    return _observer_agent_updates_from_report(_latest_observer_report(events))
+
+
+OBSERVER_TRIGGER_EVENTS = {
+    "intent_classified",
+    "route_execution_started",
+    "crew_started",
+    "task_started",
+    "task_completed",
+    "tool_start",
+    "tool_finish",
+    "llm_started",
+    "llm_completed",
+}
+OBSERVER_INITIAL_EVIDENCE_EVENTS = {
+    "route_execution_started",
+    "crew_started",
+    "task_started",
+    "task_completed",
+    "tool_start",
+    "tool_finish",
+    "llm_started",
+    "llm_completed",
+}
+OBSERVER_MIN_INTERVAL_SECONDS = 10.0
+
+
+def _observer_trigger_signature(events: list[dict[str, Any]]) -> str | None:
+    relevant = [event for event in events if event.get("event") in OBSERVER_TRIGGER_EVENTS]
+    intent_index = next(
+        (
+            index
+            for index in range(len(relevant) - 1, -1, -1)
+            if relevant[index].get("event") == "intent_classified"
+        ),
+        None,
+    )
+    if intent_index is None or not any(
+        event.get("event") in OBSERVER_INITIAL_EVIDENCE_EVENTS
+        for event in relevant[intent_index + 1 :]
+    ):
+        return None
+    event = relevant[-1]
+    call = event.get("tool_call") if isinstance(event.get("tool_call"), dict) else {}
+    return ":".join(
+        [
+            str(len(relevant)),
+            str(event.get("event") or ""),
+            str(event.get("call_id") or call.get("call_id") or ""),
+            str(_event_agent_label(event) or ""),
+            str(event.get("status") or call.get("status") or ""),
+        ]
+    )
+
+
+def _append_observer_result(
+    events: list[dict[str, Any]],
+    future: Future[RuntimeObserverResult],
+) -> bool:
+    if not future.done():
+        return False
+    try:
+        result = future.result()
+        report = result.report.model_dump(mode="json")
+        events.append(
+            {
+                "event": "observer_progress",
+                "agent_label": "Runtime Observer",
+                "source_system": "Trace Observer",
+                "phase": "observation",
+                "status": "ok",
+                "model": result.model,
+                "report": report,
+                "activity": f"{report['headline']}: {report['detail']}",
+                "elapsed_ms": _elapsed_ms_from_events(events),
+            }
+        )
+    except Exception as exc:
+        events.append(
+            {
+                "event": "observer_failed",
+                "agent_label": "Runtime Observer",
+                "source_system": "Trace Observer",
+                "phase": "observation",
+                "status": "warning",
+                "activity": "LLM observer unavailable; deterministic lifecycle status remains active.",
+                "error": f"{type(exc).__name__}: {exc}",
+                "elapsed_ms": _elapsed_ms_from_events(events),
+            }
+        )
+    return True
+
+
+def _latest_intent(events: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for event in reversed(events):
+        intent = event.get("intent")
+        if event.get("event") == "intent_classified" and isinstance(intent, dict):
+            return intent
+    return None
+
+
+def _answer_agent_for_intent(intent: dict[str, Any] | None) -> str:
+    route = str((intent or {}).get("route") or "")
+    return {
+        "simple_grade_manager": "Study Advisor",
+        "simple_grade_optimization": "Grade Optimization Specialist",
+        "simple_moses": "MOSES Module Researcher",
+        "simple_isis": "ISIS Course Info Specialist",
+        "simple_degree_regulations": "Degree Regulations Specialist",
+    }.get(route, "Orchestrator")
+
+
+def _streaming_answer_preview(events: list[dict[str, Any]]) -> str:
+    """Return the current answer candidate from CrewAI's real LLM chunk stream.
+
+    Tool-call chunks reset the candidate. This keeps planning/delegation calls out
+    of the answer surface while allowing the final tool-free response to appear
+    token by token.
+    """
+    target_agent = _answer_agent_for_intent(_latest_intent(events))
+    buffer = ""
+    for event in events:
+        if event.get("event") != "llm_stream_chunk":
+            continue
+        if _event_agent_label(event) != target_agent:
+            continue
+        if str(event.get("chunk_type") or "text") == "tool_call":
+            buffer = ""
+            continue
+        buffer += str(event.get("content") or "")
+    return buffer if len(buffer.strip()) >= 24 else ""
+
+
+def _animated_answer_chunks(answer: str, streamed_prefix: str = ""):
+    """Preserve the answer-writing animation with or without true streaming."""
+    text = answer.rstrip()
+    prefix = streamed_prefix if streamed_prefix and text.startswith(streamed_prefix) else ""
+    if prefix:
+        yield prefix
+    remainder = text[len(prefix) :]
+    pieces = re.split(r"(\s+)", remainder)
+    nonempty = [piece for piece in pieces if piece]
+    delay = min(0.014, max(0.002, 1.6 / max(len(nonempty), 1)))
+    for piece in nonempty:
+        yield piece
+        time.sleep(delay)
 
 
 def _run_and_render_assistant_turn(
@@ -522,10 +931,17 @@ def _run_and_render_assistant_turn(
 
     with st.chat_message("assistant"):
         answer_placeholder = st.empty()
+        streamed_answer = _render_live_answer_status(answer_placeholder, events)
 
         def on_trace_event(event: dict[str, Any]) -> None:
             event_queue.put(event)
 
+        observer_executor = (
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="runtime-observer")
+            if settings.observer_enabled
+            else None
+        )
+        observer_future: Future[RuntimeObserverResult] | None = None
         try:
             if trace_placeholder is not None:
                 with trace_placeholder.container():
@@ -539,20 +955,65 @@ def _run_and_render_assistant_turn(
                     settings=settings,
                     student_context=student_context,
                     isis_client=isis_client,
-                    on_trace_event=on_trace_event if settings.trace_enabled else None,
+                    on_trace_event=on_trace_event,
                     approved_actions=approved_actions or [],
                     ui_decisions=ui_decisions or [],
                 )
                 last_render = 0.0
                 last_heartbeat = 0.0
+                last_observer_started = -OBSERVER_MIN_INTERVAL_SECONDS
+                last_observer_signature: str | None = None
                 while not future.done():
                     updated = _drain_trace_queue(event_queue, events)
                     now = time.monotonic()
+                    if observer_future is not None and _append_observer_result(events, observer_future):
+                        observer_future = None
+                        updated = True
+
+                    observer_signature = _observer_trigger_signature(events)
+                    if (
+                        observer_executor is not None
+                        and observer_future is None
+                        and observer_signature is not None
+                        and observer_signature != last_observer_signature
+                        and now - last_observer_started >= OBSERVER_MIN_INTERVAL_SECONDS
+                    ):
+                        observer_model = resolve_study_assistant_observer_model(
+                            observer_model=settings.observer_model,
+                            manager_model=settings.manager_model,
+                            specialist_model=settings.specialist_model,
+                        )
+                        observer_input = [dict(event) for event in events]
+                        events.append(
+                            {
+                                "event": "observer_started",
+                                "agent_label": "Runtime Observer",
+                                "source_system": "Trace Observer",
+                                "phase": "observation",
+                                "status": "running",
+                                "model": observer_model,
+                                "activity": "Interpreting the latest delegation and tool lifecycle evidence.",
+                                "elapsed_ms": _elapsed_ms_from_events(events),
+                            }
+                        )
+                        observer_future = observer_executor.submit(
+                            generate_runtime_observer_report,
+                            observer_input,
+                            observer_model=settings.observer_model,
+                            manager_model=settings.manager_model,
+                            specialist_model=settings.specialist_model,
+                            study_context=student_context,
+                        )
+                        last_observer_signature = observer_signature
+                        last_observer_started = now
+                        updated = True
+
                     if now - last_heartbeat >= 1.2:
                         _append_heartbeat_event(events)
                         updated = True
                         last_heartbeat = now
                     if updated or now - last_render >= 1.0:
+                        streamed_answer = _render_live_answer_status(answer_placeholder, events)
                         if dialogue_placeholder is not None:
                             with dialogue_placeholder.container():
                                 _render_agent_interactions_inline(extract_agent_interactions(events), live=True)
@@ -562,6 +1023,8 @@ def _run_and_render_assistant_turn(
                         last_render = now
                     time.sleep(0.2)
                 _drain_trace_queue(event_queue, events)
+                if observer_future is not None and _append_observer_result(events, observer_future):
+                    observer_future = None
                 if dialogue_placeholder is not None:
                     with dialogue_placeholder.container():
                         _render_agent_interactions_inline(extract_agent_interactions(events), live=False)
@@ -570,15 +1033,19 @@ def _run_and_render_assistant_turn(
                         _render_live_trace(events, completed=True)
                 result = future.result()
 
+            if observer_executor is not None:
+                if observer_future is not None:
+                    observer_future.cancel()
+                observer_executor.shutdown(wait=False, cancel_futures=True)
+
             if result.answer.strip():
                 with answer_placeholder.container():
-                    def _stream_generator():
-                        answer_text = result.answer.rstrip()
-                        words = re.split(r"(\s+)", answer_text)
-                        for word in words:
-                            yield word
-                            time.sleep(0.005)
-                    st.write_stream(_stream_generator)
+                    final_answer = result.answer.rstrip()
+                    streamed_answer = _streaming_answer_preview(events) or streamed_answer
+                    if streamed_answer == final_answer:
+                        st.markdown(final_answer)
+                    else:
+                        st.write_stream(_animated_answer_chunks(final_answer, streamed_answer))
             else:
                 answer_placeholder.markdown("*(No answer returned)*")
             # Build the completed workbench directly from live events to keep all rich details
@@ -589,6 +1056,7 @@ def _run_and_render_assistant_turn(
                 workbench["artifacts"] = {
                     "report": str(result.trace_dir / "report.md"),
                     "trace": str(result.trace_dir / "trace.jsonl"),
+                    "events": str(result.trace_dir / "events.jsonl"),
                     "state": str(result.trace_dir / "state.json"),
                     "summary": str(result.trace_dir / "summary.json"),
                 }
@@ -619,6 +1087,10 @@ def _run_and_render_assistant_turn(
                 st.success("Study plan data was updated and reloaded.")
             st.rerun()
         except Exception as exc:
+            if observer_executor is not None:
+                if observer_future is not None:
+                    observer_future.cancel()
+                observer_executor.shutdown(wait=False, cancel_futures=True)
             events.append(
                 {
                     "event": "ui_error",
@@ -629,11 +1101,26 @@ def _run_and_render_assistant_turn(
                     "elapsed_ms": _elapsed_ms_from_events(events),
                 }
             )
-            with trace_placeholder.container():
-                _render_live_trace(events, completed=True)
-            content = f"Could not run the Study Assistant: `{exc}`"
+            if trace_placeholder is not None:
+                with trace_placeholder.container():
+                    _render_live_trace(events, completed=True)
+            error_detail = str(exc)
+            content = "Run interrupted before answer synthesis. Inspect the preserved trace and retry the prompt."
+            workbench = live_workbench_from_events(events, completed=True)
+            error_message = {
+                "role": "assistant",
+                "content": content,
+                "created_at": _now_iso(),
+                "metadata": {
+                    "workbench": workbench,
+                    "error": {
+                        "type": type(exc).__name__,
+                        "detail": error_detail,
+                    },
+                },
+            }
             st.error(content)
-            _append_message(profile_slug, {"role": "assistant", "content": content, "created_at": _now_iso()}, thread_id=thread_id)
+            _append_message(profile_slug, error_message, thread_id=thread_id)
             st.rerun()
 
 
@@ -661,6 +1148,7 @@ def _run_chat_query(
         on_trace_event=on_trace_event,
         model=settings.specialist_model,
         manager_model=settings.manager_model,
+        observer_model=settings.observer_model,
         planning_enabled=settings.planning_enabled,
         temperature=settings.temperature,
         top_p=settings.top_p,
@@ -668,6 +1156,7 @@ def _run_chat_query(
         trace_full=settings.trace_full,
         verbose=settings.verbose,
         cache=settings.cache,
+        stream_answer=True,
     )
 
 
@@ -1298,6 +1787,8 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
         allow_temp_enrollment=bool(st.session_state.get(f"chat_temp_enrollment_{profile_slug}", True)),
         planning_enabled=bool(st.session_state.get(f"chat_planning_{profile_slug}", False)),
         show_agent_chat=bool(st.session_state.get(f"chat_show_agent_chat_{profile_slug}", False)),
+        observer_model=str(st.session_state.get(f"chat_observer_model_{profile_slug}") or "").strip() or None,
+        observer_enabled=bool(st.session_state.get(f"chat_observer_enabled_{profile_slug}", True)),
     )
 
 
@@ -1369,7 +1860,23 @@ def extract_agent_interactions(events: list[dict[str, Any]]) -> list[dict[str, A
             order.append(call_id)
 
     ordered_keys = list(dict.fromkeys(order))
-    return [_normalize_interaction_status(interactions[key]) for key in ordered_keys if key in interactions]
+    agent_updates = _latest_observer_agent_updates(events)
+    ordered = [
+        _normalize_interaction_status(interactions[key])
+        for key in ordered_keys
+        if key in interactions
+    ]
+    latest_for_receiver: dict[str, int] = {}
+    for index, interaction in enumerate(ordered):
+        latest_for_receiver[str(interaction.get("receiver") or "")] = index
+    for index, interaction in enumerate(ordered):
+        update = agent_updates.get(str(interaction.get("receiver") or ""))
+        if update and latest_for_receiver.get(str(interaction.get("receiver") or "")) == index:
+            interaction["observer_summary"] = update["summary"]
+            interaction["observer_state"] = (
+                "completed" if interaction.get("status") == "completed" else update["state"]
+            )
+    return ordered
 
 
 def get_interactions_for_message(
@@ -1414,7 +1921,9 @@ def extract_agent_interactions_from_workbench(workbench: dict[str, Any] | None) 
 def _load_events_from_trace_dir(trace_dir: str | Path | None) -> list[dict[str, Any]]:
     if not trace_dir:
         return []
-    trace_path = Path(trace_dir) / "trace.jsonl"
+    run_dir = Path(trace_dir)
+    events_path = run_dir / "events.jsonl"
+    trace_path = events_path if events_path.exists() else run_dir / "trace.jsonl"
     if not trace_path.exists():
         return []
     events: list[dict[str, Any]] = []
@@ -1605,6 +2114,10 @@ def _render_agent_interactions_inline(interactions: list[dict[str, Any]], *, liv
 
             with st.chat_message(receiver, avatar=str(item.get("receiver_avatar") or "🤖")):
                 status = str(item.get("status") or "running")
+                observer_summary = str(item.get("observer_summary") or "").strip()
+                if observer_summary:
+                    st.caption("Result summary" if status == "completed" else "Progress summary")
+                    st.markdown(observer_summary)
                 if status == "completed":
                     st.caption(f"Response to {sender}")
                     st.markdown(str(item.get("response") or "Completed without a response preview."))
@@ -1615,8 +2128,9 @@ def _render_agent_interactions_inline(interactions: list[dict[str, Any]], *, liv
                     st.caption(f"Response to {sender}")
                     st.warning(str(item.get("response") or "The delegated work completed with warnings."))
                 else:
-                    st.caption(f"Working for {sender}")
-                    st.info("Thinking and gathering information...")
+                    if not observer_summary:
+                        st.caption(f"Working for {sender}")
+                        st.info(f"Awaiting {receiver}'s traced response to this delegation.")
 
 
 def _render_agent_interactions_panel(interactions: list[dict[str, Any]], *, live: bool = False) -> None:
@@ -1688,12 +2202,24 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
         duration = item.get("duration_ms")
         duration_html = f'<span>{html.escape(str(duration))} ms</span>' if duration is not None else ""
         status_label = "working" if status == "running" else status
-        
-        response_html = (
-            _render_dialogue_body_html(response or "Completed without a response preview.", response_full)
-            if status in {"completed", "warning", "error"}
-            else '<em>Thinking and gathering information...</em>'
+        observer_summary = str(item.get("observer_summary") or "").strip()
+        observer_label = "Result summary" if status == "completed" else "Progress summary"
+        observer_html = (
+            '<div class="agent-dialogue-observer-summary">'
+            f'<span>{observer_label}</span>'
+            f'<p>{html.escape(observer_summary)}</p>'
+            '</div>'
+            if observer_summary
+            else ""
         )
+
+        if status in {"completed", "warning", "error"}:
+            response_html = observer_html + _render_dialogue_body_html(
+                response or "Completed without a response preview.",
+                response_full,
+            )
+        else:
+            response_html = observer_html or '<em>Delegated task active; awaiting its traced tool or response event.</em>'
         exchange_html += f"""
         <div class="agent-dialogue-pair">
           <div class="agent-dialogue-message request {html.escape(sender_class)}">
@@ -1748,15 +2274,195 @@ def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False)
 def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool, live: bool = False) -> None:
     title = "Agent Coordination Workbench & Trace" if not live else "Live Agent Coordination Workbench & Trace"
     with st.expander(title, expanded=expanded):
-        dashboard_tab, dialogue_tab = st.tabs(["Orchestration Dashboard", "Agent Dialogue"])
+        dashboard_tab, dialogue_tab, raw_tab = st.tabs(
+            ["Orchestration & Topology", "Internal Agent Chat (A2A)", "Raw Trace & Tool I/O"]
+        )
         with dashboard_tab:
             st.markdown(_compile_workbench_html(workbench, live=live), unsafe_allow_html=True)
         with dialogue_tab:
             _render_agent_interactions_panel(extract_agent_interactions_from_workbench(workbench), live=live)
+        with raw_tab:
+            _render_raw_trace_tab(workbench, live=live)
+
+
+def _render_raw_trace_tab(workbench: dict[str, Any], *, live: bool = False) -> None:
+    groups = workbench.get("groups") or []
+    events = workbench.get("latest_events") or []
+    calls = _all_tool_calls(workbench)
+    llm_calls = sum(int(group.get("llm_calls") or 0) for group in groups)
+    total_tokens = sum(int(group.get("total_tokens") or 0) for group in groups)
+
+    col_events, col_llm, col_tools, col_tokens = st.columns(4)
+    col_events.metric("Trace events", int(workbench.get("event_count") or len(events)))
+    col_llm.metric("LLM calls", llm_calls)
+    col_tools.metric("Tool calls", len(calls))
+    col_tokens.metric("Observed tokens", total_tokens or "—")
+
+    st.caption(
+        "Technical runtime view. Status is derived from CrewAI lifecycle events; tool inputs and outputs follow the configured trace redaction/preview level."
+    )
+    if calls:
+        for call in sorted(calls, key=lambda item: _safe_int(item.get("call_id"))):
+            label = (
+                f"#{_safe_int(call.get('call_id'))} · {call.get('agent_label') or 'Unknown Agent'} · "
+                f"{call.get('tool_name') or 'Unknown Tool'} · {call.get('status') or 'unknown'}"
+            )
+            with st.expander(label, expanded=False):
+                st.markdown("**Input**")
+                st.json(call.get("tool_input") or {}, expanded=1)
+                st.markdown("**Output preview**")
+                st.markdown(str(call.get("output_preview") or "*(No output captured yet.)*"))
+    elif live:
+        st.info("No tool call has been emitted yet. Intent classification or manager reasoning may still be running.")
+    else:
+        st.caption("No tool calls were captured for this route.")
+
+    with st.expander("Latest normalized lifecycle events", expanded=False):
+        st.json(events, expanded=1)
 
 
 def _clean_html(html_str: str) -> str:
     return "\n".join(line.strip() for line in html_str.split("\n") if line.strip())
+
+
+def _compact_workbench_topology(
+    flows: list[dict[str, Any]],
+    groups: dict[str, dict[str, Any]],
+    *,
+    live: bool,
+) -> list[dict[str, Any]]:
+    """Render topology as participants, not a repetitive lifecycle timeline."""
+    order: list[str] = []
+    latest: dict[str, dict[str, Any]] = {}
+    for item in flows:
+        if not isinstance(item, dict):
+            continue
+        agent = str(item.get("agent") or "").strip()
+        if not agent or agent == "Runtime Observer":
+            continue
+        if agent not in latest:
+            order.append(agent)
+        latest[agent] = dict(item)
+
+    if "Orchestrator" in groups and "Orchestrator" not in latest:
+        order.insert(0, "Orchestrator")
+        latest["Orchestrator"] = {"agent": "Orchestrator"}
+    if not live and "Final Answer" not in latest:
+        order.append("Final Answer")
+        latest["Final Answer"] = {"agent": "Final Answer", "status": "done"}
+
+    compact: list[dict[str, Any]] = []
+    for agent in order:
+        item = latest[agent]
+        group = groups.get(agent)
+        if group:
+            status = str(group.get("status") or item.get("status") or "idle")
+            active = status == "running"
+        elif agent == "Final Answer":
+            status = "queued" if live else "done"
+            active = not live
+        else:
+            status = str(item.get("status") or "idle")
+            active = bool(item.get("active"))
+        compact.append({"agent": agent, "status": status, "active": active})
+    return compact
+
+
+def _workbench_execution_sequence(
+    workbench: dict[str, Any],
+    groups: dict[str, dict[str, Any]],
+    *,
+    live: bool,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Prefer the real A2A delegation order; fall back to a compact participant topology."""
+    interactions = [
+        item
+        for item in (workbench.get("agent_dialogue") or [])
+        if isinstance(item, dict)
+    ]
+    if not interactions:
+        return (
+            _compact_workbench_topology(
+                workbench.get("topology") or workbench.get("source_flow") or [],
+                groups,
+                live=live,
+            ),
+            False,
+        )
+
+    sequence: list[dict[str, Any]] = [
+        {
+            "agent": "Orchestrator",
+            "status": groups.get("Orchestrator", {}).get("status") or ("running" if live else "ok"),
+            "active": str(groups.get("Orchestrator", {}).get("status") or "") == "running",
+        }
+    ]
+    invocation_counts: dict[str, int] = {}
+    for interaction in interactions:
+        receiver, _, _ = _clean_agent_label(str(interaction.get("receiver") or ""))
+        if receiver not in AGENT_LANES or receiver == "Orchestrator":
+            continue
+        invocation_counts[receiver] = invocation_counts.get(receiver, 0) + 1
+        interaction_status = str(interaction.get("status") or "running")
+        status = {
+            "completed": "ok",
+            "warning": "warning",
+            "error": "error",
+        }.get(interaction_status, "running")
+        sequence.append(
+            {
+                "agent": receiver,
+                "status": status,
+                "active": status == "running",
+                "invocation": invocation_counts[receiver],
+            }
+        )
+    sequence.append(
+        {
+            "agent": "Final Answer",
+            "status": "queued" if live else "done",
+            "active": not live,
+        }
+    )
+    return sequence, True
+
+
+def _agent_card_fallback_activity(label: str, group: dict[str, Any]) -> str:
+    status = str(group.get("status") or "idle")
+    active = status == "running"
+    copy = {
+        "Orchestrator": (
+            "Coordinating specialist work and assembling the final response.",
+            "Specialist coordination and final synthesis completed.",
+        ),
+        "Study Advisor": (
+            "Reviewing the study record, open requirements, and completion timeline.",
+            "Study record, degree progress, and completion timeline reviewed.",
+        ),
+        "Grade Optimization Specialist": (
+            "Calculating grade scenarios and sensitivity to remaining assessments.",
+            "Grade scenarios and assessment sensitivity calculated.",
+        ),
+        "MOSES Module Researcher": (
+            "Reviewing module, course, and assessment information in MOSES.",
+            "Relevant MOSES module and assessment information reviewed.",
+        ),
+        "Degree Regulations Specialist": (
+            "Checking binding degree rules, grade weighting, and deadlines.",
+            "Binding degree rules, grade weighting, and deadlines checked.",
+        ),
+        "ISIS Course Info Specialist": (
+            "Checking current ISIS course spaces, deadlines, and assignments.",
+            "Relevant ISIS course information checked.",
+        ),
+        "Course Commitment Specialist": (
+            "Preparing study-plan changes that require explicit approval.",
+            "Approval-dependent study-plan changes reviewed.",
+        ),
+    }
+    if label in copy and status in {"running", "ok", "completed", "done"}:
+        return copy[label][0 if active else 1]
+    return str(group.get("activity") or _default_activity_for_agent(label))
 
 
 def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> str:
@@ -1764,6 +2470,10 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
     groups = {str(group.get("agent_label")): group for group in (workbench.get("groups") or [])}
     events = workbench.get("latest_events") or []
     total_calls = int(workbench.get("total_tool_calls") or 0)
+    total_llm_calls = sum(int(group.get("llm_calls") or 0) for group in groups.values())
+    total_tokens = sum(int(group.get("total_tokens") or 0) for group in groups.values())
+    event_count = int(workbench.get("event_count") or len(events))
+    elapsed = _format_elapsed(max((_safe_int(event.get("elapsed_ms")) for event in events), default=0))
 
     phases_html = ""
     for phase in phases:
@@ -1777,16 +2487,28 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
         </div>
         """
 
-    flows = workbench.get("source_flow") or []
+    flows, has_delegation_sequence = _workbench_execution_sequence(workbench, groups, live=live)
     flow_html = ""
     for idx, item in enumerate(flows):
         active_cls = "active" if item.get("active") else ""
+        flow_status = str(item.get("status") or "idle")
         agent = str(item.get("agent") or "")
-        connector_html = '<span class="flow-connector" style="margin: 0 0.45rem; color: #94a3b8; font-weight: bold; font-size: 0.9rem;">➔</span>' if idx > 0 else ""
+        connector_html = '<span class="flow-connector">→</span>' if idx > 0 else ""
+        invocation = _safe_int(item.get("invocation"))
+        invocation_html = (
+            f'<span class="flow-invocation">delegation #{invocation}</span>'
+            if invocation > 1
+            else ""
+        )
         flow_html += f"""
-        {connector_html}
-        <div class="flow-card {active_cls}">
-          <span class="flow-agt">{html.escape(agent)}</span>
+        <div class="flow-node-wrap">
+          {connector_html}
+          <div class="flow-card {active_cls} {html.escape(flow_status)}">
+            <span class="flow-step">{idx + 1:02d}</span>
+            <span class="flow-agt">{html.escape(agent)}</span>
+            {invocation_html}
+            <span class="flow-state">{html.escape(flow_status)}</span>
+          </div>
         </div>
         """
 
@@ -1798,16 +2520,52 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
             "activity": _default_activity_for_agent(label),
             "llm_calls": 0,
             "tool_calls": [],
-            "source_system": _source_for_agent_label(label)
+            "source_system": _source_for_agent_label(label),
+            "models": [],
+            "total_tokens": 0,
+            "stream_chunks": 0,
+            "selection": "available",
         })
         status = str(group.get("status") or "idle")
-        activity = str(group.get("activity") or "Waiting for activity.")
+        observer_summary = str(group.get("observer_summary") or "").strip()
+        observer_state = str(group.get("observer_state") or "")
+        activity = observer_summary or _agent_card_fallback_activity(label, group)
+        activity_label_html = (
+            '<div class="agent-card-observer-label">'
+            f'{"Result summary" if observer_state == "completed" else "Progress summary"}'
+            '</div>'
+            if observer_summary
+            else ""
+        )
         llm = int(group.get("llm_calls") or 0)
+        tokens = int(group.get("total_tokens") or 0)
+        stream_chunks = int(group.get("stream_chunks") or 0)
         calls = group.get("tool_calls") or []
-        source = str(group.get("source_system") or _source_for_agent_label(label))
+        source = str(group.get("source_system") or "").strip()
+        if not source or source.casefold() in {"other", "unknown", "unknown source"}:
+            source = _source_for_agent_label(label)
+        models = [str(model) for model in (group.get("models") or []) if str(model).strip()]
+        model_html = (
+            f'<code class="agent-card-model">{html.escape(models[-1])}</code>'
+            if models
+            else (
+                '<span class="agent-card-model pending">model pending</span>'
+                if live and status in {"idle", "queued", "running"}
+                else '<span class="agent-card-model pending">model not captured</span>'
+            )
+        )
 
         theme_class = label.lower().replace(" ", "-")
         pulse_html = '<span class="pulse-indicator"></span>' if status == "running" or (live and status == "idle" and label == "Orchestrator") else ""
+        status_label = {
+            "not_selected": "excluded by intent",
+            "queued": "queued",
+            "skipped": "selected · not invoked",
+            "eligible": "eligible",
+            "not_invoked": "eligible · not invoked",
+            "idle": "available",
+            "ok": "completed",
+        }.get(status, status)
 
         tools_list_html = ""
         if calls:
@@ -1823,7 +2581,14 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
                 </div>
                 """
         else:
-            tools_list_html = '<div class="no-tools">No tool calls yet.</div>'
+            no_tools_label = {
+                "not_selected": "No tool calls — outside the intent scope.",
+                "queued": "No tool calls — awaiting manager delegation.",
+                "skipped": "No tool calls — selected but not invoked.",
+                "eligible": "No tool calls — available to the hierarchical manager.",
+                "not_invoked": "No tool calls — eligible but not invoked in this run.",
+            }.get(status, "No tool calls yet.")
+            tools_list_html = f'<div class="no-tools">{html.escape(no_tools_label)}</div>'
 
         agents_html += f"""
         <div class="agent-card {status} {theme_class}">
@@ -1832,30 +2597,20 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
               <div class="agent-card-name">{pulse_html}{html.escape(label)}</div>
               <div class="agent-card-source">{html.escape(source)}</div>
             </div>
-            <span class="status-badge {status}">{status.upper()}</span>
+            <span class="status-badge {status}">{html.escape(status_label)}</span>
           </div>
+          {model_html}
+          {activity_label_html}
           <div class="agent-card-activity">{html.escape(activity)}</div>
           <div class="agent-card-stats">
-            <span>{llm} LLM Calls</span>
-            <span>{len(calls)} Tools</span>
+            <span>{llm} LLM</span>
+            <span>{len(calls)} tools</span>
+            <span>{tokens if tokens else '—'} tokens</span>
+            <span>{stream_chunks} chunks</span>
           </div>
           <div class="agent-card-tools">
             {tools_list_html}
           </div>
-        </div>
-        """
-
-    events_html = ""
-    for event in events[-12:]:
-        elapsed = _format_elapsed(event.get("elapsed_ms"))
-        agent_label = str(event.get("agent_label") or "Crew")
-        activity = str(event.get("activity") or event.get("event") or "")
-        status_cls = str(event.get("status") or "ok")
-        events_html += f"""
-        <div class="log-line {status_cls}">
-          <span class="log-time">[{html.escape(elapsed)}]</span>
-          <span class="log-agent">&lt;{html.escape(agent_label)}&gt;</span>
-          <span class="log-text">{html.escape(activity)}</span>
         </div>
         """
 
@@ -1878,78 +2633,6 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
                 </div>
                 """
 
-    # Compile tool execution logs inside the workbench container if not live
-    tool_logs_html = ""
-    if not live:
-        calls = [
-            call
-            for group in (workbench.get("groups") or [])
-            for call in (group.get("tool_calls") or [])
-        ]
-        if calls:
-            # Sort calls by call_id in ascending execution order
-            calls = sorted(calls, key=lambda c: _safe_int(c.get("call_id")))
-
-            md = MarkdownIt("gfm-like")
-            tool_items_html = ""
-            for call in calls:
-                call_id = call.get("call_id") or 0
-                agent_label = str(call.get("agent_label") or "")
-                tool_name = str(call.get("tool_name") or "")
-                status = str(call.get("status") or "ok")
-                source_system = str(call.get("source_system") or "")
-                tool_input = call.get("tool_input") or {}
-                output_preview = str(call.get("output_preview") or "")
-
-                try:
-                    input_json = json.dumps(tool_input, ensure_ascii=False, indent=2)
-                except Exception:
-                    input_json = str(tool_input)
-
-                highlighted_input = _highlight_json(input_json)
-                output_html = md.render(output_preview)
-
-                duration = call.get("duration_ms")
-                dur_html = f'<span class="tool-log-duration" style="margin-left: auto; font-size: 0.75rem; color: #64748b; margin-right: 0.75rem; font-family: monospace;">{duration}ms</span>' if duration is not None else ''
-                tool_items_html += f"""
-                <details class="tool-log-item {status}">
-                  <summary class="tool-log-summary">
-                    <span class="tool-log-id">#{call_id}</span>
-                    <span class="tool-log-agent">{html.escape(agent_label)}</span>
-                    <span class="tool-log-arrow">➔</span>
-                    <span class="tool-log-name">{html.escape(tool_name)}</span>
-                    {dur_html}
-                    <span class="tool-log-status-badge {status}">{html.escape(status)}</span>
-                  </summary>
-                  <div class="tool-log-details">
-                    <div class="tool-log-meta">Source: {html.escape(source_system)}</div>
-                    <div class="tool-log-section">
-                      <div class="tool-log-section-title">Input</div>
-                      <pre class="tool-log-code">{highlighted_input}</pre>
-                    </div>
-                    <div class="tool-log-section">
-                      <div class="tool-log-section-title">Output Preview</div>
-                      <div class="tool-log-output-markdown">{output_html}</div>
-                    </div>
-                  </div>
-                </details>
-                """
-            tool_logs_html = f"""
-            <div class="tool-logs-container">
-              <div class="section-title">Tool Execution Logs</div>
-              <div style="display: flex; flex-direction: column; gap: 0.75rem;">
-                {tool_items_html}
-              </div>
-            </div>
-            """
-        else:
-            tool_logs_html = """
-            <div class="tool-logs-container">
-              <div class="section-title">Tool Execution Logs</div>
-              <div class="no-tools" style="padding: 0.5rem 0;">No tool calls captured.</div>
-            </div>
-            """
-
     intent_html = ""
     intent = workbench.get("intent")
     if intent:
@@ -1957,6 +2640,8 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
         complexity = intent.get("complexity") or "Unknown"
         rationale = intent.get("rationale") or ""
         sources = ", ".join(intent.get("required_sources") or [])
+        tool_budget = intent.get("tool_budget")
+        write_intent = bool(intent.get("write_intent"))
         sources_html = (
             f'<div class="intent-sources"><strong>Required sources:</strong> {html.escape(sources)}</div>'
             if sources
@@ -1970,22 +2655,36 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
         intent_html = f"""
         <div class="intent-banner">
           <div class="intent-banner-head">
-            <span>Detected Intent: <code class="intent-route">{html.escape(route)}</code></span>
-            <span class="intent-complexity">{html.escape(complexity)} complexity</span>
+            <span>Intent route <code class="intent-route">{html.escape(route)}</code></span>
+            <span class="intent-complexity">{html.escape(complexity)} · {'write' if write_intent else 'read-only'}{f' · budget {html.escape(str(tool_budget))}' if tool_budget is not None else ''}</span>
           </div>
           {sources_html}
           {rationale_html}
         </div>
         """
 
+    observer_html = ""
+    observer_report = workbench.get("observer_report")
+    if isinstance(observer_report, dict):
+        observer_headline = str(observer_report.get("headline") or "Run in progress")
+        observer_detail = str(observer_report.get("detail") or "")
+        observer_html = f"""
+        <section class="observer-overview">
+          <span>Live coordination summary</span>
+          <strong>{html.escape(observer_headline)}</strong>
+          <p>{html.escape(observer_detail)}</p>
+        </section>
+        """
+
     html_content = f"""
-    <div class="workbench-container" style="color: #0f172a;">
+    <div class="workbench-container">
       <div class="workbench-header">
         <div class="workbench-title">{pulse_dot}{title_label}</div>
-        <div class="workbench-summary">{total_calls} Total Tool Calls | {len(events)} Events</div>
+        <div class="workbench-summary">{elapsed} · {total_llm_calls} LLM · {total_calls} tools · {event_count} events · {total_tokens if total_tokens else '—'} tokens</div>
       </div>
 
       {intent_html}
+      {observer_html}
 
       <!-- Run Phases -->
       <div class="phases-timeline-container">
@@ -1997,7 +2696,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
 
       <!-- Data Pipeline -->
       <div class="flow-pipeline-container">
-        <div class="flow-pipeline-title">Agent Execution Flow</div>
+        <div class="flow-pipeline-title">{'A2A delegation sequence' if has_delegation_sequence else 'Intent-scoped execution topology'}</div>
         <div class="flow-pipeline">
           {flow_html}
         </div>
@@ -2008,19 +2707,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
         {agents_html}
       </div>
 
-      <!-- Live Log Console -->
-      <div class="console-container">
-        <div class="console-header">
-          <div class="console-title">Live Log Console</div>
-          <div class="console-status">{"STREAMING" if live else "COMPLETED"}</div>
-        </div>
-        <div class="console-body">
-          {events_html}
-        </div>
-      </div>
-
       {artifacts_html}
-      {tool_logs_html}
     </div>
     """
     return _clean_html(html_content)
@@ -2040,6 +2727,10 @@ def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = F
             "status": "idle",
             "activity": _default_activity_for_agent(label),
             "llm_calls": 0,
+            "stream_chunks": 0,
+            "models": [],
+            "total_tokens": 0,
+            "selection": "available",
         }
         for label in AGENT_LANES
     }
@@ -2050,15 +2741,22 @@ def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = F
         label = _event_agent_label(event)
         if label in groups:
             group = groups[label]
-            group["events"].append(event)
-            group["activity"] = _activity_from_event(event)
-            group["status"] = _merge_group_status(str(group.get("status") or "idle"), str(event.get("status") or "ok"))
-            group["agent_role"] = event.get("agent_role") or group.get("agent_role")
-            if event_name == "llm_started":
-                group["llm_calls"] = int(group.get("llm_calls") or 0) + 1
-            if event.get("source_system"):
-                group["source_system"] = event.get("source_system")
-        if event_name not in {"heartbeat"}:
+            if event_name == "llm_stream_chunk":
+                group["stream_chunks"] = int(group.get("stream_chunks") or 0) + 1
+            else:
+                group["events"].append(event)
+                group["activity"] = _activity_from_event(event)
+                group["status"] = _merge_group_status(str(group.get("status") or "idle"), str(event.get("status") or "ok"))
+                group["agent_role"] = event.get("agent_role") or group.get("agent_role")
+                if event_name in {"llm_started", "observer_started"}:
+                    group["llm_calls"] = int(group.get("llm_calls") or 0) + 1
+                model = str(event.get("model") or "").strip()
+                if model and model not in group["models"]:
+                    group["models"].append(model)
+                group["total_tokens"] = int(group.get("total_tokens") or 0) + _usage_total_tokens(event.get("usage"))
+                if event.get("source_system"):
+                    group["source_system"] = event.get("source_system")
+        if event_name not in {"heartbeat", "llm_stream_chunk"}:
             latest_events.append(event)
         if event.get("event") == "tool_start":
             call_id = _safe_int(event.get("call_id"))
@@ -2102,6 +2800,10 @@ def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = F
                 "status": "idle",
                 "activity": _default_activity_for_agent(label),
                 "llm_calls": 0,
+                "stream_chunks": 0,
+                "models": [],
+                "total_tokens": 0,
+                "selection": "available",
             },
         )
         group["tool_calls"].append(call)
@@ -2110,6 +2812,13 @@ def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = F
             group["activity"] = f"Running {call.get('tool_name') or 'tool'}."
         elif call.get("tool_name"):
             group["activity"] = f"Finished {call.get('tool_name')}."
+
+    agent_dialogue = extract_agent_interactions(events)
+    latest_delegation_by_receiver: dict[str, dict[str, Any]] = {}
+    for interaction in agent_dialogue:
+        receiver = str(interaction.get("receiver") or "")
+        if receiver:
+            latest_delegation_by_receiver[receiver] = interaction
 
     has_crew_completed = completed or any(e.get("event") == "crew_completed" for e in events)
     has_crew_failed = any(e.get("event") in {"crew_failed", "ui_error"} for e in events)
@@ -2156,28 +2865,126 @@ def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = F
                 else:
                     group["status"] = "idle"
 
-    source_flow = _dynamic_source_flow(events)
+            # The enclosing A2A response is the user-visible completion
+            # boundary. Internal task/tool completion cannot move an agent to
+            # completed while its delegation bubble still has no response.
+            delegation = latest_delegation_by_receiver.get(label)
+            if delegation and not has_crew_completed:
+                delegation_status = str(delegation.get("status") or "running")
+                if delegation_status == "completed":
+                    group["status"] = "ok"
+                    group["activity"] = "Response returned to the orchestrator."
+                elif delegation_status == "error":
+                    group["status"] = "error"
+                elif delegation_status == "warning":
+                    group["status"] = "warning"
+                else:
+                    group["status"] = "running"
+                    group["activity"] = "Delegated analysis is active; no A2A response has returned yet."
+
     intent = None
     for event in events:
         if event.get("event") == "intent_classified":
             intent = event.get("intent")
+    selected_agents = _selected_agents_for_intent(intent)
+    priority_agents = _priority_agents_for_intent(intent)
+    route = str((intent or {}).get("route") or "") if isinstance(intent, dict) else ""
+    hierarchical_route = route in HIERARCHICAL_ROUTES
+    for label, group in groups.items():
+        if label == "Orchestrator":
+            group["selection"] = "manager"
+            continue
+        meaningful_events = [
+            event
+            for event in (group.get("events") or [])
+            if event.get("event") not in {"agent_ready"}
+        ]
+        was_invoked = bool(meaningful_events or group.get("tool_calls") or group.get("llm_calls"))
+        if intent is None:
+            group["selection"] = "available"
+        elif label in selected_agents:
+            if was_invoked:
+                group["selection"] = "invoked"
+            elif hierarchical_route:
+                group["selection"] = "priority" if label in priority_agents else "eligible"
+                group["status"] = "not_invoked" if has_crew_completed else (
+                    "queued" if label in priority_agents else "eligible"
+                )
+                group["activity"] = (
+                    "Eligible for hierarchical delegation but not invoked in the completed run."
+                    if has_crew_completed
+                    else (
+                        "Prioritized by the classified source scope; waiting for manager delegation."
+                        if label in priority_agents
+                        else "Available to the hierarchical manager if the evolving task requires this specialty."
+                    )
+                )
+            else:
+                group["selection"] = "selected"
+                group["status"] = "skipped" if has_crew_completed else "queued"
+                group["activity"] = (
+                    "Selected by the intent router but not invoked before completion."
+                    if has_crew_completed
+                    else "Selected by the intent router; waiting for delegation."
+                )
+        elif not was_invoked:
+            group["selection"] = "excluded"
+            group["status"] = "not_selected"
+            group["activity"] = "Excluded from this run by the classified intent and source scope."
+
+    observer_events = events
+    if has_crew_completed and not any(event.get("event") == "crew_completed" for event in events):
+        observer_events = [*events, {"event": "crew_completed", "status": "ok"}]
+    observer_report = _latest_observer_report(observer_events)
+    for label, update in _observer_agent_updates_from_report(observer_report).items():
+        if label in groups:
+            observer_state = update["state"]
+            delegation = latest_delegation_by_receiver.get(label)
+            if delegation:
+                delegation_status = str(delegation.get("status") or "running")
+                if delegation_status == "completed":
+                    observer_state = "completed"
+                elif delegation_status in {"error", "warning"}:
+                    observer_state = "blocked"
+                else:
+                    observer_state = "active"
+            groups[label]["observer_summary"] = update["summary"]
+            groups[label]["observer_state"] = observer_state
+            if label != "Orchestrator" and observer_state in {"active", "completed", "blocked"}:
+                groups[label]["selection"] = "invoked"
+            if observer_state == "active" and groups[label]["status"] not in {"error", "warning"}:
+                groups[label]["status"] = "running"
+            elif observer_state == "completed" and groups[label]["status"] not in {"error", "warning"}:
+                groups[label]["status"] = "ok"
+            elif observer_state == "blocked":
+                groups[label]["status"] = "error"
+    source_flow = _dynamic_source_flow(events)
+    topology = _execution_topology(groups, selected_agents, completed=has_crew_completed)
     return {
         "run_id": run_id,
         "run_dir": None,
         "groups": [groups[label] for label in AGENT_LANES if label in groups],
         "total_tool_calls": len(calls_by_id),
         "source_flow": source_flow,
+        "topology": topology,
+        "selected_agents": sorted(selected_agents),
         "phases": _trace_phases_from_events(events, calls_by_id),
+        "event_count": len(latest_events),
         "latest_events": latest_events[-12:],
         "artifacts": {},
         "intent": intent,
-        "agent_dialogue": extract_agent_interactions(events),
+        "observer_report": observer_report,
+        "agent_dialogue": agent_dialogue,
     }
 
 
 def initial_live_trace_events(prompt: str, settings: ChatRuntimeSettings) -> list[dict[str, Any]]:
-    del prompt
     temp_status = "enabled" if settings.allow_temp_enrollment else "disabled"
+    observer_model = resolve_study_assistant_observer_model(
+        observer_model=settings.observer_model,
+        manager_model=settings.manager_model,
+        specialist_model=settings.specialist_model,
+    )
     return [
         {
             "event": "ui_run_started",
@@ -2187,6 +2994,22 @@ def initial_live_trace_events(prompt: str, settings: ChatRuntimeSettings) -> lis
             "phase": "kickoff",
             "status": "running",
             "activity": "Request accepted. Preparing hierarchical crew.",
+            "query": prompt[:1200],
+        },
+        {
+            "event": "agent_ready",
+            "event_id": 0,
+            "elapsed_ms": 0,
+            "agent_label": "Runtime Observer",
+            "phase": "ready",
+            "status": "idle",
+            "activity": (
+                "Ready to interpret A2A delegation and tool lifecycle evidence."
+                if settings.observer_enabled
+                else "LLM progress summaries disabled; deterministic lifecycle status remains active."
+            ),
+            "source_system": "Trace Observer",
+            "model": observer_model,
         },
         {
             "event": "agent_ready",
@@ -2295,10 +3118,12 @@ def _elapsed_ms_from_events(events: list[dict[str, Any]]) -> int:
     elapsed = 0
     for event in reversed(events):
         try:
-            elapsed = int(event.get("elapsed_ms") or 0)
-            break
+            candidate = int(event.get("elapsed_ms") or 0)
         except (TypeError, ValueError):
             continue
+        if candidate > 0:
+            elapsed = candidate
+            break
     return elapsed + 1200
 
 
@@ -2316,6 +3141,79 @@ def _source_for_agent_label(label: str) -> str:
     if label == "Course Commitment Specialist":
         return "Course Commitment"
     return "CrewAI"
+
+
+def _usage_total_tokens(usage: Any) -> int:
+    data = usage if isinstance(usage, dict) else {}
+    for key in ("total_tokens", "total", "tokens"):
+        try:
+            value = int(data.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value:
+            return value
+    try:
+        return int(data.get("prompt_tokens") or 0) + int(data.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _selected_agents_for_intent(intent: Any) -> set[str]:
+    if not isinstance(intent, dict):
+        return set()
+    route = str(intent.get("route") or "")
+    if route in HIERARCHICAL_ROUTES:
+        return set(HIERARCHICAL_SPECIALISTS)
+    selected: set[str] = set()
+    route_agent = ROUTE_AGENT_MAP.get(route)
+    if route_agent:
+        selected.add(route_agent)
+    for source in intent.get("required_sources") or []:
+        agent = SOURCE_AGENT_MAP.get(str(source).casefold())
+        if agent:
+            selected.add(agent)
+    if bool(intent.get("write_intent")):
+        selected.add("Course Commitment Specialist")
+    return selected
+
+
+def _priority_agents_for_intent(intent: Any) -> set[str]:
+    """Return source-prioritized agents without narrowing a hierarchical crew's eligibility."""
+    if not isinstance(intent, dict):
+        return set()
+    priority = {
+        agent
+        for source in (intent.get("required_sources") or [])
+        if (agent := SOURCE_AGENT_MAP.get(str(source).casefold()))
+    }
+    if bool(intent.get("write_intent")):
+        priority.add("Course Commitment Specialist")
+    return priority
+
+
+def _execution_topology(
+    groups: dict[str, dict[str, Any]],
+    selected_agents: set[str],
+    *,
+    completed: bool,
+) -> list[dict[str, Any]]:
+    topology = [
+        {
+            "agent": "Orchestrator",
+            "active": str(groups.get("Orchestrator", {}).get("status") or "") == "running",
+            "status": groups.get("Orchestrator", {}).get("status") or "idle",
+        }
+    ]
+    if not selected_agents:
+        topology.append({"agent": "Intent Router", "active": not completed, "status": "running" if not completed else "done"})
+    else:
+        for label in AGENT_LANES:
+            if label == "Orchestrator" or label not in selected_agents:
+                continue
+            status = str(groups.get(label, {}).get("status") or "queued")
+            topology.append({"agent": label, "active": status == "running", "status": status})
+    topology.append({"agent": "Final Answer", "active": completed, "status": "done" if completed else "queued"})
+    return topology
 
 
 def _default_activity_for_agent(label: str) -> str:
@@ -2393,16 +3291,18 @@ def _activate_flow_for_lifecycle_events(flow: list[dict[str, Any]], events: list
 def _trace_phases_from_events(events: list[dict[str, Any]], calls_by_id: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
     has_started = _has_event(events, "crew_started") or _has_event(events, "ui_run_started")
     has_llm = any(str(event.get("event") or "").startswith("llm_") for event in events)
+    has_routing = has_llm or _has_event(events, "intent_classification_started") or _has_event(events, "intent_classified")
+    has_route = _has_event(events, "intent_classified") or _has_event(events, "route_execution_started")
     has_delegation = any("coworker" in str(call.get("tool_name") or "").casefold() for call in calls_by_id.values())
     has_tools = bool(calls_by_id)
-    has_completed = _has_event(events, "crew_completed")
+    has_completed = _has_event(events, "crew_completed") or _has_event(events, "flow_turn_completed")
     has_failed = _has_event(events, "crew_failed") or _has_event(events, "ui_error")
     return [
-        {"label": "1", "title": "Kickoff", "status": _phase_status(has_started, has_llm or has_tools or has_completed, has_failed)},
-        {"label": "2", "title": "Manager reasoning", "status": _phase_status(has_llm, has_delegation or has_tools or has_completed, has_failed)},
-        {"label": "3", "title": "Delegation", "status": _phase_status(has_delegation, has_tools or has_completed, has_failed)},
-        {"label": "4", "title": "Tool work", "status": _phase_status(has_tools, has_completed, has_failed)},
-        {"label": "5", "title": "Final answer", "status": "error" if has_failed else ("done" if has_completed else "idle")},
+        {"label": "1", "title": "Flow ingest", "status": _phase_status(has_started, has_routing or has_tools or has_completed, has_failed)},
+        {"label": "2", "title": "Intent routing", "status": _phase_status(has_routing, has_route or has_delegation or has_tools or has_completed, has_failed)},
+        {"label": "3", "title": "A2A delegation", "status": _phase_status(has_delegation, has_tools or has_completed, has_failed)},
+        {"label": "4", "title": "Agent & tool execution", "status": _phase_status(has_tools, has_completed, has_failed)},
+        {"label": "5", "title": "Answer synthesis", "status": "error" if has_failed else ("done" if has_completed else "idle")},
     ]
 
 
@@ -2419,12 +3319,23 @@ def _phase_status(started: bool, finished: bool, failed: bool) -> str:
 def _heartbeat_activity(last_event: dict[str, Any]) -> str:
     event_name = str(last_event.get("event") or "")
     if event_name in {"tool_start", "tool_usage_running"}:
-        return "Tool is still running."
+        tool_name = str(last_event.get("tool_name") or "tool")
+        agent = _event_agent_label(last_event)
+        return f"{agent} is still executing {tool_name}; no completion event has arrived yet."
     if event_name == "llm_started":
-        return "LLM call is still running; waiting for the next tool or response."
+        agent = _event_agent_label(last_event)
+        call_id = last_event.get("call_id")
+        reference = f" {call_id}" if call_id else ""
+        return f"{agent} LLM call{reference} has not emitted a completion or tool event yet."
+    if event_name == "intent_classification_started":
+        return "Intent classifier is still computing the route and required source scope."
+    if event_name == "route_execution_started":
+        return "The selected route is initializing its specialist crew."
+    if event_name == "flow_turn_persisting":
+        return "Final answer and conversation state are being persisted."
     if event_name in {"ui_run_started", "crew_started"}:
-        return "Orchestrator is still planning or starting the first delegation."
-    return "Crew is still working; waiting for the next observable event."
+        return "No A2A delegation has been emitted yet; the orchestrator remains the active trace owner."
+    return f"Awaiting the next observable trace event after {event_name or 'runtime initialization'}."
 
 
 def _format_elapsed(value: object) -> str:
@@ -2717,12 +3628,6 @@ def _combine_status(left: str, right: str) -> str:
     return right if order.get(right, 0) > order.get(left, 0) else left
 
 
-def _active_profile_display_name(profile_slug: str) -> str:
-    profiles = st.session_state.get("profiles") or []
-    profile = next((item for item in profiles if getattr(item, "slug", None) == profile_slug), None)
-    return getattr(profile, "display_name", profile_slug)
-
-
 def _age_label(created_at: object | None) -> str:
     if not created_at:
         return "unknown"
@@ -2747,22 +3652,174 @@ def inject_chat_css() -> None:
     st.markdown(
         """
         <style>
+        [data-testid="stMainBlockContainer"] {
+            padding-top: 1.35rem !important;
+            padding-bottom: 6.5rem !important;
+        }
         .chat-hero {
+            display: block;
+            border: 0;
             border-bottom: 1px solid var(--border);
-            padding: 0.35rem 0 1rem 0;
-            margin-bottom: 1rem;
+            border-radius: 0;
+            padding: 0.55rem 0 1rem;
+            margin: 0 0 0.8rem;
+            background: transparent;
+            box-shadow: none;
+        }
+        .chat-hero-main {
+            min-width: 0;
+        }
+        .chat-hero-kicker {
+            display: flex;
+            align-items: center;
+            gap: 0.4rem;
+            color: var(--primary);
+            font-size: 0.64rem;
+            font-weight: 780;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            margin-bottom: 0.26rem;
+        }
+        .chat-hero-kicker > span {
+            width: 0.42rem;
+            height: 0.42rem;
+            border-radius: 999px;
+            background: var(--primary);
+            box-shadow: 0 0 0 3px rgba(197, 14, 31, 0.10);
         }
         .chat-hero h1 {
-            font-size: 1.75rem;
-            line-height: 1.2;
-            margin: 0 0 0.25rem 0;
-            letter-spacing: 0;
+            font-size: clamp(1.55rem, 2.5vw, 2rem);
+            line-height: 1.12;
+            margin: 0 0 0.38rem;
+            letter-spacing: -0.025em;
             color: var(--ink);
         }
         .chat-hero p {
             margin: 0;
             color: var(--muted);
-            font-size: 0.95rem;
+            font-size: 0.84rem;
+            line-height: 1.45;
+            max-width: 76ch;
+        }
+        .chat-toolbar-spacer {
+            height: 1.35rem;
+        }
+        .st-key-chat_prompt_starters {
+            max-width: 900px;
+            margin: 1.6rem auto 0;
+        }
+        .prompt-starters-heading {
+            text-align: center;
+            margin-bottom: 0.75rem;
+        }
+        .prompt-starters-heading h2 {
+            color: var(--ink);
+            font-size: 1rem;
+            line-height: 1.3;
+            margin: 0;
+        }
+        .prompt-starters-heading p {
+            color: var(--muted);
+            font-size: 0.76rem;
+            margin: 0.18rem 0 0;
+        }
+        .st-key-chat_prompt_starters [class*="st-key-example_btn_"] button {
+            justify-content: space-between;
+            min-height: 2.4rem;
+            border: 0;
+            border-bottom: 1px solid var(--border);
+            border-radius: 0;
+            padding-left: 0.2rem;
+            padding-right: 0.2rem;
+            color: var(--ink);
+            font-size: 0.78rem;
+            font-weight: 500;
+        }
+        .st-key-chat_prompt_starters [class*="st-key-example_btn_"] button:hover {
+            border-bottom-color: var(--primary);
+            background: transparent;
+            color: var(--primary);
+        }
+        .run-error-card {
+            display: grid;
+            grid-template-columns: auto minmax(0, 1fr);
+            gap: 0.65rem;
+            align-items: start;
+            border: 1px solid rgba(245, 158, 11, 0.45);
+            border-left: 3px solid #f59e0b;
+            border-radius: 8px;
+            background: rgba(245, 158, 11, 0.08);
+            padding: 0.7rem 0.8rem;
+        }
+        .run-error-mark {
+            width: 1.3rem;
+            height: 1.3rem;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            background: #f59e0b;
+            color: #fff;
+            font-weight: 800;
+            font-size: 0.72rem;
+        }
+        .run-error-card strong {
+            color: var(--ink);
+            font-size: 0.82rem;
+        }
+        .run-error-card p {
+            color: var(--muted);
+            font-size: 0.73rem;
+            line-height: 1.4;
+            margin: 0.15rem 0 0 0;
+        }
+        .empty-state-subtitle {
+            color: var(--muted);
+            font-size: 0.82rem;
+            margin: -0.15rem 0 0.75rem 0;
+        }
+        .answer-runtime-status {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            border: 1px solid var(--border);
+            border-left: 3px solid var(--primary);
+            border-radius: 9px;
+            background: var(--surface-2);
+            padding: 0.75rem 0.85rem;
+            color: var(--ink);
+        }
+        .answer-runtime-status strong,
+        .answer-runtime-status span {
+            display: block;
+        }
+        .answer-runtime-status strong {
+            font-size: 0.82rem;
+        }
+        .answer-runtime-detail {
+            color: var(--muted);
+            font-size: 0.74rem;
+            margin-top: 0.1rem;
+        }
+        .answer-runtime-observer-label {
+            color: var(--success);
+            font-size: 0.58rem;
+            font-weight: 780;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            margin-bottom: 0.08rem;
+        }
+        .answer-runtime-spinner {
+            width: 0.9rem;
+            height: 0.9rem;
+            border: 2px solid var(--border);
+            border-top-color: var(--primary);
+            border-radius: 999px;
+            animation: answer-runtime-spin 0.8s linear infinite;
+            flex: 0 0 auto;
+        }
+        @keyframes answer-runtime-spin {
+            to { transform: rotate(360deg); }
         }
         .chat-empty-grid {
             display: grid;
@@ -2958,6 +4015,36 @@ def inject_chat_css() -> None:
             color: var(--muted);
             font-weight: 500;
         }
+        .observer-overview {
+            border-bottom: 1px solid var(--border);
+            background: color-mix(in srgb, var(--surface) 94%, var(--success) 6%);
+            padding: 0.85rem 1.25rem;
+        }
+        .observer-overview span,
+        .observer-overview strong,
+        .observer-overview p {
+            display: block;
+        }
+        .observer-overview span,
+        .agent-card-observer-label {
+            color: var(--success);
+            font-size: 0.58rem;
+            font-weight: 760;
+            letter-spacing: 0.075em;
+            text-transform: uppercase;
+        }
+        .observer-overview strong {
+            color: var(--ink);
+            font-size: 0.86rem;
+            margin-top: 0.1rem;
+        }
+        .observer-overview p {
+            color: var(--muted);
+            font-size: 0.76rem;
+            line-height: 1.45;
+            margin: 0.18rem 0 0;
+            max-width: 110ch;
+        }
 
         /* Green live dot animation */
         .live-dot {
@@ -3098,6 +4185,12 @@ def inject_chat_css() -> None:
             font-weight: 500;
             color: var(--muted);
         }
+        .flow-node-wrap {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            min-width: 0;
+        }
         .flow-card.active {
             border-color: var(--success);
             background-color: rgba(22, 163, 74, 0.15);
@@ -3117,12 +4210,42 @@ def inject_chat_css() -> None:
         }
         .flow-connector {
             color: var(--muted);
+            font-size: 0.95rem;
+            font-weight: 750;
+            margin: 0 0.1rem;
         }
         .flow-agt {
             color: var(--muted);
         }
+        .flow-step {
+            color: var(--muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.58rem;
+            opacity: 0.72;
+        }
+        .flow-invocation {
+            border-radius: 999px;
+            background: color-mix(in srgb, var(--accent) 10%, transparent);
+            color: var(--accent);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.56rem;
+            padding: 0.08rem 0.28rem;
+        }
         .flow-card.active .flow-agt {
             color: var(--success);
+        }
+        .flow-state {
+            border-left: 1px solid var(--border);
+            color: var(--muted);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.61rem;
+            padding-left: 0.35rem;
+        }
+        .flow-card.queued {
+            border-style: dashed;
+        }
+        .flow-card.done {
+            border-color: var(--success);
         }
         .stApp[data-theme="dark"] .flow-card.active .flow-agt {
             color: #34d399;
@@ -3150,6 +4273,28 @@ def inject_chat_css() -> None:
         .agent-card.running {
             border-color: var(--accent);
             box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.1);
+        }
+        .agent-card.queued {
+            border-style: dashed;
+            border-color: var(--accent);
+        }
+        .agent-card.eligible {
+            border-color: rgba(99, 102, 241, 0.34);
+            background: color-mix(in srgb, var(--surface) 94%, #6366f1 6%);
+        }
+        .agent-card.not_invoked {
+            border-style: dashed;
+            opacity: 0.82;
+            background: var(--surface-2);
+        }
+        .agent-card.not_selected {
+            border-style: dashed;
+            opacity: 0.68;
+            background: var(--surface-2);
+        }
+        .agent-card.skipped {
+            border-style: dashed;
+            opacity: 0.82;
         }
         .agent-card-header {
             display: flex;
@@ -3183,6 +4328,23 @@ def inject_chat_css() -> None:
             color: var(--muted);
             border: 1px solid var(--border);
         }
+        .status-badge.queued {
+            background-color: rgba(59, 130, 246, 0.10);
+            color: #2563eb;
+            border: 1px dashed #93c5fd;
+        }
+        .status-badge.eligible {
+            background-color: rgba(99, 102, 241, 0.10);
+            color: #4f46e5;
+            border: 1px solid rgba(99, 102, 241, 0.35);
+        }
+        .status-badge.not_selected,
+        .status-badge.skipped,
+        .status-badge.not_invoked {
+            background-color: var(--surface-2);
+            color: var(--muted);
+            border: 1px dashed var(--border);
+        }
         .status-badge.running {
             background-color: #eff6ff;
             color: #2563eb;
@@ -3198,18 +4360,60 @@ def inject_chat_css() -> None:
             color: #dc2626;
             border: 1px solid #fca5a5;
         }
+        .stApp[data-theme="dark"] .status-badge.queued,
+        .stApp[data-theme="dark"] .status-badge.running,
+        .stApp[data-theme="dark"] .status-badge.eligible {
+            background-color: rgba(59, 130, 246, 0.14);
+            color: #60a5fa;
+            border-color: rgba(96, 165, 250, 0.55);
+        }
+        .stApp[data-theme="dark"] .status-badge.success,
+        .stApp[data-theme="dark"] .status-badge.ok,
+        .stApp[data-theme="dark"] .status-badge.done {
+            background-color: rgba(16, 185, 129, 0.14);
+            color: #34d399;
+            border-color: rgba(52, 211, 153, 0.5);
+        }
+        .stApp[data-theme="dark"] .status-badge.error,
+        .stApp[data-theme="dark"] .status-badge.failed {
+            background-color: rgba(239, 68, 68, 0.14);
+            color: #f87171;
+            border-color: rgba(248, 113, 113, 0.5);
+        }
         .agent-card-activity {
             font-size: 0.74rem;
             color: var(--ink);
-            line-height: 1.35;
-            min-height: 2.2rem;
+            line-height: 1.4;
+            min-height: 3.1rem;
             display: -webkit-box;
-            -webkit-line-clamp: 2;
+            -webkit-line-clamp: 3;
             -webkit-box-orient: vertical;
             overflow: hidden;
         }
+        .agent-card-observer-label {
+            margin-bottom: -0.45rem;
+        }
+        .agent-card-model {
+            display: block;
+            width: fit-content;
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            color: var(--ink);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 0.12rem 0.35rem;
+            font-size: 0.62rem;
+        }
+        .agent-card-model.pending {
+            color: var(--muted);
+            font-style: italic;
+        }
         .agent-card-stats {
             display: flex;
+            flex-wrap: wrap;
             gap: 0.5rem;
             font-size: 0.68rem;
             color: var(--muted);
@@ -3296,6 +4500,9 @@ def inject_chat_css() -> None:
         .agent-card.orchestrator {
             border-left: 3px solid #6366f1;
         }
+        .agent-card.runtime-observer {
+            border-left: 3px solid #64748b;
+        }
         .agent-card.study-advisor {
             border-left: 3px solid #10b981;
         }
@@ -3307,6 +4514,12 @@ def inject_chat_css() -> None:
         }
         .agent-card.isis-course-info-specialist {
             border-left: 3px solid #f59e0b;
+        }
+        .agent-card.degree-regulations-specialist {
+            border-left: 3px solid #8b5cf6;
+        }
+        .agent-card.course-commitment-specialist {
+            border-left: 3px solid #ec4899;
         }
 
         /* Console Container (Developer Terminal style) */
@@ -3677,6 +4890,24 @@ def inject_chat_css() -> None:
             font-size: 0.82rem;
             line-height: 1.46;
         }
+        .agent-dialogue-observer-summary {
+            border-left: 2px solid var(--success);
+            padding-left: 0.6rem;
+            margin: 0.12rem 0 0.65rem;
+        }
+        .agent-dialogue-observer-summary span {
+            color: var(--success);
+            font-size: 0.6rem;
+            font-weight: 760;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+        .agent-dialogue-observer-summary p {
+            color: var(--ink);
+            font-size: 0.8rem;
+            line-height: 1.42;
+            margin: 0.12rem 0 0;
+        }
         .agent-dialogue-body table {
             border-collapse: collapse;
             width: 100%;
@@ -3833,6 +5064,52 @@ def inject_chat_css() -> None:
         .tool-log-output-markdown th {
             background-color: var(--surface-2);
             font-weight: 700;
+        }
+        @media (max-width: 760px) {
+            [data-testid="stMainBlockContainer"] {
+                padding-top: 0.75rem !important;
+            }
+            .chat-hero {
+                padding: 0.35rem 0 0.8rem;
+            }
+            .workbench-header {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 0.35rem;
+                padding: 0.75rem;
+            }
+            .workbench-summary {
+                font-size: 0.7rem;
+                line-height: 1.35;
+            }
+            .phases-timeline-container,
+            .flow-pipeline-container,
+            .agents-grid {
+                padding-left: 0.75rem;
+                padding-right: 0.75rem;
+            }
+            .console-container {
+                margin-left: 0.75rem;
+                margin-right: 0.75rem;
+            }
+            .phase-node,
+            .agent-card {
+                min-width: 0;
+            }
+            .agents-grid {
+                grid-template-columns: minmax(0, 1fr);
+            }
+            .flow-connector {
+                display: none;
+            }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .live-dot,
+            .pulse-indicator,
+            .console-status,
+            .answer-runtime-spinner {
+                animation: none !important;
+            }
         }
         </style>
         """,

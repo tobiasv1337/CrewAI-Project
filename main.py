@@ -72,6 +72,81 @@ class MultiAgentStudyAssistantRunResult:
     intent: Any = None
 
 
+def _consume_flow_streaming_output(
+    streaming_output: Any,
+    *,
+    on_trace_event: Callable[[dict[str, Any]], None] | None = None,
+) -> Any:
+    """Consume legacy chunk streams and current frame streams to completion."""
+    if on_trace_event:
+        on_trace_event(
+            {
+                "event": "answer_stream_started",
+                "agent_label": "Orchestrator",
+                "phase": "streaming",
+                "status": "running",
+                "activity": "CrewAI runtime token stream connected.",
+            }
+        )
+
+    from crew.tracing import agent_label_for_role
+
+    for chunk_index, chunk in enumerate(streaming_output):
+        if not on_trace_event:
+            continue
+
+        frame_data = getattr(chunk, "data", None)
+        if isinstance(frame_data, dict) and getattr(chunk, "channel", None) is not None:
+            # CrewAI 1.15+ Flow streams contain every public runtime frame. The
+            # lifecycle/tool frames already reach the trace callback through our
+            # event listener, so only forward answer-token frames here.
+            if (
+                getattr(chunk, "channel", None) != "llm"
+                or getattr(chunk, "type", None) != "llm_stream_chunk"
+            ):
+                continue
+            chunk_type = "tool_call" if frame_data.get("tool_call") else "text"
+            content = str(frame_data.get("chunk") or "")
+            agent_role = str(frame_data.get("agent_role") or "")
+            task_index = frame_data.get("task_index")
+            task_name = str(frame_data.get("task_name") or "")
+        else:
+            # CrewAI <=1.14 FlowStreamingOutput compatibility.
+            chunk_type = getattr(getattr(chunk, "chunk_type", None), "value", "text")
+            content = str(getattr(chunk, "content", "") or "")
+            agent_role = str(getattr(chunk, "agent_role", "") or "")
+            task_index = getattr(chunk, "task_index", None)
+            task_name = str(getattr(chunk, "task_name", "") or "")
+
+        on_trace_event(
+            {
+                "event": "llm_stream_chunk",
+                "chunk_index": chunk_index,
+                "chunk_type": chunk_type,
+                "content": content,
+                "task_index": task_index,
+                "task_name": task_name,
+                "agent_role": agent_role or None,
+                "agent_label": agent_label_for_role(agent_role) if agent_role else "Orchestrator",
+                "phase": "streaming",
+                "status": "running",
+            }
+        )
+
+    result = streaming_output.result
+    if on_trace_event:
+        on_trace_event(
+            {
+                "event": "answer_stream_completed",
+                "agent_label": "Orchestrator",
+                "phase": "streaming",
+                "status": "ok",
+                "activity": "CrewAI runtime token stream completed.",
+            }
+        )
+    return result
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run TU Berlin MOSES tool wrappers from the command line.",
@@ -282,6 +357,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask_multi_parser.add_argument("--isis-context-json", default="{}", help="Optional structured IsisLookupContext JSON.")
     ask_multi_parser.add_argument("--allow-temp-enrollment", action="store_true", help="Allow temporary ISIS self-enrollment for read-only course inspection during this run.")
     ask_multi_parser.add_argument("--manager-model", help="Override the LLM model used by the orchestrator/manager agent.")
+    ask_multi_parser.add_argument("--observer-model", help="Override the lightweight model used for intent routing and proposal-decision interpretation.")
     ask_multi_parser.add_argument("--planning", action="store_true", help="Enable CrewAI planning for the hierarchical deep route.")
     ask_multi_parser.add_argument("--planning-llm-model", help="Optional model override for CrewAI planning.")
     _add_agent_runtime_arguments(ask_multi_parser)
@@ -654,6 +730,7 @@ def _run_ask_study_assistant(args: argparse.Namespace) -> str:
         allow_temp_enrollment=args.allow_temp_enrollment,
         model=args.model,
         manager_model=args.manager_model,
+        observer_model=args.observer_model,
         planning_enabled=args.planning,
         planning_llm_model=args.planning_llm_model,
         temperature=args.temperature,
@@ -901,6 +978,7 @@ def run_study_assistant_query(
     on_trace_event: Callable[[dict[str, Any]], None] | None = None,
     model: str | None = None,
     manager_model: str | None = None,
+    observer_model: str | None = None,
     planning_enabled: bool = False,
     planning_llm_model: str | None = None,
     temperature: float | None = None,
@@ -911,6 +989,7 @@ def run_study_assistant_query(
     cache: bool = True,
     logs_root: Path | str = Path("logs/crew_runs"),
     run_id: str | None = None,
+    stream_answer: bool = False,
 ) -> MultiAgentStudyAssistantRunResult:
     from crew.chat_models import ActionDecision, StudyChatFlowState
     from crew.chat_persistence import add_trace_artifact
@@ -920,7 +999,6 @@ def run_study_assistant_query(
     from crew.study_chat_flow import StudyChatFlow, StudyChatFlowRuntime
     from crew.tools.proposal_tools import collect_course_proposals
     from crew.tracing import capture_tool_traces
-
     load_dotenv()
     trace_model = resolve_study_assistant_manager_model(
         manager_model=manager_model,
@@ -935,20 +1013,6 @@ def run_study_assistant_query(
         item if isinstance(item, ActionDecision) else ActionDecision.model_validate(item)
         for item in (ui_decisions or [])
     ]
-    flow = StudyChatFlow(
-        runtime=StudyChatFlowRuntime(
-            model=model,
-            manager_model=manager_model,
-            temperature=temperature,
-            top_p=top_p,
-            allow_temp_enrollment=allow_temp_enrollment,
-            verbose=verbose,
-            cache=cache,
-            planning_enabled=planning_enabled,
-            planning_llm_model=planning_llm_model,
-        ),
-        on_trace_event=on_trace_event,
-    )
     inputs = StudyChatFlowState(
         query=query,
         student_context=student_context or "No student context supplied.",
@@ -974,7 +1038,31 @@ def run_study_assistant_query(
         run_label="Study Chat Flow Run Report",
         on_event=on_trace_event,
     ) as recorder:
-        raw_result = flow.kickoff(inputs=inputs)
+        trace_event_sink = recorder.emit_event if trace else on_trace_event
+        flow = StudyChatFlow(
+            runtime=StudyChatFlowRuntime(
+                model=model,
+                manager_model=manager_model,
+                observer_model=observer_model,
+                temperature=temperature,
+                top_p=top_p,
+                allow_temp_enrollment=allow_temp_enrollment,
+                verbose=verbose,
+                cache=cache,
+                planning_enabled=planning_enabled,
+                planning_llm_model=planning_llm_model,
+            ),
+            on_trace_event=trace_event_sink,
+            stream=stream_answer,
+        )
+        kickoff_output = flow.kickoff(inputs=inputs)
+        if stream_answer:
+            raw_result = _consume_flow_streaming_output(
+                kickoff_output,
+                on_trace_event=trace_event_sink,
+            )
+        else:
+            raw_result = kickoff_output
         state = flow.state
         answer = state.answer_markdown
         usage_metrics = getattr(raw_result, "usage_metrics", None) or getattr(raw_result, "token_usage", None)

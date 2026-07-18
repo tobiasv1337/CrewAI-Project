@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import streamlit as st
@@ -73,6 +74,7 @@ def test_live_workbench_from_events_tracks_running_and_finished_calls():
 
     assert workbench["run_id"] == "run-1"
     assert workbench["total_tool_calls"] == 2
+    assert workbench["event_count"] == 3
     groups = {group["agent_label"]: group for group in workbench["groups"]}
     assert groups["Study Advisor"]["tool_calls"][0]["status"] == "ok"
     assert groups["ISIS Course Info Specialist"]["tool_calls"][0]["status"] == "running"
@@ -130,6 +132,54 @@ def test_agent_interaction_extraction_pairs_coworker_tool_events():
     assert workbench["agent_dialogue"][0]["receiver"] == "MOSES Module Researcher"
 
 
+def test_saved_agent_interactions_prefer_live_event_journal(tmp_path):
+    run_dir = tmp_path / "run-with-live-journal"
+    run_dir.mkdir()
+    (run_dir / "trace.jsonl").write_text(
+        '{"event":"tool_call","tool_name":"Unrelated completed tool"}\n',
+        encoding="utf-8",
+    )
+    lifecycle_events = [
+        {
+            "event": "tool_start",
+            "call_id": 4,
+            "tool_name": "delegate_work_to_coworker",
+            "tool_input": {
+                "coworker": "TU Berlin Degree Regulations Specialist",
+                "task": "Inspect the Regelstudienplan.",
+                "context": "Find the buffer semester.",
+            },
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+        {
+            "event": "tool_finish",
+            "tool_call": {
+                "call_id": 4,
+                "tool_name": "delegate_work_to_coworker",
+                "tool_input": {
+                    "coworker": "TU Berlin Degree Regulations Specialist",
+                    "task": "Inspect the Regelstudienplan.",
+                    "context": "Find the buffer semester.",
+                },
+                "agent_label": "Orchestrator",
+                "status": "ok",
+                "output": "Semester 4 contains the 30 LP Masterarbeit.",
+            },
+        },
+    ]
+    (run_dir / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in lifecycle_events) + "\n",
+        encoding="utf-8",
+    )
+
+    interactions = chat.get_interactions_for_message({"trace_dir": str(run_dir)})
+
+    assert len(interactions) == 1
+    assert interactions[0]["receiver"] == "Degree Regulations Specialist"
+    assert "30 LP Masterarbeit" in interactions[0]["response"]
+
+
 def test_current_settings_includes_agent_chat_toggle():
     st.session_state["chat_show_agent_chat_alice"] = True
 
@@ -143,6 +193,641 @@ def test_current_settings_leaves_model_selection_to_env_by_default():
 
     assert settings.specialist_model is None
     assert settings.manager_model is None
+    assert settings.observer_model is None
+    assert settings.observer_enabled is True
+
+
+def test_intent_scope_keeps_full_roster_and_marks_excluded_agents():
+    events = [
+        {
+            "event": "ui_run_started",
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+        {
+            "event": "intent_classified",
+            "agent_label": "Orchestrator",
+            "status": "ok",
+            "intent": {
+                "route": "simple_moses",
+                "complexity": "simple",
+                "required_sources": ["moses"],
+                "write_intent": False,
+            },
+        },
+    ]
+
+    workbench = chat.live_workbench_from_events(events)
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+
+    assert set(groups) == set(chat.AGENT_LANES)
+    assert groups["MOSES Module Researcher"]["status"] == "queued"
+    assert groups["MOSES Module Researcher"]["selection"] == "selected"
+    assert groups["Study Advisor"]["status"] == "not_selected"
+    assert groups["Study Advisor"]["selection"] == "excluded"
+    assert [node["agent"] for node in workbench["topology"]] == [
+        "Orchestrator",
+        "MOSES Module Researcher",
+        "Final Answer",
+    ]
+
+
+def test_deep_dive_keeps_every_hierarchical_specialist_eligible():
+    events = [
+        {
+            "event": "intent_classified",
+            "agent_label": "Orchestrator",
+            "status": "ok",
+            "intent": {
+                "route": "deep_dive",
+                "complexity": "deep",
+                "required_sources": ["grade_manager"],
+                "write_intent": False,
+            },
+        }
+    ]
+
+    workbench = chat.live_workbench_from_events(events)
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+
+    assert groups["Study Advisor"]["status"] == "queued"
+    assert groups["Study Advisor"]["selection"] == "priority"
+    assert groups["MOSES Module Researcher"]["status"] == "eligible"
+    assert groups["MOSES Module Researcher"]["selection"] == "eligible"
+    assert groups["ISIS Course Info Specialist"]["status"] == "eligible"
+    assert groups["ISIS Course Info Specialist"]["selection"] == "eligible"
+    assert "Runtime Observer" not in groups
+    assert set(workbench["selected_agents"]) == chat.HIERARCHICAL_SPECIALISTS
+
+
+def test_live_status_prefers_grounded_observer_report():
+    events = [
+        {
+            "event": "observer_progress",
+            "agent_label": "Runtime Observer",
+            "status": "ok",
+            "report": {
+                "headline": "MOSES lookup in progress",
+                "detail": "The module researcher is comparing relevant catalog entries and their course requirements.",
+                "active_agent": "MOSES Module Researcher",
+                "evidence": ["tool_start: search_modules"],
+            },
+        }
+    ]
+
+    assert chat._live_run_status(events) == (
+        "MOSES lookup in progress",
+        "The module researcher is comparing relevant catalog entries and their course requirements.",
+    )
+
+
+def test_live_status_never_exposes_raw_planner_prompt_or_call_metadata():
+    raw_prompt = "VERY_RAW_PLANNING_PROMPT " * 400
+    events = [
+        {
+            "event": "ui_run_started",
+            "query": "Wie mache ich jetzt am besten mit meinem Master weiter und hole die beste Note heraus?",
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+        {
+            "event": "llm_started",
+            "agent_label": "Orchestrator",
+            "status": "running",
+            "call_id": "74e9af22-c735-452d-8f31-6b8f7a40650d",
+            "task_name": raw_prompt,
+            "activity": (
+                "Orchestrator LLM call #74e9af22-c735-452d-8f31-6b8f7a40650d "
+                f"started for task `{raw_prompt}`; 0 tool schemas exposed."
+            ),
+        },
+    ]
+
+    label, detail = chat._live_run_status(events)
+    rendered = f"{label} {detail}"
+
+    assert "Anfrage" in label
+    assert "Masterplanung" in detail
+    assert "VERY_RAW_PLANNING_PROMPT" not in rendered
+    assert "74e9af22" not in rendered
+    assert "tool schema" not in rendered
+
+
+def test_live_workbench_omits_raw_lifecycle_console_and_planner_prompt():
+    raw_prompt = "PRIVATE CREWAI PLANNING PROMPT " * 300
+    events = [
+        {
+            "event": "ui_run_started",
+            "query": "How should I optimize my Master's plan?",
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+        {
+            "event": "llm_started",
+            "agent_label": "Orchestrator",
+            "call_id": "planner-call-id",
+            "task_name": raw_prompt,
+            "activity": raw_prompt,
+            "status": "running",
+        },
+    ]
+
+    compiled = chat._compile_workbench_html(
+        chat.live_workbench_from_events(events),
+        live=True,
+    )
+
+    assert "Live Log Console" not in compiled
+    assert "PRIVATE CREWAI PLANNING PROMPT" not in compiled
+    assert "planner-call-id" not in compiled
+
+
+def test_new_trace_evidence_keeps_rich_observer_detail_while_reconciling_agent_state():
+    rich_detail = "The orchestrator is still planning which specialists might be needed."
+    events = [
+        {
+            "event": "ui_run_started",
+            "query": "How can I optimize my Master's grade?",
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+        {
+            "event": "intent_classified",
+            "intent": {"route": "deep_dive", "required_sources": ["grade_optimization"]},
+            "agent_label": "Orchestrator",
+            "status": "ok",
+        },
+        {
+            "event": "observer_progress",
+            "agent_label": "Runtime Observer",
+            "status": "ok",
+            "report": {
+                "headline": "Planning specialist sequence",
+                "detail": rich_detail,
+                "agent_updates": [],
+            },
+        },
+        {
+            "event": "tool_start",
+            "agent_label": "Orchestrator",
+            "tool_name": "Delegate work to coworker",
+            "tool_input": {
+                "coworker": "TU Berlin Grade Optimization Specialist",
+                "task": "Compare thesis outcomes and final-grade scenarios.",
+            },
+            "status": "running",
+        },
+    ]
+
+    report = chat._latest_observer_report(events)
+
+    assert report["headline"] == "Planning specialist sequence"
+    assert report["detail"] == rich_detail
+    assert report["active_agent"] == "Orchestrator"
+    updates = {item["agent"]: item for item in report["agent_updates"]}
+    assert updates["Grade Optimization Specialist"]["state"] == "active"
+
+
+def test_completed_delegation_replaces_active_summary_and_historical_running_badge():
+    active_summary = (
+        "Der Study Advisor wertet die abgerufenen Modul- und Anforderungsdaten aus, "
+        "um den aktuellen Leistungspunktestand zu verifizieren."
+    )
+    delegation = {
+        "coworker": "TU Berlin Personal Study Advisor",
+        "task": "Prüfe Studienstand, offene Anforderungen und Notenhebel.",
+    }
+    events = [
+        {
+            "event": "ui_run_started",
+            "query": "Wie optimiere ich meinen Masterabschluss?",
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+        {
+            "event": "intent_classified",
+            "intent": {"route": "deep_dive", "required_sources": ["grade_manager"]},
+            "agent_label": "Orchestrator",
+            "status": "ok",
+        },
+        {
+            "event": "tool_start",
+            "call_id": 5,
+            "agent_label": "Orchestrator",
+            "tool_name": "ask_question_to_coworker",
+            "tool_input": delegation,
+            "status": "running",
+        },
+        {
+            "event": "observer_progress",
+            "agent_label": "Runtime Observer",
+            "status": "ok",
+            "report": {
+                "headline": "Studienstand wird ausgewertet",
+                "detail": active_summary,
+                "active_agent": "Study Advisor",
+                "agent_updates": [
+                    {
+                        "agent": "Study Advisor",
+                        "state": "active",
+                        "summary": active_summary,
+                    }
+                ],
+            },
+        },
+        {
+            "event": "tool_finish",
+            "tool_call": {
+                "call_id": 5,
+                "agent_label": "Orchestrator",
+                "tool_name": "ask_question_to_coworker",
+                "tool_input": delegation,
+                "status": "ok",
+                "output_preview": "57 LP abgeschlossen; zentrale Notenhebel wurden identifiziert.",
+            },
+        },
+    ]
+
+    interactions = chat.extract_agent_interactions(events)
+    workbench = chat.live_workbench_from_events(events)
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+    dialogue_html = chat._compile_agent_dialogue_html(interactions, live=True)
+
+    assert interactions[0]["status"] == "completed"
+    assert interactions[0]["observer_state"] == "completed"
+    assert "wertet" not in interactions[0]["observer_summary"]
+    assert groups["Study Advisor"]["status"] == "ok"
+    assert groups["Study Advisor"]["observer_state"] == "completed"
+    assert "wertet" not in groups["Study Advisor"]["observer_summary"]
+    assert "Result summary" in dialogue_html
+    assert ">working<" not in dialogue_html
+
+
+def test_internal_task_completion_does_not_precede_visible_a2a_response():
+    delegation = {
+        "coworker": "TU Berlin Grade Optimization Specialist",
+        "task": "Berechne Notenprognose und Sensitivität.",
+    }
+    events = [
+        {
+            "event": "ui_run_started",
+            "query": "Wie optimiere ich meine Masternote?",
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+        {
+            "event": "intent_classified",
+            "intent": {"route": "deep_dive", "required_sources": ["grade_optimization"]},
+            "agent_label": "Orchestrator",
+            "status": "ok",
+        },
+        {
+            "event": "tool_start",
+            "call_id": 9,
+            "agent_label": "Orchestrator",
+            "tool_name": "delegate_work_to_coworker",
+            "tool_input": delegation,
+            "status": "running",
+        },
+        {
+            "event": "task_completed",
+            "agent_label": "Grade Optimization Specialist",
+            "status": "ok",
+            "output_preview": "Interne Simulation abgeschlossen.",
+        },
+        {
+            "event": "observer_progress",
+            "agent_label": "Runtime Observer",
+            "status": "ok",
+            "report": {
+                "headline": "Analyse abgeschlossen",
+                "detail": "Die gesamte Analyse ist abgeschlossen.",
+                "active_agent": "Grade Optimization Specialist",
+                "agent_updates": [
+                    {
+                        "agent": "Grade Optimization Specialist",
+                        "state": "completed",
+                        "summary": "Hat die Notenprognose abgeschlossen.",
+                    }
+                ],
+            },
+        },
+    ]
+
+    active_interactions = chat.extract_agent_interactions(events)
+    active_workbench = chat.live_workbench_from_events(events)
+    active_groups = {group["agent_label"]: group for group in active_workbench["groups"]}
+
+    assert active_interactions[0]["status"] == "running"
+    assert active_interactions[0]["response"] == ""
+    assert active_interactions[0]["observer_state"] == "active"
+    assert active_groups["Grade Optimization Specialist"]["status"] == "running"
+    assert active_groups["Grade Optimization Specialist"]["observer_state"] == "active"
+    assert "abgeschlossen" not in active_workbench["observer_report"]["detail"].casefold()
+
+    events.append(
+        {
+            "event": "tool_finish",
+            "tool_call": {
+                "call_id": 9,
+                "agent_label": "Orchestrator",
+                "tool_name": "delegate_work_to_coworker",
+                "tool_input": delegation,
+                "status": "ok",
+                "output_preview": "Forecast 1,4; die Masterarbeit hat den größten Einfluss.",
+            },
+        }
+    )
+
+    completed_interactions = chat.extract_agent_interactions(events)
+    completed_workbench = chat.live_workbench_from_events(events)
+    completed_groups = {group["agent_label"]: group for group in completed_workbench["groups"]}
+
+    assert completed_interactions[0]["status"] == "completed"
+    assert completed_interactions[0]["response"].startswith("Forecast 1,4")
+    assert completed_interactions[0]["observer_state"] == "completed"
+    assert completed_groups["Grade Optimization Specialist"]["status"] == "ok"
+    assert completed_groups["Grade Optimization Specialist"]["observer_state"] == "completed"
+
+
+def test_observer_agent_updates_enrich_agent_card_and_a2a_bubble():
+    summary = "The MOSES researcher is comparing ML1 and Machine Intelligence course details and grading schemes."
+    events = [
+        {
+            "event": "intent_classified",
+            "intent": {"route": "deep_dive", "required_sources": ["moses"]},
+            "agent_label": "Orchestrator",
+            "status": "ok",
+        },
+        {
+            "event": "tool_start",
+            "call_id": 8,
+            "agent_label": "Orchestrator",
+            "tool_name": "Delegate work to coworker",
+            "tool_input": {
+                "coworker": "TU Berlin MOSES Module Researcher",
+                "task": "Compare ML1 and Machine Intelligence.",
+            },
+            "status": "running",
+        },
+        {
+            "event": "observer_progress",
+            "agent_label": "Runtime Observer",
+            "status": "ok",
+            "report": {
+                "headline": "Course comparison underway",
+                "detail": "The module and grade specialists are building the requested comparison.",
+                "agent_updates": [
+                    {
+                        "agent": "MOSES Module Researcher",
+                        "state": "active",
+                        "summary": summary,
+                    }
+                ],
+                "evidence": ["tool_start: raw detail hidden from user summary"],
+            },
+        },
+    ]
+
+    interactions = chat.extract_agent_interactions(events)
+    workbench = chat.live_workbench_from_events(events)
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+    compiled = chat._compile_workbench_html(workbench, live=True)
+
+    assert interactions[0]["observer_summary"] == summary
+    assert groups["MOSES Module Researcher"]["observer_summary"] == summary
+    assert workbench["observer_report"]["headline"] == "Course comparison underway"
+    assert summary in compiled
+    assert "tool_start: raw detail hidden from user summary" not in compiled
+
+
+def test_completed_trace_reconciles_stale_observer_state_and_only_enriches_latest_a2a_bubble():
+    events = [
+        {
+            "event": "ui_run_started",
+            "query": "How does my thesis affect my final grade?",
+            "agent_label": "Orchestrator",
+            "status": "running",
+        },
+    ]
+    for call_id, task in ((10, "Check the thesis credits."), (11, "Confirm the final-grade formula.")):
+        events.extend(
+            [
+                {
+                    "event": "tool_start",
+                    "call_id": call_id,
+                    "agent_label": "Orchestrator",
+                    "tool_name": "Delegate work to coworker",
+                    "tool_input": {
+                        "coworker": "TU Berlin Degree Regulations Specialist",
+                        "task": task,
+                    },
+                    "status": "running",
+                },
+                {
+                    "event": "tool_finish",
+                    "tool_call": {
+                        "call_id": call_id,
+                        "agent_label": "Orchestrator",
+                        "tool_name": "Delegate work to coworker",
+                        "tool_input": {
+                            "coworker": "TU Berlin Degree Regulations Specialist",
+                            "task": task,
+                        },
+                        "status": "ok",
+                        "output_preview": "The requested rule was confirmed.",
+                    },
+                },
+            ]
+        )
+    events.extend(
+        [
+            {"event": "crew_completed", "status": "ok"},
+            {
+                "event": "observer_progress",
+                "agent_label": "Runtime Observer",
+                "status": "ok",
+                "report": {
+                    "headline": "Still checking regulations",
+                    "detail": "The specialist is currently determining the formal rules.",
+                    "active_agent": "Degree Regulations Specialist",
+                    "agent_updates": [
+                        {
+                            "agent": "Degree Regulations Specialist",
+                            "state": "active",
+                            "summary": "Currently determining the formal thesis rules.",
+                        }
+                    ],
+                    "evidence": [],
+                },
+            },
+        ]
+    )
+
+    interactions = chat.extract_agent_interactions(events)
+    workbench = chat.live_workbench_from_events(events, completed=True)
+    groups = {group["agent_label"]: group for group in workbench["groups"]}
+
+    assert "observer_summary" not in interactions[0]
+    assert interactions[1]["observer_state"] == "completed"
+    assert "Currently determining" not in interactions[1]["observer_summary"]
+    assert groups["Degree Regulations Specialist"]["observer_state"] == "completed"
+    assert workbench["observer_report"]["headline"] == "Analysis complete"
+    assert "Runtime Observer" not in groups
+
+
+def test_observer_waits_for_post_intent_activity_then_uses_ten_second_throttle():
+    events = [
+        {
+            "event": "intent_classified",
+            "agent_label": "Orchestrator",
+            "intent": {"route": "deep_dive"},
+            "status": "ok",
+        }
+    ]
+
+    assert chat.OBSERVER_MIN_INTERVAL_SECONDS == 10.0
+    assert chat._observer_trigger_signature(events) is None
+
+    events.append(
+        {
+            "event": "task_started",
+            "agent_label": "Grade Optimization Specialist",
+            "task_name": "Compare thesis outcomes",
+            "status": "running",
+        }
+    )
+
+    assert chat._observer_trigger_signature(events) is not None
+
+
+def test_elapsed_time_skips_events_without_elapsed_timestamp():
+    events = [
+        {"event": "crew_completed", "elapsed_ms": 398_547},
+        {"event": "flow_turn_completed"},
+        {"event": "observer_progress", "elapsed_ms": None},
+    ]
+
+    assert chat._elapsed_ms_from_events(events) == 399_747
+
+
+def test_workbench_topology_collapses_repeated_agents_and_omits_observer():
+    flows = [
+        {"agent": "Orchestrator", "status": "idle"},
+        {"agent": "Study Advisor", "status": "idle"},
+        {"agent": "Orchestrator", "status": "idle"},
+        {"agent": "Runtime Observer", "status": "ok"},
+        {"agent": "Study Advisor", "status": "idle"},
+        {"agent": "Grade Optimization Specialist", "status": "idle"},
+    ]
+    groups = {
+        "Orchestrator": {"status": "ok"},
+        "Study Advisor": {"status": "ok"},
+        "Grade Optimization Specialist": {"status": "ok"},
+    }
+
+    compact = chat._compact_workbench_topology(flows, groups, live=False)
+
+    assert [item["agent"] for item in compact] == [
+        "Orchestrator",
+        "Study Advisor",
+        "Grade Optimization Specialist",
+        "Final Answer",
+    ]
+    assert all(item["status"] in {"ok", "done"} for item in compact)
+
+
+def test_workbench_execution_sequence_preserves_real_redelegation_order():
+    workbench = {
+        "agent_dialogue": [
+            {"receiver": "TU Berlin Study Advisor", "status": "completed"},
+            {"receiver": "TU Berlin Degree Regulations Specialist", "status": "completed"},
+            {"receiver": "TU Berlin Study Advisor", "status": "running"},
+        ]
+    }
+    groups = {"Orchestrator": {"status": "running"}}
+
+    sequence, is_a2a = chat._workbench_execution_sequence(workbench, groups, live=True)
+
+    assert is_a2a is True
+    assert [item["agent"] for item in sequence] == [
+        "Orchestrator",
+        "Study Advisor",
+        "Degree Regulations Specialist",
+        "Study Advisor",
+        "Final Answer",
+    ]
+    assert sequence[1]["invocation"] == 1
+    assert sequence[3]["invocation"] == 2
+    assert sequence[3]["status"] == "running"
+
+
+def test_agent_card_fallback_keeps_raw_tool_identifiers_out_of_summary_copy():
+    activity = chat._agent_card_fallback_activity(
+        "Grade Optimization Specialist",
+        {"status": "ok", "activity": "Finished run_grade_what_if_scenario."},
+    )
+
+    assert activity == "Grade scenarios and assessment sensitivity calculated."
+    assert "run_grade_what_if_scenario" not in activity
+
+
+def test_true_stream_preview_resets_planning_text_after_tool_call():
+    events = [
+        {
+            "event": "intent_classified",
+            "intent": {"route": "deep_dive", "required_sources": ["moses"]},
+        },
+        {
+            "event": "llm_stream_chunk",
+            "agent_label": "Orchestrator",
+            "chunk_type": "text",
+            "content": "I should ask a specialist before answering.",
+        },
+        {
+            "event": "llm_stream_chunk",
+            "agent_label": "Orchestrator",
+            "chunk_type": "tool_call",
+            "content": "",
+        },
+        {
+            "event": "llm_stream_chunk",
+            "agent_label": "MOSES Module Researcher",
+            "chunk_type": "text",
+            "content": "Internal specialist response that belongs in A2A chat.",
+        },
+        {
+            "event": "llm_stream_chunk",
+            "agent_label": "Orchestrator",
+            "chunk_type": "text",
+            "content": "Here is the grounded final answer from the coordinated agent team.",
+        },
+    ]
+
+    assert chat._streaming_answer_preview(events) == (
+        "Here is the grounded final answer from the coordinated agent team."
+    )
+
+
+def test_answer_animation_reconstructs_final_answer_from_streamed_prefix():
+    chunks = list(chat._animated_answer_chunks("A complete answer", "A complete"))
+
+    assert "".join(chunks) == "A complete answer"
+
+
+def test_message_error_detail_supports_structured_and_legacy_failures():
+    structured = {
+        "role": "assistant",
+        "content": "Run interrupted.",
+        "metadata": {"error": {"type": "RuntimeError", "detail": "stream failed"}},
+    }
+    legacy = {
+        "role": "assistant",
+        "content": "Could not run the Study Assistant: `legacy stream failed`",
+    }
+
+    assert chat._message_error_detail(structured) == "stream failed"
+    assert chat._message_error_detail(legacy) == "legacy stream failed"
 
 
 def test_student_context_uses_source_boundary_wording():

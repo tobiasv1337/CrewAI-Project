@@ -9,8 +9,10 @@ from dotenv import load_dotenv
 
 DEFAULT_GWDG_API_BASE = "https://chat-ai.hpc.gwdg.de/v1"
 DEFAULT_STUDY_ASSISTANT_MODEL = "qwen3.5-122b-a10b"
+DEFAULT_STUDY_ASSISTANT_OBSERVER_MODEL = "qwen3-30b-a3b-instruct-2507"
 DEFAULT_TEMPERATURE = 0.2
-DEFAULT_TIMEOUT_SECONDS = 180
+DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_OBSERVER_TIMEOUT_SECONDS = 120
 
 
 class LLMConfigurationError(RuntimeError):
@@ -59,6 +61,46 @@ def resolve_study_assistant_manager_model(
     )
 
 
+def resolve_study_assistant_observer_model(
+    *,
+    observer_model: str | None = None,
+    manager_model: str | None = None,
+    specialist_model: str | None = None,
+) -> str:
+    """Resolve the dedicated lightweight routing and runtime-observer model.
+
+    Manager and specialist arguments remain accepted for runtime-config compatibility;
+    the observer intentionally has an independent, inexpensive default.
+    """
+    del manager_model, specialist_model
+    load_dotenv()
+    return normalize_openai_model_name(
+        observer_model
+        or os.getenv("STUDY_ASSISTANT_OBSERVER_MODEL")
+        or DEFAULT_STUDY_ASSISTANT_OBSERVER_MODEL
+    )
+
+
+def resolve_study_assistant_observer_timeout() -> int:
+    """Resolve the observer timeout independently from long-running crew calls."""
+    load_dotenv()
+    return _positive_timeout(
+        os.getenv("STUDY_ASSISTANT_OBSERVER_TIMEOUT_SECONDS"),
+        default=DEFAULT_OBSERVER_TIMEOUT_SECONDS,
+        setting="STUDY_ASSISTANT_OBSERVER_TIMEOUT_SECONDS",
+    )
+
+
+def _positive_timeout(value: str | int | None, *, default: int, setting: str) -> int:
+    try:
+        timeout = default if value in (None, "") else int(value)
+    except (TypeError, ValueError) as exc:
+        raise LLMConfigurationError(f"{setting} must be a positive integer.") from exc
+    if timeout <= 0:
+        raise LLMConfigurationError(f"{setting} must be a positive integer.")
+    return timeout
+
+
 def resolve_llm_settings(
     *,
     model: str | None = None,
@@ -76,7 +118,11 @@ def resolve_llm_settings(
     resolved_base_url = base_url or os.getenv("GWDG_API_BASE", DEFAULT_GWDG_API_BASE)
     resolved_provider = provider or os.getenv("STUDY_ASSISTANT_PROVIDER", "openai")
     resolved_temperature = DEFAULT_TEMPERATURE if temperature is None else float(temperature)
-    resolved_timeout = DEFAULT_TIMEOUT_SECONDS if timeout is None else int(timeout)
+    resolved_timeout = _positive_timeout(
+        timeout if timeout is not None else os.getenv("STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS"),
+        default=DEFAULT_TIMEOUT_SECONDS,
+        setting="STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS",
+    )
 
     if not resolved_model:
         raise LLMConfigurationError("STUDY_ASSISTANT_MODEL is empty.")

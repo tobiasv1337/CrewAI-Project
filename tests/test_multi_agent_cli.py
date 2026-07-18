@@ -1,8 +1,81 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import main as cli
+from crewai.types.streaming import FlowStreamingOutput, StreamChunk, StreamFrame, StreamSession
+
+
+def test_flow_stream_is_exhausted_before_result_is_accessed():
+    events = []
+    streaming = FlowStreamingOutput()
+    final_result = object()
+
+    def chunks():
+        yield StreamChunk(
+            content="A streamed answer",
+            task_index=0,
+            task_name="Answer task",
+            agent_role="TU Berlin Study Advisor",
+        )
+        streaming._set_result(final_result)
+
+    streaming._sync_iterator = chunks()
+
+    result = cli._consume_flow_streaming_output(streaming, on_trace_event=events.append)
+
+    assert result is final_result
+    assert streaming.is_completed is True
+    assert [event["event"] for event in events] == [
+        "answer_stream_started",
+        "llm_stream_chunk",
+        "answer_stream_completed",
+    ]
+    assert events[1]["content"] == "A streamed answer"
+
+
+def test_current_flow_stream_session_is_exhausted_before_result_is_accessed():
+    events = []
+    streaming = StreamSession()
+    final_result = object()
+    timestamp = datetime.now(timezone.utc)
+
+    def frames():
+        yield StreamFrame(
+            id="flow-frame",
+            type="flow_started",
+            channel="flow",
+            timestamp=timestamp,
+            data={"flow_name": "StudyChatFlow"},
+        )
+        yield StreamFrame(
+            id="answer-frame",
+            type="llm_stream_chunk",
+            channel="llm",
+            timestamp=timestamp,
+            data={
+                "chunk": "A streamed frame answer",
+                "agent_role": "TU Berlin Study Advisor",
+                "task_name": "Answer task",
+            },
+        )
+        streaming._set_result(final_result)
+
+    streaming._sync_iterator = frames()
+
+    result = cli._consume_flow_streaming_output(streaming, on_trace_event=events.append)
+
+    assert result is final_result
+    assert streaming.is_completed is True
+    assert streaming.is_exhausted is True
+    assert [event["event"] for event in events] == [
+        "answer_stream_started",
+        "llm_stream_chunk",
+        "answer_stream_completed",
+    ]
+    assert events[1]["content"] == "A streamed frame answer"
+    assert events[1]["agent_label"] == "Study Advisor"
 
 
 def test_ask_study_assistant_dispatches_runner_with_multi_agent_options(monkeypatch, tmp_path, capsys):
@@ -30,6 +103,8 @@ def test_ask_study_assistant_dispatches_runner_with_multi_agent_options(monkeypa
             "--allow-temp-enrollment",
             "--manager-model",
             "qwen-manager",
+            "--observer-model",
+            "llama-observer",
             "--model",
             "qwen-specialists",
             "--temperature",
@@ -58,6 +133,7 @@ def test_ask_study_assistant_dispatches_runner_with_multi_agent_options(monkeypa
             "allow_temp_enrollment": True,
             "model": "qwen-specialists",
             "manager_model": "qwen-manager",
+            "observer_model": "llama-observer",
             "planning_enabled": False,
             "planning_llm_model": None,
             "temperature": 0.4,

@@ -22,6 +22,39 @@ from crewai.hooks import (
 
 DEFAULT_RUNS_DIR = Path("logs/crew_runs")
 DEFAULT_PREVIEW_CHARS = 4000
+_TRACE_EVENT_STATE = threading.local()
+TRACE_SUPPRESSED_SOURCE_ATTRIBUTE = "_tu_study_trace_suppressed"
+
+
+@contextmanager
+def suppress_trace_events() -> Iterator[None]:
+    """Keep auxiliary LLM calls from being attributed to the active crew."""
+    previous = bool(getattr(_TRACE_EVENT_STATE, "suppressed", False))
+    _TRACE_EVENT_STATE.suppressed = True
+    try:
+        yield
+    finally:
+        _TRACE_EVENT_STATE.suppressed = previous
+
+
+def suppress_trace_events_from(source: Any) -> None:
+    """Exclude events emitted by an auxiliary LLM from the user-facing trace.
+
+    CrewAI dispatches event-bus handlers on worker threads, so the thread-local
+    ``suppress_trace_events`` flag is not visible there. Auxiliary LLM instances
+    are instead marked at their source and filtered by the recorder handlers.
+    """
+    try:
+        setattr(source, TRACE_SUPPRESSED_SOURCE_ATTRIBUTE, True)
+    except Exception:
+        # Tracing must never make an auxiliary LLM call fail.
+        return
+
+
+def trace_events_suppressed_for(source: Any) -> bool:
+    return bool(getattr(_TRACE_EVENT_STATE, "suppressed", False)) or bool(
+        getattr(source, TRACE_SUPPRESSED_SOURCE_ATTRIBUTE, False)
+    )
 
 
 def utc_now() -> str:
@@ -141,6 +174,11 @@ class ToolTraceRecorder:
         return self.run_dir / "trace.jsonl"
 
     @property
+    def events_path(self) -> Path:
+        """Append-only lifecycle journal written while a run is executing."""
+        return self.run_dir / "events.jsonl"
+
+    @property
     def answer_path(self) -> Path:
         return self.run_dir / "answer.md"
 
@@ -155,6 +193,10 @@ class ToolTraceRecorder:
     @property
     def state_path(self) -> Path:
         return self.run_dir / "state.json"
+
+    def emit_event(self, event: dict[str, Any]) -> None:
+        """Persist and forward one public runtime event immediately."""
+        self._emit_event(event)
 
     @property
     def ordered_tool_calls(self) -> list[ToolCallSummary]:
@@ -283,6 +325,7 @@ class ToolTraceRecorder:
             "top_p": self.top_p,
             "answer_chars": len(answer),
             "report_path": str(self.report_path),
+            "events_path": str(self.events_path),
             "state_path": state_path,
             "tool_call_count": len(self.tool_calls),
             "tool_calls": [
@@ -418,23 +461,26 @@ class ToolTraceRecorder:
             handle.write(json.dumps(safe_jsonable(record), ensure_ascii=False) + "\n")
 
     def _emit_event(self, event: dict[str, Any]) -> None:
-        if self.on_event is None:
+        if bool(getattr(_TRACE_EVENT_STATE, "suppressed", False)):
             return
         with self._event_lock:
             event.setdefault("event_id", self._next_event_id)
             self._next_event_id += 1
-        event.setdefault("run_id", self.run_id)
-        event.setdefault("emitted_at", utc_now())
-        event.setdefault("elapsed_ms", round((perf_counter() - self._started_perf) * 1000))
-        try:
-            self.on_event(safe_jsonable(event))
-        except Exception:
-            # UI callbacks must never break a CrewAI run.
-            return
+            event.setdefault("run_id", self.run_id)
+            event.setdefault("emitted_at", utc_now())
+            event.setdefault("elapsed_ms", round((perf_counter() - self._started_perf) * 1000))
+            safe_event = safe_jsonable(event)
+            self.run_dir.mkdir(parents=True, exist_ok=True)
+            with self.events_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(safe_event, ensure_ascii=False) + "\n")
+        if self.on_event is not None:
+            try:
+                self.on_event(safe_event)
+            except Exception:
+                # UI callbacks must never break a CrewAI run.
+                return
 
     def _install_event_bus_handlers(self) -> None:
-        if self.on_event is None:
-            return
         try:
             from crewai.events.event_bus import crewai_event_bus
             from crewai.events.types.crew_events import (
@@ -574,28 +620,42 @@ class ToolTraceRecorder:
         )
 
     def _on_llm_started(self, source: Any, event: Any) -> None:
+        if trace_events_suppressed_for(source):
+            return
         agent_role = getattr(event, "agent_role", None)
         label = agent_label_for_role(agent_role)
         if label == "Unknown Agent":
             label = "Orchestrator"
         tools = getattr(event, "tools", None) or []
+        tool_choices = [
+            str(item.get("function", {}).get("name") or item.get("name") or "")
+            for item in tools
+            if isinstance(item, dict)
+        ]
+        task_name = getattr(event, "task_name", None)
+        call_id = getattr(event, "call_id", None)
         self._emit_event(
             {
                 "event": "llm_started",
                 "agent_role": agent_role,
                 "agent_label": label,
-                "call_id": getattr(event, "call_id", None),
+                "call_id": call_id,
                 "model": getattr(event, "model", None),
-                "task_name": getattr(event, "task_name", None),
+                "task_name": task_name,
                 "phase": "llm",
                 "status": "running",
-                "activity": "Thinking and selecting the next action.",
-                "tool_choices": [str(item.get("function", {}).get("name") or item.get("name") or "") for item in tools if isinstance(item, dict)],
+                "activity": (
+                    f"{label} started an LLM reasoning step with "
+                    f"{len(tool_choices)} available tool schema{'s' if len(tool_choices) != 1 else ''}."
+                ),
+                "tool_choices": tool_choices,
                 "tools_count": len(tools),
             }
         )
 
     def _on_llm_completed(self, source: Any, event: Any) -> None:
+        if trace_events_suppressed_for(source):
+            return
         agent_role = getattr(event, "agent_role", None)
         label = agent_label_for_role(agent_role)
         if label == "Unknown Agent":
@@ -617,6 +677,8 @@ class ToolTraceRecorder:
         )
 
     def _on_llm_failed(self, source: Any, event: Any) -> None:
+        if trace_events_suppressed_for(source):
+            return
         agent_role = getattr(event, "agent_role", None)
         label = agent_label_for_role(agent_role)
         if label == "Unknown Agent":
@@ -699,6 +761,9 @@ class NullToolTraceRecorder:
     run_dir: Path | None = None
     tool_calls: list[ToolCallSummary] = []
     state_path: Path | None = None
+
+    def emit_event(self, event: dict[str, Any]) -> None:
+        del event
 
     def write_answer(self, answer: str, *, usage_metrics: Any = None, state: Any = None) -> None:
         del answer, usage_metrics, state
@@ -802,6 +867,7 @@ def build_trace_workbench(
     artifacts = {
         "report": str(Path(run_dir) / "report.md") if run_dir is not None else None,
         "trace": str(Path(run_dir) / "trace.jsonl") if run_dir is not None else None,
+        "events": str(Path(run_dir) / "events.jsonl") if run_dir is not None else None,
         "state": str(Path(run_dir) / "state.json") if run_dir is not None else None,
         "summary": str(Path(run_dir) / "summary.json") if run_dir is not None else None,
     }

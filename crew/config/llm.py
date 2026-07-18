@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
+from functools import wraps
+from typing import Any
 
 from crewai import LLM
 from dotenv import load_dotenv
@@ -11,8 +14,20 @@ DEFAULT_GWDG_API_BASE = "https://chat-ai.hpc.gwdg.de/v1"
 DEFAULT_STUDY_ASSISTANT_MODEL = "qwen3.5-122b-a10b"
 DEFAULT_STUDY_ASSISTANT_OBSERVER_MODEL = "qwen3-30b-a3b-instruct-2507"
 DEFAULT_TEMPERATURE = 0.2
-DEFAULT_TIMEOUT_SECONDS = 300
+# A failed or starved upstream request must become visible to the crew within a
+# useful interaction window.  Individual deployments may still override this
+# through STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS.
+DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_OBSERVER_TIMEOUT_SECONDS = 120
+
+# GWDG's OpenAI-compatible endpoint can leave one of two simultaneous
+# tool-calling requests waiting without a response.  CrewAI delegates sibling
+# specialists concurrently, so use one in-process lane per endpoint/model.
+# This is deliberately keyed below the agent layer: every agent using the same
+# deployed model receives the same protection, while a distinct observer model
+# remains independent.
+_LLM_CALL_LOCKS: dict[tuple[str, str, str], threading.Lock] = {}
+_LLM_CALL_LOCKS_GUARD = threading.Lock()
 
 
 class LLMConfigurationError(RuntimeError):
@@ -142,6 +157,37 @@ def resolve_llm_settings(
     )
 
 
+def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
+    """Serialize synchronous calls sharing one deployed upstream model.
+
+    The hierarchical manager can launch multiple specialist calls at once.
+    On the configured GWDG endpoint this has repeatedly starved one request
+    (it emitted ``llm_started`` but never reached a tool).  Applying the lock
+    to each newly-created LLM instance lets CrewAI keep its agent concurrency
+    while preventing simultaneous requests to the same model deployment.
+    """
+    original_call = getattr(llm, "call", None)
+    if not callable(original_call):
+        return llm
+
+    key = (settings.provider, settings.base_url.rstrip("/"), settings.model)
+    with _LLM_CALL_LOCKS_GUARD:
+        call_lock = _LLM_CALL_LOCKS.setdefault(key, threading.Lock())
+
+    @wraps(original_call)
+    def serialized_call(*args: Any, **kwargs: Any) -> Any:
+        with call_lock:
+            return original_call(*args, **kwargs)
+
+    try:
+        setattr(llm, "call", serialized_call)
+    except (AttributeError, TypeError):
+        # Keep compatibility with custom LLM implementations that disallow
+        # method replacement; their native concurrency behaviour is retained.
+        pass
+    return llm
+
+
 def get_default_llm(
     *,
     model: str | None = None,
@@ -172,4 +218,4 @@ def get_default_llm(
     }
     if settings.top_p is not None:
         kwargs["top_p"] = settings.top_p
-    return LLM(**kwargs)
+    return _serialize_endpoint_calls(LLM(**kwargs), settings)

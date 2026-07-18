@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 import pytest
 
 import crew.config.llm as llm_config
@@ -129,3 +131,50 @@ def test_get_default_llm_builds_openai_compatible_llm(monkeypatch):
             "top_p": 0.9,
         }
     ]
+
+
+def test_llm_calls_to_same_endpoint_and_model_are_serialized(monkeypatch):
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    class FakeLLM:
+        instances = 0
+
+        def __init__(self, **kwargs):
+            del kwargs
+            self.index = FakeLLM.instances
+            FakeLLM.instances += 1
+
+        def call(self, prompt):
+            del prompt
+            if self.index == 0:
+                first_entered.set()
+                assert release_first.wait(timeout=1)
+            else:
+                second_entered.set()
+            return self.index
+
+    monkeypatch.setattr(llm_config, "LLM", FakeLLM)
+    first = llm_config.get_default_llm(
+        model="shared-model",
+        api_key="test-key",
+        base_url="https://gwdg.example.test/v1",
+    )
+    second = llm_config.get_default_llm(
+        model="shared-model",
+        api_key="test-key",
+        base_url="https://gwdg.example.test/v1",
+    )
+
+    first_thread = threading.Thread(target=lambda: first.call("first"))
+    second_thread = threading.Thread(target=lambda: second.call("second"))
+    first_thread.start()
+    assert first_entered.wait(timeout=1)
+    second_thread.start()
+    assert not second_entered.wait(timeout=0.1)
+
+    release_first.set()
+    first_thread.join(timeout=1)
+    second_thread.join(timeout=1)
+    assert second_entered.is_set()

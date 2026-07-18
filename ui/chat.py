@@ -26,7 +26,7 @@ from crew.chat_persistence import (
     save_chat_thread,
     list_chat_threads,
 )
-from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL
+from crew.config.llm import resolve_study_assistant_model
 from crew.isis_client import IsisCredentials, MoodleRestClient, login_via_playwright_sync
 from crew.semester_context import semester_reference_context
 from crew.tools.proposal_tools import ProposalCourseInput, build_course_proposal
@@ -38,7 +38,6 @@ CHAT_HISTORY_KEY = "study_chat_messages_by_profile"
 ISIS_SESSIONS_KEY = "study_chat_isis_sessions"
 PENDING_PROMPT_KEY = "study_chat_pending_prompt"
 PROPOSAL_DECISION_PREFIX = "study_chat_course_decision"
-DEFAULT_MANAGER_MODEL = ""
 DEFAULT_TEMPERATURE = 0.2
 AGENT_LANES = [
     "Orchestrator",
@@ -267,16 +266,21 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
 
         with col_agent:
             st.markdown("#### Agent runtime settings")
+            configured_model = resolve_study_assistant_model()
             specialist_model = st.text_input(
-                "Specialist model",
-                value=DEFAULT_STUDY_ASSISTANT_MODEL,
-                help="Used by Study Advisor, MOSES Researcher, and ISIS Specialist.",
+                "Specialist model override",
+                value="",
+                placeholder=f".env default: {configured_model}",
+                help=(
+                    "Optional. Leave empty to use STUDY_ASSISTANT_MODEL from .env for all specialist agents."
+                ),
                 key=f"chat_specialist_model_{profile_slug}",
             ).strip()
             manager_model = st.text_input(
-                "Manager model",
-                value=DEFAULT_MANAGER_MODEL,
-                help="Optional override for the Orchestrator. Leave empty to use the specialist model.",
+                "Manager model override",
+                value="",
+                placeholder=f"Uses specialist/.env default: {configured_model}",
+                help="Optional. Leave empty to use the specialist override, or STUDY_ASSISTANT_MODEL from .env.",
                 key=f"chat_manager_model_{profile_slug}",
             ).strip()
 
@@ -1277,7 +1281,7 @@ def _action_kind_class(kind: str) -> str:
 def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
     trace_mode = str(st.session_state.get(f"chat_trace_mode_{profile_slug}") or "Preview")
     return ChatRuntimeSettings(
-        specialist_model=str(st.session_state.get(f"chat_specialist_model_{profile_slug}") or DEFAULT_STUDY_ASSISTANT_MODEL).strip() or None,
+        specialist_model=str(st.session_state.get(f"chat_specialist_model_{profile_slug}") or "").strip() or None,
         manager_model=str(st.session_state.get(f"chat_manager_model_{profile_slug}") or "").strip() or None,
         temperature=float(st.session_state.get(f"chat_temperature_{profile_slug}") or DEFAULT_TEMPERATURE),
         top_p=float(st.session_state[f"chat_top_p_{profile_slug}"]) if st.session_state.get(f"chat_top_p_enabled_{profile_slug}") else None,

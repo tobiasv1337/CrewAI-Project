@@ -36,6 +36,14 @@ def normalize_openai_model_name(model: str) -> str:
     return value
 
 
+def resolve_study_assistant_model(model: str | None = None) -> str:
+    """Resolve an optional runtime override against the configured .env default."""
+    load_dotenv()
+    return normalize_openai_model_name(
+        model or os.getenv("STUDY_ASSISTANT_MODEL", DEFAULT_STUDY_ASSISTANT_MODEL)
+    )
+
+
 def resolve_llm_settings(
     *,
     model: str | None = None,
@@ -48,9 +56,7 @@ def resolve_llm_settings(
 ) -> LLMSettings:
     """Resolve explicit overrides plus .env values into a validated LLM config."""
     load_dotenv()
-    resolved_model = normalize_openai_model_name(
-        model or os.getenv("STUDY_ASSISTANT_MODEL", DEFAULT_STUDY_ASSISTANT_MODEL)
-    )
+    resolved_model = resolve_study_assistant_model(model)
     resolved_key = api_key if api_key is not None else os.getenv("GWDG_API_KEY", "")
     resolved_base_url = base_url or os.getenv("GWDG_API_BASE", DEFAULT_GWDG_API_BASE)
     resolved_provider = provider or os.getenv("STUDY_ASSISTANT_PROVIDER", "openai")

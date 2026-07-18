@@ -138,6 +138,13 @@ def test_current_settings_includes_agent_chat_toggle():
     assert settings.show_agent_chat is True
 
 
+def test_current_settings_leaves_model_selection_to_env_by_default():
+    settings = chat._current_settings_from_state("alice")
+
+    assert settings.specialist_model is None
+    assert settings.manager_model is None
+
+
 def test_student_context_uses_source_boundary_wording():
     st.session_state["modules"] = []
     st.session_state["program_view"] = "All"

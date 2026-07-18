@@ -37,6 +37,18 @@ def test_multi_agent_crew_loads_yaml_keys(monkeypatch):
     assert "study_assistant_task" in study_crew.tasks_config
 
 
+def test_multi_agent_crew_uses_manager_model_from_env(monkeypatch):
+    import crew.multi_agent_crew as crew_module
+
+    monkeypatch.setenv("STUDY_ASSISTANT_MANAGER_MODEL", "mistral-medium-3.5-128b")
+    monkeypatch.setattr(crew_module, "get_default_llm", lambda **kwargs: _fake_llm())
+
+    study_crew = MultiAgentStudyAssistantCrew(model="deepseek-v4-flash")
+
+    assert study_crew.model == "deepseek-v4-flash"
+    assert study_crew.manager_model == "mistral-medium-3.5-128b"
+
+
 def test_orchestrator_prompt_includes_degree_regulations_recovery_loop(monkeypatch):
     import crew.multi_agent_crew as crew_module
 

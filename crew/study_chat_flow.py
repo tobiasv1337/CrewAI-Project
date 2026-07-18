@@ -23,7 +23,7 @@ from crew.chat_models import (
     UserDecisionInterpretation,
 )
 from crew.chat_persistence import append_turn, load_chat_thread, reset_chat_thread, save_chat_thread
-from crew.config.llm import get_default_llm
+from crew.config.llm import get_default_llm, resolve_study_assistant_manager_model
 from crew.runtime import ensure_crewai_storage_writable
 from crew.semester_context import semester_reference_context
 from crew.tools.grademanager_tools import (
@@ -538,7 +538,10 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         if self._runtime.use_llm_decision_interpreter and os.getenv("GWDG_API_KEY"):
             try:
                 llm = get_default_llm(
-                    model=self._runtime.manager_model or self._runtime.model,
+                    model=resolve_study_assistant_manager_model(
+                        manager_model=self._runtime.manager_model,
+                        specialist_model=self._runtime.model,
+                    ),
                     temperature=0.0,
                     top_p=self._runtime.top_p,
                 )
@@ -632,7 +635,10 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
         
         try:
             llm = get_default_llm(
-                model=self._runtime.manager_model or self._runtime.model,
+                model=resolve_study_assistant_manager_model(
+                    manager_model=self._runtime.manager_model,
+                    specialist_model=self._runtime.model,
+                ),
                 temperature=0.0,
                 top_p=self._runtime.top_p,
             )

@@ -11,6 +11,27 @@ def test_resolve_study_assistant_model_uses_env_default_and_normalizes_it(monkey
     assert llm_config.resolve_study_assistant_model() == "devstral-2-123b-instruct-2512"
 
 
+def test_resolve_manager_model_uses_env_default_before_specialist(monkeypatch):
+    monkeypatch.setenv("STUDY_ASSISTANT_MANAGER_MODEL", "openai/mistral-medium-3.5-128b")
+
+    assert (
+        llm_config.resolve_study_assistant_manager_model(specialist_model="deepseek-v4-flash")
+        == "mistral-medium-3.5-128b"
+    )
+
+
+def test_resolve_manager_model_allows_explicit_override(monkeypatch):
+    monkeypatch.setenv("STUDY_ASSISTANT_MANAGER_MODEL", "mistral-medium-3.5-128b")
+
+    assert (
+        llm_config.resolve_study_assistant_manager_model(
+            manager_model="openai/qwen3.5-122b-a10b",
+            specialist_model="deepseek-v4-flash",
+        )
+        == "qwen3.5-122b-a10b"
+    )
+
+
 def test_resolve_llm_settings_uses_env_and_strips_openai_prefix(monkeypatch):
     monkeypatch.setenv("GWDG_API_KEY", "test-key")
     monkeypatch.setenv("GWDG_API_BASE", "https://gwdg.example.test/v1")

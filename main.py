@@ -25,7 +25,7 @@ from crew.tools.moses_tools import (
 )
 
 
-from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL
+from crew.config.llm import DEFAULT_STUDY_ASSISTANT_MODEL, resolve_study_assistant_manager_model
 
 Runner = Callable[[argparse.Namespace], str]
 SECTION_SEPARATOR = "\n\n" + "=" * 80 + "\n\n"
@@ -922,7 +922,10 @@ def run_study_assistant_query(
     from crew.tracing import capture_tool_traces
 
     load_dotenv()
-    trace_model = manager_model or model or os.getenv("STUDY_ASSISTANT_MODEL", DEFAULT_AGENT_MODEL)
+    trace_model = resolve_study_assistant_manager_model(
+        manager_model=manager_model,
+        specialist_model=model,
+    )
     validated_context = _validate_json_text(isis_context_json)
     decisions = [
         item if isinstance(item, ActionDecision) else ActionDecision.model_validate(item)

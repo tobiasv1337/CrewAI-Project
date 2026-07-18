@@ -26,7 +26,7 @@ from crew.chat_persistence import (
     save_chat_thread,
     list_chat_threads,
 )
-from crew.config.llm import resolve_study_assistant_model
+from crew.config.llm import resolve_study_assistant_manager_model, resolve_study_assistant_model
 from crew.isis_client import IsisCredentials, MoodleRestClient, login_via_playwright_sync
 from crew.semester_context import semester_reference_context
 from crew.tools.proposal_tools import ProposalCourseInput, build_course_proposal
@@ -267,6 +267,9 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
         with col_agent:
             st.markdown("#### Agent runtime settings")
             configured_model = resolve_study_assistant_model()
+            configured_manager_model = resolve_study_assistant_manager_model(
+                specialist_model=configured_model
+            )
             specialist_model = st.text_input(
                 "Specialist model override",
                 value="",
@@ -279,8 +282,11 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
             manager_model = st.text_input(
                 "Manager model override",
                 value="",
-                placeholder=f"Uses specialist/.env default: {configured_model}",
-                help="Optional. Leave empty to use the specialist override, or STUDY_ASSISTANT_MODEL from .env.",
+                placeholder=f".env default: {configured_manager_model}",
+                help=(
+                    "Optional. Leave empty to use STUDY_ASSISTANT_MANAGER_MODEL from .env, "
+                    "then the specialist model."
+                ),
                 key=f"chat_manager_model_{profile_slug}",
             ).strip()
 

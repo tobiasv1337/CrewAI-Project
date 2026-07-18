@@ -4,7 +4,7 @@ from crewai import Agent, Crew, Process, Task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from crewai.project import CrewBase, agent, crew, task
 
-from crew.config.llm import get_default_llm
+from crew.config.llm import get_default_llm, resolve_study_assistant_manager_model
 from crew.runtime import ensure_crewai_storage_writable
 from crew.tools import (
     COURSE_COMMITMENT_TOOLS,
@@ -40,7 +40,10 @@ class MultiAgentStudyAssistantCrew:
         planning_llm_model: str | None = None,
     ) -> None:
         self.model = model
-        self.manager_model = manager_model or model
+        self.manager_model = resolve_study_assistant_manager_model(
+            manager_model=manager_model,
+            specialist_model=model,
+        )
         self.temperature = temperature
         self.top_p = top_p
         self.allow_temp_enrollment = allow_temp_enrollment

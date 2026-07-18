@@ -44,6 +44,21 @@ def resolve_study_assistant_model(model: str | None = None) -> str:
     )
 
 
+def resolve_study_assistant_manager_model(
+    *,
+    manager_model: str | None = None,
+    specialist_model: str | None = None,
+) -> str:
+    """Resolve the manager override, then its .env default, then the specialist model."""
+    load_dotenv()
+    return normalize_openai_model_name(
+        manager_model
+        or os.getenv("STUDY_ASSISTANT_MANAGER_MODEL")
+        or specialist_model
+        or resolve_study_assistant_model()
+    )
+
+
 def resolve_llm_settings(
     *,
     model: str | None = None,

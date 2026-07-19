@@ -32,8 +32,8 @@ degree_regulations_task:
     - Do not claim legal certainty. Present this as an advisory reading of
       retrieved documents.
     - Cite the retrieved PDF path and page for every substantive claim.
-    - If no relevant PDF or passage is available, say which folder should be
-      populated and what document is missing.
+    - If the specific StuPO for the requested degree program is not in the list of available PDFs (retrieved via List Degree Regulation PDFs), do not perform excessive search queries on unrelated documents. Search the remaining PDFs only briefly to check if the program is covered under another name (e.g. as a profile or sub-track). If not, clearly state at the beginning of your response that the required StuPO document is missing, specify what document is missing, and explain the limitations of the analysis.
+
 
     Response language:
     - You MUST write your entire response in {language}.

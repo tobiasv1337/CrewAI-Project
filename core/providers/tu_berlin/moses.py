@@ -267,10 +267,13 @@ def resolve_isis_coursemanager_url(
         for course_id, course_url, course_title in courses
     ]
 import threading
+import time
 
 _MOSES_LOCK = threading.Lock()
-_MOSES_GET_CACHE: dict[str, tuple[str, str]] = {}
-_MOSES_POST_CACHE: dict[tuple[str, tuple[tuple[str, str], ...], bool], str] = {}
+# Cache format: key -> (value, cached_at_timestamp)
+_MOSES_GET_CACHE: dict[str, tuple[tuple[str, str], float]] = {}
+_MOSES_POST_CACHE: dict[tuple[str, tuple[tuple[str, str], ...], bool], tuple[str, float]] = {}
+_MOSES_CACHE_TTL = 7 * 24 * 60 * 60  # 7 days in seconds
 
 
 class _MosesSession:
@@ -284,33 +287,63 @@ class _MosesSession:
     def get(self, url: str) -> tuple[str, str]:
         with _MOSES_LOCK:
             if url in _MOSES_GET_CACHE:
-                return _MOSES_GET_CACHE[url]
-            req = Request(url, headers={"User-Agent": USER_AGENT})
-            with self.opener.open(req, timeout=self.timeout) as response:
-                res = response.read().decode("utf-8", errors="ignore"), response.geturl()
-                _MOSES_GET_CACHE[url] = res
-                return res
+                res, timestamp = _MOSES_GET_CACHE[url]
+                if time.time() - timestamp < _MOSES_CACHE_TTL:
+                    return res
+
+        req = Request(url, headers={"User-Agent": USER_AGENT})
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                with _MOSES_LOCK:
+                    if url in _MOSES_GET_CACHE:
+                        res, timestamp = _MOSES_GET_CACHE[url]
+                        if time.time() - timestamp < _MOSES_CACHE_TTL:
+                            return res
+                    with self.opener.open(req, timeout=self.timeout) as response:
+                        res = response.read().decode("utf-8", errors="ignore"), response.geturl()
+                        _MOSES_GET_CACHE[url] = (res, time.time())
+                        return res
+            except Exception:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(1.0)
 
     def post(self, url: str, payload: dict[str, object], *, partial: bool = False) -> str:
         items = tuple(sorted((k, str(v)) for k, v in payload.items() if v is not None))
         cache_key = (url, items, partial)
         with _MOSES_LOCK:
             if cache_key in _MOSES_POST_CACHE:
-                return _MOSES_POST_CACHE[cache_key]
-            headers = {
-                "User-Agent": USER_AGENT,
-                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-            }
-            if partial:
-                headers["Faces-Request"] = "partial/ajax"
-            encoded = "&".join(
-                f"{_url_quote(key)}={_url_quote(str(value))}" for key, value in payload.items() if value is not None
-            ).encode("utf-8")
-            req = Request(url, data=encoded, headers=headers)
-            with self.opener.open(req, timeout=self.timeout) as response:
-                res = response.read().decode("utf-8", errors="ignore")
-                _MOSES_POST_CACHE[cache_key] = res
-                return res
+                res, timestamp = _MOSES_POST_CACHE[cache_key]
+                if time.time() - timestamp < _MOSES_CACHE_TTL:
+                    return res
+
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        }
+        if partial:
+            headers["Faces-Request"] = "partial/ajax"
+        encoded = "&".join(
+            f"{_url_quote(key)}={_url_quote(str(value))}" for key, value in payload.items() if value is not None
+        ).encode("utf-8")
+        req = Request(url, data=encoded, headers=headers)
+        attempts = 3
+        for attempt in range(attempts):
+            try:
+                with _MOSES_LOCK:
+                    if cache_key in _MOSES_POST_CACHE:
+                        res, timestamp = _MOSES_POST_CACHE[cache_key]
+                        if time.time() - timestamp < _MOSES_CACHE_TTL:
+                            return res
+                    with self.opener.open(req, timeout=self.timeout) as response:
+                        res = response.read().decode("utf-8", errors="ignore")
+                        _MOSES_POST_CACHE[cache_key] = (res, time.time())
+                        return res
+            except Exception:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(1.0)
 
     def load_form(self, url: str, form_id: str) -> _MosesFormContext:
         html, final_url = self.get(url)

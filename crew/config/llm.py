@@ -137,18 +137,46 @@ def _positive_timeout(value: str | int | None, *, default: int, setting: str) ->
 
 
 def _retry_after_seconds(error: Exception) -> int | None:
-    """Extract a provider-supplied Retry-After value from an OpenAI client error."""
+    """Extract a provider-supplied Retry-After value from an OpenAI client error, or return a default fallback."""
     response = getattr(error, "response", None)
-    status_code = getattr(error, "status_code", None) or getattr(response, "status_code", None)
-    if status_code != 429:
+    status_code = getattr(error, "status_code", None)
+    if status_code is None and response is not None:
+        status_code = getattr(response, "status_code", None)
+
+    is_rate_limit = False
+    if status_code == 429:
+        is_rate_limit = True
+    else:
+        err_str = str(error).lower()
+        if "429" in err_str or "rate limit" in err_str:
+            is_rate_limit = True
+
+    if not is_rate_limit:
         return None
+
+    # Check for retry-after header
     headers = getattr(response, "headers", None) or {}
     value = headers.get("retry-after") or headers.get("Retry-After")
-    try:
-        seconds = ceil(float(value))
-    except (TypeError, ValueError):
-        return None
-    return seconds if seconds > 0 else None
+    if value is not None:
+        try:
+            seconds = ceil(float(value))
+            if seconds > 0:
+                return seconds
+        except (TypeError, ValueError):
+            pass
+
+    # No valid retry-after header found, but it is a rate limit error.
+    # Fall back to a default cooldown (e.g. 30 seconds, or via env variable).
+    load_dotenv()
+    env_cooldown = os.getenv("STUDY_ASSISTANT_RATE_LIMIT_COOLDOWN")
+    if env_cooldown:
+        try:
+            seconds = int(env_cooldown)
+            if seconds > 0:
+                return seconds
+        except ValueError:
+            pass
+    return 30
 
 
 def _notify_rate_limit_wait(event: dict[str, Any], notifier: Callable[[dict[str, Any]], None] | None = None) -> None:

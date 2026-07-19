@@ -275,3 +275,119 @@ def test_llm_retries_emits_wait_event_on_worker_thread(monkeypatch):
     assert events[0]["retry_at_unix"] == 1_005.0
     assert events[1]["event"] == "llm_rate_limit_retry_started"
 
+
+def test_llm_retries_falls_back_when_headers_missing(monkeypatch):
+    sleeps = []
+    events = []
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+        response = None  # No response / headers
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.calls = 0
+
+        def call(self, messages, **kwargs):
+            del messages, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise FakeRateLimitError("Rate limit exceeded")
+            return "recovered"
+
+    monkeypatch.setattr(llm_config, "LLM", FakeLLM)
+    monkeypatch.setattr(llm_config.time, "sleep", sleeps.append)
+    monkeypatch.setattr(llm_config.time, "time", lambda: 1_000.0)
+
+    llm = llm_config.get_default_llm(
+        model="shared-model",
+        api_key="test-key",
+        base_url="https://gwdg.example.test/v1",
+    )
+
+    with llm_config.report_rate_limit_waits(events.append):
+        assert llm.call("retry this") == "recovered"
+
+    # Default fallback cooldown is 30 seconds
+    assert sleeps == [30]
+    assert len(events) == 2
+    assert events[0]["event"] == "llm_rate_limit_wait"
+    assert events[0]["retry_after_seconds"] == 30
+    assert events[0]["retry_at_unix"] == 1_030.0
+
+
+def test_llm_retries_honors_env_cooldown_override(monkeypatch):
+    sleeps = []
+    events = []
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.calls = 0
+
+        def call(self, messages, **kwargs):
+            del messages, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise FakeRateLimitError()
+            return "recovered"
+
+    monkeypatch.setattr(llm_config, "LLM", FakeLLM)
+    monkeypatch.setattr(llm_config.time, "sleep", sleeps.append)
+    monkeypatch.setattr(llm_config.time, "time", lambda: 1_000.0)
+    monkeypatch.setenv("STUDY_ASSISTANT_RATE_LIMIT_COOLDOWN", "15")
+
+    llm = llm_config.get_default_llm(
+        model="shared-model",
+        api_key="test-key",
+        base_url="https://gwdg.example.test/v1",
+    )
+
+    with llm_config.report_rate_limit_waits(events.append):
+        assert llm.call("retry this") == "recovered"
+
+    assert sleeps == [15]
+    assert events[0]["retry_after_seconds"] == 15
+
+
+def test_llm_retries_detects_rate_limit_from_exception_string(monkeypatch):
+    sleeps = []
+    events = []
+
+    class FakeStringError(Exception):
+        # No status_code attribute at all
+        pass
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.calls = 0
+
+        def call(self, messages, **kwargs):
+            del messages, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise FakeStringError("Error: 429 rate limit exceeded")
+            return "recovered"
+
+    monkeypatch.setattr(llm_config, "LLM", FakeLLM)
+    monkeypatch.setattr(llm_config.time, "sleep", sleeps.append)
+    monkeypatch.setattr(llm_config.time, "time", lambda: 1_000.0)
+
+    llm = llm_config.get_default_llm(
+        model="shared-model",
+        api_key="test-key",
+        base_url="https://gwdg.example.test/v1",
+    )
+
+    with llm_config.report_rate_limit_waits(events.append):
+        assert llm.call("retry this") == "recovered"
+
+    assert sleeps == [30]
+    assert events[0]["retry_after_seconds"] == 30
+
+

@@ -144,7 +144,7 @@ degree_regulations_specialist:
     create proposals, or write to the student's study plan.
   allow_delegation: false
   max_iter: 14
-  max_execution_time: 480
+  max_execution_time: 900
   max_retry_limit: 2
   respect_context_window: true
 
@@ -176,7 +176,7 @@ study_advisor:
     not course proposals.
   allow_delegation: false
   max_iter: 14
-  max_execution_time: 480
+  max_execution_time: 900
   max_retry_limit: 2
   respect_context_window: true
 
@@ -206,7 +206,7 @@ grade_optimization_specialist:
     in prose.
   allow_delegation: false
   max_iter: 12
-  max_execution_time: 360
+  max_execution_time: 900
   max_retry_limit: 2
   respect_context_window: true
 
@@ -233,7 +233,7 @@ module_researcher:
     Orchestrator to rely on the Degree Regulations Specialist for ordering.
   allow_delegation: false
   max_iter: 14
-  max_execution_time: 480
+  max_execution_time: 900
   max_retry_limit: 2
   respect_context_window: true
 
@@ -267,7 +267,7 @@ course_info_specialist:
     Orchestrator can obtain it from the Study Advisor first.
   allow_delegation: false
   max_iter: 16
-  max_execution_time: 480
+  max_execution_time: 900
   max_retry_limit: 2
   respect_context_window: true
 
@@ -319,6 +319,6 @@ course_commitment_specialist:
     CRITICAL SUGGESTION RULE: You must always use the actual, human-readable course/module title (e.g. 'Theoretische Grundlagen der Informatik' instead of 'Mandatory Module 1 out of 3 (40472)' or 'Free Choice Module 1'). Never use raw numbers or placeholders as course titles in proposals.
   allow_delegation: false
   max_iter: 12
-  max_execution_time: 480
+  max_execution_time: 900
   max_retry_limit: 2
   respect_context_window: true

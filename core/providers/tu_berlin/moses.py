@@ -266,6 +266,11 @@ def resolve_isis_coursemanager_url(
         )
         for course_id, course_url, course_title in courses
     ]
+import threading
+
+_MOSES_LOCK = threading.Lock()
+_MOSES_GET_CACHE: dict[str, tuple[str, str]] = {}
+_MOSES_POST_CACHE: dict[tuple[str, tuple[tuple[str, str], ...], bool], str] = {}
 
 
 class _MosesSession:
@@ -277,23 +282,35 @@ class _MosesSession:
         self.isis_coursemanager_cache: dict[str, _IsisCoursemanagerResolution] = {}
 
     def get(self, url: str) -> tuple[str, str]:
-        req = Request(url, headers={"User-Agent": USER_AGENT})
-        with self.opener.open(req, timeout=self.timeout) as response:
-            return response.read().decode("utf-8", errors="ignore"), response.geturl()
+        with _MOSES_LOCK:
+            if url in _MOSES_GET_CACHE:
+                return _MOSES_GET_CACHE[url]
+            req = Request(url, headers={"User-Agent": USER_AGENT})
+            with self.opener.open(req, timeout=self.timeout) as response:
+                res = response.read().decode("utf-8", errors="ignore"), response.geturl()
+                _MOSES_GET_CACHE[url] = res
+                return res
 
     def post(self, url: str, payload: dict[str, object], *, partial: bool = False) -> str:
-        headers = {
-            "User-Agent": USER_AGENT,
-            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        }
-        if partial:
-            headers["Faces-Request"] = "partial/ajax"
-        encoded = "&".join(
-            f"{_url_quote(key)}={_url_quote(str(value))}" for key, value in payload.items() if value is not None
-        ).encode("utf-8")
-        req = Request(url, data=encoded, headers=headers)
-        with self.opener.open(req, timeout=self.timeout) as response:
-            return response.read().decode("utf-8", errors="ignore")
+        items = tuple(sorted((k, str(v)) for k, v in payload.items() if v is not None))
+        cache_key = (url, items, partial)
+        with _MOSES_LOCK:
+            if cache_key in _MOSES_POST_CACHE:
+                return _MOSES_POST_CACHE[cache_key]
+            headers = {
+                "User-Agent": USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            }
+            if partial:
+                headers["Faces-Request"] = "partial/ajax"
+            encoded = "&".join(
+                f"{_url_quote(key)}={_url_quote(str(value))}" for key, value in payload.items() if value is not None
+            ).encode("utf-8")
+            req = Request(url, data=encoded, headers=headers)
+            with self.opener.open(req, timeout=self.timeout) as response:
+                res = response.read().decode("utf-8", errors="ignore")
+                _MOSES_POST_CACHE[cache_key] = res
+                return res
 
     def load_form(self, url: str, form_id: str) -> _MosesFormContext:
         html, final_url = self.get(url)

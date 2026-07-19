@@ -6,6 +6,7 @@ from datetime import datetime
 import html
 import json
 from math import ceil
+import os
 from pathlib import Path
 from queue import Empty, Queue
 import re
@@ -95,6 +96,7 @@ class ChatRuntimeSettings:
     show_agent_chat: bool = False
     observer_model: str | None = None
     observer_enabled: bool = True
+    observer_min_interval_seconds: float = 15.0
 
 
 def _get_active_thread_id(profile_slug: str) -> str:
@@ -384,11 +386,23 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 help=(
                     "Use the lightweight observer model to turn A2A delegation and tool lifecycle events "
                     "into cumulative overall and per-agent progress reports. The first update runs when post-intent "
-                    "agent activity appears; later updates are throttled to 30 seconds and require new evidence. "
+                    "agent activity appears; later updates are throttled to the configured interval and require new evidence. "
                     "Immediate trace-derived summaries remain visible while the background LLM is pending."
                 ),
                 key=f"chat_observer_enabled_{profile_slug}",
             )
+            env_default_interval = float(os.getenv("OBSERVER_MIN_INTERVAL_SECONDS", "15.0"))
+            observer_min_interval_seconds = env_default_interval
+            if observer_enabled:
+                observer_min_interval_seconds = st.slider(
+                    "LLM summary interval (seconds)",
+                    min_value=5.0,
+                    max_value=120.0,
+                    value=env_default_interval,
+                    step=5.0,
+                    help="Minimum seconds to wait between updates to the live progress summary.",
+                    key=f"chat_observer_min_interval_seconds_{profile_slug}",
+                )
             show_agent_chat = st.toggle(
                 "Show internal agent chat",
                 value=False,
@@ -424,6 +438,7 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
         show_agent_chat=show_agent_chat,
         observer_model=observer_model or None,
         observer_enabled=observer_enabled,
+        observer_min_interval_seconds=observer_min_interval_seconds,
     )
 
 
@@ -802,7 +817,7 @@ OBSERVER_INITIAL_EVIDENCE_EVENTS = {
     "llm_started",
     "llm_completed",
 }
-OBSERVER_MIN_INTERVAL_SECONDS = 10.0
+OBSERVER_MIN_INTERVAL_SECONDS = float(os.getenv("OBSERVER_MIN_INTERVAL_SECONDS", "15.0"))
 
 
 def _observer_trigger_signature(events: list[dict[str, Any]]) -> str | None:
@@ -987,7 +1002,7 @@ def _run_and_render_assistant_turn(
                 )
                 last_render = 0.0
                 last_heartbeat = 0.0
-                last_observer_started = -OBSERVER_MIN_INTERVAL_SECONDS
+                last_observer_started = -settings.observer_min_interval_seconds
                 last_observer_signature: str | None = None
                 while not future.done():
                     updated = _drain_trace_queue(event_queue, events)
@@ -1002,7 +1017,7 @@ def _run_and_render_assistant_turn(
                         and observer_future is None
                         and observer_signature is not None
                         and observer_signature != last_observer_signature
-                        and now - last_observer_started >= OBSERVER_MIN_INTERVAL_SECONDS
+                        and now - last_observer_started >= settings.observer_min_interval_seconds
                     ):
                         observer_model = resolve_study_assistant_observer_model(
                             observer_model=settings.observer_model,
@@ -1801,6 +1816,7 @@ def _action_kind_class(kind: str) -> str:
 
 def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
     trace_mode = str(st.session_state.get(f"chat_trace_mode_{profile_slug}") or "Preview")
+    env_default_interval = float(os.getenv("OBSERVER_MIN_INTERVAL_SECONDS", "15.0"))
     return ChatRuntimeSettings(
         specialist_model=str(st.session_state.get(f"chat_specialist_model_{profile_slug}") or "").strip() or None,
         manager_model=str(st.session_state.get(f"chat_manager_model_{profile_slug}") or "").strip() or None,
@@ -1815,6 +1831,7 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
         show_agent_chat=bool(st.session_state.get(f"chat_show_agent_chat_{profile_slug}", False)),
         observer_model=str(st.session_state.get(f"chat_observer_model_{profile_slug}") or "").strip() or None,
         observer_enabled=bool(st.session_state.get(f"chat_observer_enabled_{profile_slug}", True)),
+        observer_min_interval_seconds=float(st.session_state.get(f"chat_observer_min_interval_seconds_{profile_slug}", env_default_interval)),
     )
 
 

@@ -703,7 +703,7 @@ def test_observer_waits_for_post_intent_activity_then_uses_ten_second_throttle()
         }
     ]
 
-    assert chat.OBSERVER_MIN_INTERVAL_SECONDS == 10.0
+    assert chat.OBSERVER_MIN_INTERVAL_SECONDS == 15.0
     assert chat._observer_trigger_signature(events) is None
 
     events.append(

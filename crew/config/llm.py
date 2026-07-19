@@ -151,8 +151,9 @@ def _retry_after_seconds(error: Exception) -> int | None:
     return seconds if seconds > 0 else None
 
 
-def _notify_rate_limit_wait(event: dict[str, Any]) -> None:
-    notifier = _RATE_LIMIT_WAIT_NOTIFIER.get()
+def _notify_rate_limit_wait(event: dict[str, Any], notifier: Callable[[dict[str, Any]], None] | None = None) -> None:
+    if notifier is None:
+        notifier = _RATE_LIMIT_WAIT_NOTIFIER.get()
     if notifier is None:
         return
     try:
@@ -220,6 +221,8 @@ def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
     with _LLM_CALL_LOCKS_GUARD:
         call_lock = _LLM_CALL_LOCKS.setdefault(key, threading.Lock())
 
+    captured_notifier = _RATE_LIMIT_WAIT_NOTIFIER.get()
+
     @wraps(original_call)
     def serialized_call(*args: Any, **kwargs: Any) -> Any:
         with call_lock:
@@ -232,13 +235,16 @@ def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
                     if retry_after is None:
                         raise
                     attempt += 1
+                    from crew.tracing import agent_label_for_role
                     agent = kwargs.get("from_agent")
                     agent_role = getattr(agent, "role", None)
+                    agent_label = agent_label_for_role(agent_role) if agent_role else "Orchestrator"
+                    active_notifier = _RATE_LIMIT_WAIT_NOTIFIER.get() or captured_notifier
                     _notify_rate_limit_wait(
                         {
                             "event": "llm_rate_limit_wait",
                             "agent_role": agent_role,
-                            "agent_label": "Orchestrator",
+                            "agent_label": agent_label,
                             "model": settings.model,
                             "phase": "rate_limit",
                             "status": "waiting",
@@ -248,20 +254,22 @@ def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
                             "activity": (
                                 f"API rate limit reached; waiting {retry_after} seconds before retry {attempt}."
                             ),
-                        }
+                        },
+                        notifier=active_notifier,
                     )
                     time.sleep(retry_after)
                     _notify_rate_limit_wait(
                         {
                             "event": "llm_rate_limit_retry_started",
                             "agent_role": agent_role,
-                            "agent_label": "Orchestrator",
+                            "agent_label": agent_label,
                             "model": settings.model,
                             "phase": "rate_limit",
                             "status": "running",
                             "attempt": attempt,
                             "activity": "API rate-limit wait ended; retrying the LLM request.",
-                        }
+                        },
+                        notifier=active_notifier,
                     )
 
     try:

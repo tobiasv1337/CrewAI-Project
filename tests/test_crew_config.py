@@ -218,3 +218,60 @@ def test_llm_retries_provider_retry_after_and_emits_wait_event(monkeypatch):
     assert events[0]["retry_after_seconds"] == 75
     assert events[0]["retry_at_unix"] == 1_075.0
     assert events[1]["event"] == "llm_rate_limit_retry_started"
+
+
+def test_llm_retries_emits_wait_event_on_worker_thread(monkeypatch):
+    import threading
+
+    sleeps = []
+    events = []
+
+    class FakeRateLimitError(Exception):
+        status_code = 429
+        response = SimpleNamespace(headers={"retry-after": "5"})
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            del kwargs
+            self.calls = 0
+
+        def call(self, messages, **kwargs):
+            del messages, kwargs
+            self.calls += 1
+            if self.calls == 1:
+                raise FakeRateLimitError()
+            return "recovered"
+
+    monkeypatch.setattr(llm_config, "LLM", FakeLLM)
+    monkeypatch.setattr(llm_config.time, "sleep", sleeps.append)
+    monkeypatch.setattr(llm_config.time, "time", lambda: 1_000.0)
+
+    # Instantiate LLM while report_rate_limit_waits context is active
+    with llm_config.report_rate_limit_waits(events.append):
+        llm = llm_config.get_default_llm(
+            model="shared-model",
+            api_key="test-key",
+            base_url="https://gwdg.example.test/v1",
+        )
+
+    # Execute on a worker thread (simulating CrewAI thread dispatch)
+    result = []
+    def worker():
+        try:
+            res = llm.call("retry this")
+            result.append(res)
+        except Exception as e:
+            result.append(e)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert result == ["recovered"]
+    assert sleeps == [5]
+    assert len(events) == 2
+    assert events[0]["event"] == "llm_rate_limit_wait"
+    assert events[0]["retry_after_seconds"] == 5
+    assert events[0]["retry_at_unix"] == 1_005.0
+    assert events[1]["event"] == "llm_rate_limit_retry_started"
+

@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import httpx
+import pytest
+
 import main as cli
 from core import persistence
 from core.models import Module, ModuleState, MosesIsisCandidate, MosesModuleData
@@ -310,6 +313,60 @@ def test_llm_classifier_prompt_includes_grade_optimization_route_and_boundary(mo
     assert "combines multiple sources" in captured["system"]
     assert "Use deep_dive, not recommendation, for open questions" in captured["system"]
     assert "current planned study plan" in captured["system"]
+
+
+@pytest.mark.parametrize("outcome", ["success", "whitespace", "timeout", "rate_limit"])
+def test_classifier_sdk_request_is_bounded_and_reports_fallback(monkeypatch, outcome):
+    """Exercise the real SDK schema parser, including Gemma's whitespace loop."""
+    requests = []
+    events = []
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setenv("GWDG_API_BASE", "https://classifier.example.test/v1")
+    monkeypatch.setenv("STUDY_ASSISTANT_OBSERVER_TIMEOUT_SECONDS", "17")
+    monkeypatch.setenv("STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS", "300")
+
+    def send(client, request, **kwargs):
+        requests.append(request)
+        if outcome == "timeout":
+            raise httpx.ReadTimeout("Diagnostic timeout", request=request)
+        if outcome == "rate_limit":
+            return httpx.Response(429, request=request, json={"error": {"message": "Rate limit reached"}})
+        content = IntentClassification(
+            route="simple_grade_manager", complexity="simple", required_sources=["grade_manager"],
+        ).model_dump_json()
+        if outcome == "whitespace":
+            content = '{"route":"simple_grade_manager"' + "\n  " * 512
+        return httpx.Response(200, request=request, json={
+            "id": "diagnostic", "object": "chat.completion", "created": 0,
+            "model": "gemma-4-31b-it",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
+                         "finish_reason": "length" if outcome == "whitespace" else "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 512, "total_tokens": 522},
+        })
+
+    monkeypatch.setattr(httpx.Client, "send", send)
+    flow = StudyChatFlow(
+        runtime=StudyChatFlowRuntime(observer_model="gemma-4-31b-it"), on_trace_event=events.append,
+    )
+    result = flow._classify_with_llm_or_heuristics(StudyChatFlowState(query="What is my GPA?"))
+
+    assert len(requests) == 1  # Neither SDK nor application retries extend the wait.
+    request = requests[0]
+    payload = json.loads(request.content)
+    assert payload["max_tokens"] == 512
+    assert request.extensions["timeout"]["read"] == 17
+    assert payload["response_format"]["type"] == "json_schema"
+    system = payload["messages"][0]["content"]
+    assert "complete compact JSON object on a single line" in system
+    assert "Follow this JSON schema:" in system
+    if outcome == "success":
+        assert result.route == "simple_grade_manager"
+        assert events == []
+    else:
+        assert result.route == "deep_dive"
+        assert not result.write_intent
+        assert events[-1]["event"] == "intent_classification_fallback"
+        assert events[-1]["status"] == "warning"
 
 
 def test_llm_classifier_routes_current_plan_grade_advice_to_deep_dive(monkeypatch):

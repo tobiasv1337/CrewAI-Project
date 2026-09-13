@@ -181,6 +181,54 @@ def test_llm_calls_to_same_endpoint_and_model_are_serialized(monkeypatch):
     assert second_entered.is_set()
 
 
+def test_waiting_for_busy_model_times_out_without_releasing_its_lock(monkeypatch):
+    lock = threading.Lock()
+    lock.acquire()
+    key = ("openai", "https://busy.example.test/v1", "busy-model")
+    monkeypatch.setitem(llm_config._LLM_CALL_LOCKS, key, lock)
+    llm = SimpleNamespace(call=lambda *args, **kwargs: pytest.fail("Busy model was called"))
+    # A fractional timeout keeps this concurrency regression fast.
+    settings = llm_config.LLMSettings(
+        model=key[2], api_key="test-key", base_url=key[1], temperature=0, timeout=0.01,
+    )
+    llm_config._serialize_endpoint_calls(llm, settings)
+
+    try:
+        with pytest.raises(TimeoutError, match="waiting for another request"):
+            llm.call("classify")
+        assert lock.locked()
+    finally:
+        lock.release()
+
+
+def test_explicit_rate_limit_retry_budget_releases_model_lane(monkeypatch):
+    class RateLimited(Exception):
+        status_code = 429
+        response = SimpleNamespace(headers={"retry-after": "1"})
+
+    calls = []
+    sleeps = []
+
+    def limited_call(*args, **kwargs):
+        calls.append(1)
+        raise RateLimited()
+
+    llm = SimpleNamespace(call=limited_call)
+    settings = llm_config.LLMSettings(
+        model="limited-model", api_key="test-key", base_url="https://gwdg.example.test/v1", temperature=0,
+    )
+    monkeypatch.setattr(llm_config.time, "sleep", sleeps.append)
+    llm_config._serialize_endpoint_calls(llm, settings, max_retries=1)
+
+    with pytest.raises(RateLimited):
+        llm.call("classify")
+
+    assert len(calls) == 2
+    assert sleeps == [1]
+    key = (settings.provider, settings.base_url, settings.model)
+    assert not llm_config._LLM_CALL_LOCKS[key].locked()
+
+
 def test_llm_retries_provider_retry_after_and_emits_wait_event(monkeypatch):
     sleeps = []
     events = []
@@ -389,5 +437,4 @@ def test_llm_retries_detects_rate_limit_from_exception_string(monkeypatch):
 
     assert sleeps == [30]
     assert events[0]["retry_after_seconds"] == 30
-
 

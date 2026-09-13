@@ -27,6 +27,8 @@ from crew.config.llm import (
     get_default_llm,
     resolve_study_assistant_manager_model,
     resolve_study_assistant_observer_model,
+    resolve_study_assistant_observer_timeout,
+    structured_output_instructions,
 )
 from crew.runtime import ensure_crewai_storage_writable
 from crew.semester_context import semester_reference_context
@@ -608,6 +610,9 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                     ),
                     temperature=0.0,
                     top_p=self._runtime.top_p,
+                    timeout=resolve_study_assistant_observer_timeout(),
+                    max_tokens=1024,
+                    max_retries=0,
                 )
                 result = llm.call(
                     messages=[
@@ -621,6 +626,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                                 "Infer whether the user wants to apply accepted actions, apply only some and revise others, revise without applying, ask a question, discard the recommendation state, or needs clarification. "
                                 "If the user changes to an unrelated topic, set discard_active_proposals=true so the old course cards disappear. "
                                 "Do not invent action IDs; choose only from the provided active actions."
+                                + structured_output_instructions(UserDecisionInterpretation)
                             ),
                         },
                         {
@@ -637,10 +643,26 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 )
                 if isinstance(result, UserDecisionInterpretation):
                     return _sanitize_decision_interpretation(result, state)
+                raise ValueError("Decision interpreter returned an invalid structured response.")
             except Exception as exc:
+                self._emit_structured_fallback("proposal_decision", exc)
                 if self._runtime.verbose:
                     print(f"WARNING: LLM decision interpreter failed ({type(exc).__name__}). Using fallback interpreter.")
         return _fallback_decision_interpretation(state)
+
+    def _emit_structured_fallback(self, stage: str, error: Exception) -> None:
+        if self._on_trace_event:
+            self._on_trace_event({
+                "event": f"{stage}_fallback",
+                "agent_label": "Orchestrator",
+                "phase": "routing",
+                "status": "warning",
+                "error_type": type(error).__name__,
+                "activity": (
+                    f"{'Intent classification' if stage == 'intent_classification' else 'Proposal decision interpretation'} "
+                    f"failed ({type(error).__name__}); using the safe fallback."
+                ),
+            })
 
     def _action_decisions_from_interpretation(self, decision: UserDecisionInterpretation) -> list[ActionDecision]:
         thread = self.state.thread
@@ -706,6 +728,9 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                 ),
                 temperature=0.0,
                 top_p=self._runtime.top_p,
+                timeout=resolve_study_assistant_observer_timeout(),
+                max_tokens=512,
+                max_retries=0,
             )
             result = llm.call(
                 messages=[
@@ -729,6 +754,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                             "Use deep_dive, not recommendation, for open questions that ask how the current planned study plan looks, "
                             "how to optimize grades in already planned/in-progress modules, or whether the current plan can reach a target grade. "
                             "Use recommendation only when the user explicitly wants specific new courses, alternatives, replacements, enrollment, or saved plan changes."
+                            + structured_output_instructions(IntentClassification)
                         ),
                     },
                     {
@@ -744,7 +770,9 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             )
             if isinstance(result, IntentClassification):
                 return result
+            raise ValueError("Classifier returned an invalid structured response.")
         except Exception as e:
+            self._emit_structured_fallback("intent_classification", e)
             if self._runtime.verbose:
                 print(f"⚠️  WARNING: LLM classifier failed ({type(e).__name__}). Using fallback deep_dive route.")
         

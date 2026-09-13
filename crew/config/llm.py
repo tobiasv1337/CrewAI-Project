@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+import json
 import os
 import threading
 import time
@@ -12,6 +13,7 @@ from typing import Any, Callable, Iterator
 
 from crewai import LLM
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 
 DEFAULT_GWDG_API_BASE = "https://chat-ai.hpc.gwdg.de/v1"
@@ -40,6 +42,20 @@ _RATE_LIMIT_WAIT_NOTIFIER: ContextVar[Callable[[dict[str, Any]], None] | None] =
 
 class LLMConfigurationError(RuntimeError):
     """Raised when the study assistant cannot build an LLM configuration."""
+
+
+def structured_output_instructions(response_model: type[BaseModel]) -> str:
+    """Expose the schema to the model as well as the provider's JSON decoder.
+
+    Gemma can otherwise emit a field followed by repeating whitespace under
+    strict decoding. Keep the existing provider schema and Pydantic validation.
+    """
+    schema = json.dumps(response_model.model_json_schema(), separators=(",", ":"))
+    return (
+        "\n\nReturn one complete compact JSON object on a single line. "
+        "Do not use Markdown, indentation, blank lines, or trailing whitespace. "
+        f"Follow this JSON schema: {schema}"
+    )
 
 
 @contextmanager
@@ -232,7 +248,9 @@ def resolve_llm_settings(
     )
 
 
-def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
+def _serialize_endpoint_calls(
+    llm: Any, settings: LLMSettings, *, max_retries: int | None = None,
+) -> Any:
     """Serialize synchronous calls sharing one deployed upstream model.
 
     The hierarchical manager can launch multiple specialist calls at once.
@@ -253,14 +271,18 @@ def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
 
     @wraps(original_call)
     def serialized_call(*args: Any, **kwargs: Any) -> Any:
-        with call_lock:
+        if not call_lock.acquire(timeout=settings.timeout):
+            raise TimeoutError(
+                f"Timed out waiting for another request to model {settings.model}."
+            )
+        try:
             attempt = 0
             while True:
                 try:
                     return original_call(*args, **kwargs)
                 except Exception as error:
                     retry_after = _retry_after_seconds(error)
-                    if retry_after is None:
+                    if retry_after is None or (max_retries is not None and attempt >= max_retries):
                         raise
                     attempt += 1
                     from crew.tracing import agent_label_for_role
@@ -299,6 +321,8 @@ def _serialize_endpoint_calls(llm: Any, settings: LLMSettings) -> Any:
                         },
                         notifier=active_notifier,
                     )
+        finally:
+            call_lock.release()
 
     try:
         setattr(llm, "call", serialized_call)
@@ -318,8 +342,10 @@ def get_default_llm(
     base_url: str | None = None,
     provider: str | None = None,
     timeout: int | None = None,
+    max_tokens: int | None = None,
+    max_retries: int | None = None,
 ) -> LLM:
-    """Build a CrewAI LLM for GWDG's OpenAI-compatible endpoint."""
+    """Build a GWDG LLM; explicit retry limits cover SDK and rate-limit retries."""
     settings = resolve_llm_settings(
         model=model,
         temperature=temperature,
@@ -339,4 +365,8 @@ def get_default_llm(
     }
     if settings.top_p is not None:
         kwargs["top_p"] = settings.top_p
-    return _serialize_endpoint_calls(LLM(**kwargs), settings)
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    if max_retries is not None:
+        kwargs["max_retries"] = max_retries
+    return _serialize_endpoint_calls(LLM(**kwargs), settings, max_retries=max_retries)

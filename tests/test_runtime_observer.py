@@ -141,6 +141,9 @@ def test_generate_runtime_observer_report_uses_lightweight_model_and_schema(monk
     assert result.model == "meta-llama-3.1-8b-instruct"
     assert result.report.headline == "Regulation table extracted"
     assert captured["llm_kwargs"]["timeout"] == 120
+    assert captured["llm_kwargs"]["max_tokens"] == 2048
+    assert captured["llm_kwargs"]["max_retries"] == 0
+    assert "complete compact JSON object on a single line" in captured["messages"][0]["content"]
     assert captured["response_model"] is runtime_observer.RuntimeObserverReport
     assert "generic filler" in captured["messages"][0]["content"]
     assert "raw task identifiers" in captured["messages"][0]["content"]

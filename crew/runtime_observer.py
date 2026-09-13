@@ -11,6 +11,7 @@ from crew.config.llm import (
     get_default_llm,
     resolve_study_assistant_observer_model,
     resolve_study_assistant_observer_timeout,
+    structured_output_instructions,
 )
 from crew.tracing import suppress_trace_events, suppress_trace_events_from
 
@@ -955,6 +956,8 @@ def generate_runtime_observer_report(
         model=model,
         temperature=0.1,
         timeout=resolve_study_assistant_observer_timeout(),
+        max_tokens=2048,
+        max_retries=0,
     )
     # Event-bus handlers run on CrewAI worker threads. Mark this distinct LLM
     # instance so those handlers cannot turn observer calls into new observed
@@ -997,6 +1000,7 @@ def generate_runtime_observer_report(
                     "Create exactly one update for every agent in agent_states. Each summary must be one concise domain-level "
                     "sentence about what that agent is investigating or has established. Omit all other agents. "
                     "Keep evidence compact and technical because it is retained only for diagnostics, not displayed to users."
+                    + structured_output_instructions(RuntimeObserverReport)
                     ),
                 },
                 {

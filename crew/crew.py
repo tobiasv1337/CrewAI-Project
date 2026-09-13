@@ -40,6 +40,7 @@ class StudyAssistantCrew:
             model=self.model,
             temperature=self.temperature,
             top_p=self.top_p,
+            thinking=False,
         )
         return Agent(
             config=self.agents_config["module_researcher"],  # type: ignore[index]

@@ -56,7 +56,7 @@ def run_course_commitment_execution_agent(
                         "or merely proposed actions, and report unclear ISIS resolution instead of guessing."
                     ),
                     tools=list(COURSE_COMMITMENT_EXECUTION_TOOLS),
-                    llm=get_default_llm(model=model, temperature=temperature, top_p=top_p),
+                    llm=get_default_llm(model=model, temperature=temperature, top_p=top_p, thinking=False),
                     verbose=verbose,
                     cache=cache,
                     max_iter=8,

@@ -96,6 +96,8 @@ def test_runtime_observer_snapshot_carries_prior_report_agent_history_and_study_
 
 
 def test_generate_runtime_observer_report_uses_lightweight_model_and_schema(monkeypatch):
+    import crew.config.llm as llm_config
+
     captured = {}
 
     class FakeLlm:
@@ -125,8 +127,8 @@ def test_generate_runtime_observer_report_uses_lightweight_model_and_schema(monk
         "resolve_study_assistant_observer_model",
         lambda **kwargs: "meta-llama-3.1-8b-instruct",
     )
-    monkeypatch.setattr(runtime_observer, "resolve_study_assistant_observer_timeout", lambda: 120)
-    monkeypatch.setattr(runtime_observer, "get_default_llm", fake_get_default_llm)
+    monkeypatch.setattr(llm_config, "resolve_study_assistant_observer_timeout", lambda: 120)
+    monkeypatch.setattr(llm_config, "get_default_llm", fake_get_default_llm)
 
     result = runtime_observer.generate_runtime_observer_report(
         [

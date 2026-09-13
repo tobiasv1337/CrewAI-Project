@@ -24,10 +24,10 @@ from crew.chat_models import (
 )
 from crew.chat_persistence import append_turn, load_chat_thread, reset_chat_thread, save_chat_thread
 from crew.config.llm import (
-    get_default_llm,
+    get_classifier_llm,
+    get_observer_llm,
     resolve_study_assistant_manager_model,
     resolve_study_assistant_observer_model,
-    resolve_study_assistant_observer_timeout,
     structured_output_instructions,
 )
 from crew.runtime import ensure_crewai_storage_writable
@@ -602,7 +602,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
     def _interpret_decision_with_llm_or_fallback(self, state: StudyChatFlowState) -> UserDecisionInterpretation:
         if self._runtime.use_llm_decision_interpreter and os.getenv("GWDG_API_KEY"):
             try:
-                llm = get_default_llm(
+                llm = get_observer_llm(
                     model=resolve_study_assistant_observer_model(
                         observer_model=self._runtime.observer_model,
                         manager_model=self._runtime.manager_model,
@@ -610,9 +610,7 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
                     ),
                     temperature=0.0,
                     top_p=self._runtime.top_p,
-                    timeout=resolve_study_assistant_observer_timeout(),
                     max_tokens=1024,
-                    max_retries=0,
                 )
                 result = llm.call(
                     messages=[
@@ -720,17 +718,12 @@ class StudyChatFlow(Flow[StudyChatFlowState]):
             )
         
         try:
-            llm = get_default_llm(
-                model=resolve_study_assistant_observer_model(
-                    observer_model=self._runtime.observer_model,
+            llm = get_classifier_llm(
+                model=resolve_study_assistant_manager_model(
                     manager_model=self._runtime.manager_model,
                     specialist_model=self._runtime.model,
                 ),
-                temperature=0.0,
                 top_p=self._runtime.top_p,
-                timeout=resolve_study_assistant_observer_timeout(),
-                max_tokens=512,
-                max_retries=0,
             )
             result = llm.call(
                 messages=[

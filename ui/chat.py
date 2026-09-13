@@ -322,7 +322,8 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 value="",
                 placeholder=f".env default: {configured_model}",
                 help=(
-                    "Optional. Leave empty to use STUDY_ASSISTANT_MODEL from .env for all specialist agents."
+                    "Optional. Leave empty to use STUDY_ASSISTANT_MODEL from .env for all specialist agents. "
+                    "Thinking is disabled for their tool-call loops."
                 ),
                 key=f"chat_specialist_model_{profile_slug}",
             ).strip()
@@ -332,7 +333,8 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 placeholder=f".env default: {configured_manager_model}",
                 help=(
                     "Optional. Leave empty to use STUDY_ASSISTANT_MANAGER_MODEL from .env, "
-                    "then the specialist model."
+                    "then the specialist model. Also used for intent classification. "
+                    "Thinking is enabled when supported."
                 ),
                 key=f"chat_manager_model_{profile_slug}",
             ).strip()
@@ -341,8 +343,8 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 value="",
                 placeholder=f".env default: {configured_observer_model}",
                 help=(
-                    "Optional lightweight model for intent classification, proposal-decision interpretation, "
-                    "and grounded live trace narration. It observes lifecycle evidence but never controls execution."
+                    "Optional lightweight model for proposal-decision interpretation and grounded live trace narration. "
+                    "Thinking is disabled for these calls. Intent classification uses the manager model."
                 ),
                 key=f"chat_observer_model_{profile_slug}",
             ).strip()

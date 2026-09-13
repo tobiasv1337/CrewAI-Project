@@ -40,6 +40,7 @@ class DegreeRegulationsCrew:
             model=self.model,
             temperature=self.temperature,
             top_p=self.top_p,
+            thinking=False,
         )
         return Agent(
             config=self.agents_config["degree_regulations_specialist"],  # type: ignore[index]

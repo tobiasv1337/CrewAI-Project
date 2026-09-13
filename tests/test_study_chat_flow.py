@@ -291,7 +291,7 @@ def test_llm_classifier_prompt_includes_grade_optimization_route_and_boundary(mo
             )
 
     monkeypatch.setenv("GWDG_API_KEY", "test-key")
-    monkeypatch.setattr(flow_module, "get_default_llm", lambda **kwargs: FakeLlm())
+    monkeypatch.setattr(flow_module, "get_classifier_llm", lambda **kwargs: FakeLlm())
 
     flow = StudyChatFlow(
         runtime=StudyChatFlowRuntime(
@@ -316,13 +316,15 @@ def test_llm_classifier_prompt_includes_grade_optimization_route_and_boundary(mo
 
 
 @pytest.mark.parametrize("outcome", ["success", "whitespace", "timeout", "rate_limit"])
-def test_classifier_sdk_request_is_bounded_and_reports_fallback(monkeypatch, outcome):
-    """Exercise the real SDK schema parser, including Gemma's whitespace loop."""
+@pytest.mark.parametrize("model", ["gemma-4-31b-it", "qwen3.8-27b"])
+def test_classifier_sdk_request_is_bounded_and_reports_fallback(monkeypatch, outcome, model):
+    """Exercise the SDK schema parser with both whitespace and thinking models."""
     requests = []
     events = []
     monkeypatch.setenv("GWDG_API_KEY", "test-key")
     monkeypatch.setenv("GWDG_API_BASE", "https://classifier.example.test/v1")
-    monkeypatch.setenv("STUDY_ASSISTANT_OBSERVER_TIMEOUT_SECONDS", "17")
+    monkeypatch.setenv("STUDY_ASSISTANT_CLASSIFIER_TIMEOUT_SECONDS", "17")
+    monkeypatch.setenv("STUDY_ASSISTANT_CLASSIFIER_MAX_TOKENS", "4096")
     monkeypatch.setenv("STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS", "300")
 
     def send(client, request, **kwargs):
@@ -335,25 +337,28 @@ def test_classifier_sdk_request_is_bounded_and_reports_fallback(monkeypatch, out
             route="simple_grade_manager", complexity="simple", required_sources=["grade_manager"],
         ).model_dump_json()
         if outcome == "whitespace":
-            content = '{"route":"simple_grade_manager"' + "\n  " * 512
+            content = '{"route":"simple_grade_manager"' + "\n  " * 4096
         return httpx.Response(200, request=request, json={
             "id": "diagnostic", "object": "chat.completion", "created": 0,
-            "model": "gemma-4-31b-it",
+            "model": model,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": content},
                          "finish_reason": "length" if outcome == "whitespace" else "stop"}],
-            "usage": {"prompt_tokens": 10, "completion_tokens": 512, "total_tokens": 522},
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4096, "total_tokens": 4106},
         })
 
     monkeypatch.setattr(httpx.Client, "send", send)
     flow = StudyChatFlow(
-        runtime=StudyChatFlowRuntime(observer_model="gemma-4-31b-it"), on_trace_event=events.append,
+        runtime=StudyChatFlowRuntime(manager_model=model, observer_model="separate-observer"),
+        on_trace_event=events.append,
     )
     result = flow._classify_with_llm_or_heuristics(StudyChatFlowState(query="What is my GPA?"))
 
     assert len(requests) == 1  # Neither SDK nor application retries extend the wait.
     request = requests[0]
     payload = json.loads(request.content)
-    assert payload["max_tokens"] == 512
+    assert payload["model"] == model
+    assert payload["max_tokens"] == 4096
+    assert payload["chat_template_kwargs"] == {"enable_thinking": True}
     assert request.extensions["timeout"]["read"] == 17
     assert payload["response_format"]["type"] == "json_schema"
     system = payload["messages"][0]["content"]
@@ -386,7 +391,7 @@ def test_llm_classifier_routes_current_plan_grade_advice_to_deep_dive(monkeypatc
             )
 
     monkeypatch.setenv("GWDG_API_KEY", "test-key")
-    monkeypatch.setattr(flow_module, "get_default_llm", lambda **kwargs: FakeLlm())
+    monkeypatch.setattr(flow_module, "get_classifier_llm", lambda **kwargs: FakeLlm())
 
     flow = StudyChatFlow(
         runtime=StudyChatFlowRuntime(

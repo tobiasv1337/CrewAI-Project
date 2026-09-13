@@ -25,6 +25,8 @@ DEFAULT_TEMPERATURE = 0.2
 # through STUDY_ASSISTANT_LLM_TIMEOUT_SECONDS.
 DEFAULT_TIMEOUT_SECONDS = 120
 DEFAULT_OBSERVER_TIMEOUT_SECONDS = 120
+DEFAULT_CLASSIFIER_MAX_TOKENS = 4096
+DEFAULT_THINKING_MAX_TOKENS = 16384
 
 # GWDG's OpenAI-compatible endpoint can leave one of two simultaneous
 # tool-calling requests waiting without a response.  CrewAI delegates sibling
@@ -118,7 +120,7 @@ def resolve_study_assistant_observer_model(
     manager_model: str | None = None,
     specialist_model: str | None = None,
 ) -> str:
-    """Resolve the dedicated lightweight routing and runtime-observer model.
+    """Resolve the lightweight proposal-decision and runtime-observer model.
 
     Manager and specialist arguments remain accepted for runtime-config compatibility;
     the observer intentionally has an independent, inexpensive default.
@@ -344,6 +346,8 @@ def get_default_llm(
     timeout: int | None = None,
     max_tokens: int | None = None,
     max_retries: int | None = None,
+    extra_body: dict[str, Any] | None = None,
+    thinking: bool | None = None,
 ) -> LLM:
     """Build a GWDG LLM; explicit retry limits cover SDK and rate-limit retries."""
     settings = resolve_llm_settings(
@@ -365,8 +369,88 @@ def get_default_llm(
     }
     if settings.top_p is not None:
         kwargs["top_p"] = settings.top_p
+    if thinking is True and max_tokens is None:
+        max_tokens = _positive_timeout(
+            os.getenv("STUDY_ASSISTANT_THINKING_MAX_TOKENS"),
+            default=DEFAULT_THINKING_MAX_TOKENS,
+            setting="STUDY_ASSISTANT_THINKING_MAX_TOKENS",
+        )
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
     if max_retries is not None:
         kwargs["max_retries"] = max_retries
+    if thinking is not None:
+        extra_body = {**(extra_body or {}), **_thinking_request_body(settings.model, thinking)}
+    if extra_body:
+        kwargs["extra_body"] = extra_body
     return _serialize_endpoint_calls(LLM(**kwargs), settings, max_retries=max_retries)
+
+
+def get_classifier_llm(*, model: str | None = None, top_p: float | None = None) -> LLM:
+    """Use the manager model with room for reasoning before classification JSON."""
+    load_dotenv()
+    return get_default_llm(
+        model=resolve_study_assistant_manager_model(manager_model=model),
+        temperature=0.0,
+        top_p=top_p,
+        timeout=_positive_timeout(
+            os.getenv("STUDY_ASSISTANT_CLASSIFIER_TIMEOUT_SECONDS"),
+            default=DEFAULT_TIMEOUT_SECONDS,
+            setting="STUDY_ASSISTANT_CLASSIFIER_TIMEOUT_SECONDS",
+        ),
+        max_tokens=_positive_timeout(
+            os.getenv("STUDY_ASSISTANT_CLASSIFIER_MAX_TOKENS"),
+            default=DEFAULT_CLASSIFIER_MAX_TOKENS,
+            setting="STUDY_ASSISTANT_CLASSIFIER_MAX_TOKENS",
+        ),
+        max_retries=0,
+        thinking=True,
+    )
+
+
+def get_observer_llm(
+    *,
+    model: str | None = None,
+    temperature: float = 0.0,
+    top_p: float | None = None,
+    max_tokens: int = 1024,
+) -> LLM:
+    """Build a bounded non-thinking LLM for proposal decisions and status JSON.
+
+    Thinking is always disabled for these short calls: reasoning shares their
+    completion-token budget with the JSON. GWDG's model backends use different
+    switches. Classification has a separate reasoning-enabled configuration.
+    """
+    resolved_model = resolve_study_assistant_observer_model(observer_model=model)
+    return get_default_llm(
+        model=resolved_model,
+        temperature=temperature,
+        top_p=top_p,
+        timeout=resolve_study_assistant_observer_timeout(),
+        max_tokens=max_tokens,
+        max_retries=0,
+        thinking=False,
+    )
+
+
+def _thinking_request_body(model: str, enabled: bool) -> dict[str, Any]:
+    """Set thinking with the configured GWDG model backend's API controls."""
+    name = normalize_openai_model_name(model).casefold()
+    if "gpt-oss" in name or name.startswith("deepseek-r1"):
+        if enabled:
+            return {}  # These models already reason and cannot switch it off.
+        raise LLMConfigurationError(
+            f"Model {model} has no supported non-thinking mode. "
+            "Choose an instruct model or a model that supports disabling thinking."
+        )
+    # Mistral tokenizers reject chat_template_kwargs entirely. Send this via
+    # extra_body because CrewAI 1.15.4 otherwise omits reasoning_effort for
+    # non-OpenAI model IDs.
+    if name.startswith(("mistral", "devstral")):
+        return {"reasoning_effort": "high" if enabled else "none"}
+    body: dict[str, Any] = {"chat_template_kwargs": {"enable_thinking": enabled}}
+    if name.startswith("deepseek"):
+        # Cover the API toggle and DeepSeek's native tokenizer parameter.
+        body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+        body["chat_template_kwargs"]["thinking"] = enabled
+    return body

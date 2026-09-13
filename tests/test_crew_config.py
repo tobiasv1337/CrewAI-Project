@@ -181,6 +181,75 @@ def test_llm_calls_to_same_endpoint_and_model_are_serialized(monkeypatch):
     assert second_entered.is_set()
 
 
+@pytest.mark.parametrize(("model", "body"), [
+    ("openai/qwen3.8-27b", {"chat_template_kwargs": {"enable_thinking": False}}),
+    ("qwen3.5-122b-a10b", {"chat_template_kwargs": {"enable_thinking": False}}),
+    ("gemma-4-31b-it", {"chat_template_kwargs": {"enable_thinking": False}}),
+    ("qwen3-30b-a3b-instruct-2507", {"chat_template_kwargs": {"enable_thinking": False}}),
+    ("glm-4.7", {"chat_template_kwargs": {"enable_thinking": False}}),
+    ("deepseek-v4-flash", {"chat_template_kwargs": {"enable_thinking": False, "thinking": False},
+                           "thinking": {"type": "disabled"}}),
+    ("mistral-medium-3.5-128b", {"reasoning_effort": "none"}),
+    ("devstral-2-123b-instruct-2512", {"reasoning_effort": "none"}),
+])
+def test_observer_and_specialists_disable_thinking_with_backend_controls(monkeypatch, model, body):
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setenv("GWDG_API_BASE", "https://observer.example.test/v1")
+    monkeypatch.setenv("STUDY_ASSISTANT_OBSERVER_TIMEOUT_SECONDS", "23")
+    # Real CrewAI/OpenAI clients, without sending a request.
+    main = llm_config.get_default_llm(model=model)
+    observer = llm_config.get_observer_llm(model=model, max_tokens=1024)
+    specialist = llm_config.get_default_llm(model=model, thinking=False)
+
+    assert "extra_body" not in main.additional_params
+    assert main._get_sync_client().max_retries == 2
+    assert observer._get_sync_client().max_retries == 0
+    assert observer.timeout == 23
+    assert observer.max_tokens == 1024
+    assert observer.additional_params["extra_body"] == body
+    assert specialist.additional_params["extra_body"] == body
+
+
+@pytest.mark.parametrize("model", ["openai-gpt-oss-120b", "deepseek-r1-distill-llama-70b"])
+def test_observer_rejects_reasoning_only_models_before_creating_client(monkeypatch, model):
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setattr(llm_config, "LLM", lambda **kwargs: pytest.fail("Client created"))
+    with pytest.raises(llm_config.LLMConfigurationError, match="no supported non-thinking mode"):
+        llm_config.get_observer_llm(model=model)
+
+
+def test_classifier_and_manager_thinking_budgets_are_independent(monkeypatch):
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setenv("GWDG_API_BASE", "https://thinking.example.test/v1")
+    monkeypatch.setenv("STUDY_ASSISTANT_MANAGER_MODEL", "qwen3.8-27b")
+    monkeypatch.setenv("STUDY_ASSISTANT_OBSERVER_MODEL", "qwen3-30b-a3b-instruct-2507")
+    monkeypatch.setenv("STUDY_ASSISTANT_CLASSIFIER_MAX_TOKENS", "8192")
+    monkeypatch.setenv("STUDY_ASSISTANT_THINKING_MAX_TOKENS", "32768")
+
+    classifier = llm_config.get_classifier_llm()
+    manager = llm_config.get_default_llm(model="qwen3.8-27b", thinking=True)
+    observer = llm_config.get_observer_llm()
+
+    assert classifier.model == manager.model == "qwen3.8-27b"
+    assert classifier.max_tokens == 8192
+    assert manager.max_tokens == 32768
+    assert observer.max_tokens == 1024
+    assert classifier.additional_params["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+    assert manager.additional_params["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+    assert observer.additional_params["extra_body"]["chat_template_kwargs"]["enable_thinking"] is False
+
+
+@pytest.mark.parametrize("setting", ["STUDY_ASSISTANT_CLASSIFIER_MAX_TOKENS", "STUDY_ASSISTANT_THINKING_MAX_TOKENS"])
+def test_thinking_token_budgets_must_be_positive(monkeypatch, setting):
+    monkeypatch.setenv("GWDG_API_KEY", "test-key")
+    monkeypatch.setenv(setting, "0")
+    with pytest.raises(llm_config.LLMConfigurationError, match="positive integer"):
+        if setting == "STUDY_ASSISTANT_CLASSIFIER_MAX_TOKENS":
+            llm_config.get_classifier_llm(model="qwen3.8-27b")
+        else:
+            llm_config.get_default_llm(model="qwen3.8-27b", thinking=True)
+
+
 def test_waiting_for_busy_model_times_out_without_releasing_its_lock(monkeypatch):
     lock = threading.Lock()
     lock.acquire()
@@ -437,4 +506,3 @@ def test_llm_retries_detects_rate_limit_from_exception_string(monkeypatch):
 
     assert sleeps == [30]
     assert events[0]["retry_after_seconds"] == 30
-

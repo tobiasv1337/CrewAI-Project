@@ -40,6 +40,7 @@ class StudyAdvisorCrew:
             model=self.model,
             temperature=self.temperature,
             top_p=self.top_p,
+            thinking=False,
         )
         return Agent(
             config=self.agents_config["study_advisor"],  # type: ignore[index]

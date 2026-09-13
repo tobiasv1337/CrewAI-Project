@@ -57,6 +57,7 @@ class MultiAgentStudyAssistantCrew:
             model=self.manager_model if manager else self.model,
             temperature=self.temperature,
             top_p=self.top_p,
+            thinking=manager,
         )
 
     def _orchestrator(self) -> Agent:
@@ -166,6 +167,7 @@ class MultiAgentStudyAssistantCrew:
                     model=self.planning_llm_model,
                     temperature=self.temperature,
                     top_p=self.top_p,
+                    thinking=True,
                 )
                 if self.planning_enabled
                 else None

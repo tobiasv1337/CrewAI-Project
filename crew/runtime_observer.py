@@ -8,9 +8,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from crew.config.llm import (
-    get_default_llm,
+    get_observer_llm,
     resolve_study_assistant_observer_model,
-    resolve_study_assistant_observer_timeout,
     structured_output_instructions,
 )
 from crew.tracing import suppress_trace_events, suppress_trace_events_from
@@ -952,12 +951,10 @@ def generate_runtime_observer_report(
         manager_model=manager_model,
         specialist_model=specialist_model,
     )
-    llm = get_default_llm(
+    llm = get_observer_llm(
         model=model,
         temperature=0.1,
-        timeout=resolve_study_assistant_observer_timeout(),
         max_tokens=2048,
-        max_retries=0,
     )
     # Event-bus handlers run on CrewAI worker threads. Mark this distinct LLM
     # instance so those handlers cannot turn observer calls into new observed

@@ -25,6 +25,7 @@ from core.registry import create_program, module_counts_for_program
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def _cached_search_results(query: str, max_results: int) -> list[dict]:
+    """Cache parsed results only; MOSES form state belongs to its HTTP session."""
     return [item.model_dump(mode="json") for item in search_courses(query, max_results=max_results)]
 
 

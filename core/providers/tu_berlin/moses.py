@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import html as html_lib
 import re
+import threading
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -66,6 +68,7 @@ _CATALOG_LABEL_PREFIXES = (
     "Katalog",
 )
 _FACES_NAMESPACES = ("javax.faces", "jakarta.faces")
+_MOSES_LOCK = threading.Lock()
 
 
 @dataclass
@@ -266,14 +269,6 @@ def resolve_isis_coursemanager_url(
         )
         for course_id, course_url, course_title in courses
     ]
-import threading
-import time
-
-_MOSES_LOCK = threading.Lock()
-# Cache format: key -> (value, cached_at_timestamp)
-_MOSES_GET_CACHE: dict[str, tuple[tuple[str, str], float]] = {}
-_MOSES_POST_CACHE: dict[tuple[str, tuple[tuple[str, str], ...], bool], tuple[str, float]] = {}
-_MOSES_CACHE_TTL = 7 * 24 * 60 * 60  # 7 days in seconds
 
 
 class _MosesSession:
@@ -285,39 +280,21 @@ class _MosesSession:
         self.isis_coursemanager_cache: dict[str, _IsisCoursemanagerResolution] = {}
 
     def get(self, url: str) -> tuple[str, str]:
-        with _MOSES_LOCK:
-            if url in _MOSES_GET_CACHE:
-                res, timestamp = _MOSES_GET_CACHE[url]
-                if time.time() - timestamp < _MOSES_CACHE_TTL:
-                    return res
-
+        # JSF pages carry session-bound state. Cache parsed data at the caller,
+        # never raw forms or responses that must update this session's cookies.
         req = Request(url, headers={"User-Agent": USER_AGENT})
         attempts = 3
         for attempt in range(attempts):
             try:
                 with _MOSES_LOCK:
-                    if url in _MOSES_GET_CACHE:
-                        res, timestamp = _MOSES_GET_CACHE[url]
-                        if time.time() - timestamp < _MOSES_CACHE_TTL:
-                            return res
                     with self.opener.open(req, timeout=self.timeout) as response:
-                        res = response.read().decode("utf-8", errors="ignore"), response.geturl()
-                        _MOSES_GET_CACHE[url] = (res, time.time())
-                        return res
+                        return response.read().decode("utf-8", errors="ignore"), response.geturl()
             except Exception:
                 if attempt == attempts - 1:
                     raise
                 time.sleep(1.0)
 
     def post(self, url: str, payload: dict[str, object], *, partial: bool = False) -> str:
-        items = tuple(sorted((k, str(v)) for k, v in payload.items() if v is not None))
-        cache_key = (url, items, partial)
-        with _MOSES_LOCK:
-            if cache_key in _MOSES_POST_CACHE:
-                res, timestamp = _MOSES_POST_CACHE[cache_key]
-                if time.time() - timestamp < _MOSES_CACHE_TTL:
-                    return res
-
         headers = {
             "User-Agent": USER_AGENT,
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
@@ -332,14 +309,8 @@ class _MosesSession:
         for attempt in range(attempts):
             try:
                 with _MOSES_LOCK:
-                    if cache_key in _MOSES_POST_CACHE:
-                        res, timestamp = _MOSES_POST_CACHE[cache_key]
-                        if time.time() - timestamp < _MOSES_CACHE_TTL:
-                            return res
                     with self.opener.open(req, timeout=self.timeout) as response:
-                        res = response.read().decode("utf-8", errors="ignore")
-                        _MOSES_POST_CACHE[cache_key] = (res, time.time())
-                        return res
+                        return response.read().decode("utf-8", errors="ignore")
             except Exception:
                 if attempt == attempts - 1:
                     raise
@@ -390,7 +361,9 @@ def _search_courses(
     payload.update(control_values)
     payload[search.query_input_name] = query
     partial = session.post(search.form.action_url, payload, partial=True)
-    search_html = _extract_partial_update(partial, search.render_id) or search.form.html
+    search_html = _extract_partial_update(partial, search.render_id)
+    if search_html is None:
+        raise ValueError("MOSES did not return search results. The session may have expired; please try again.")
     results = _parse_search_results(search_html)
     if filters:
         results = [result for result in results if _search_result_matches_filters(result, filters)]
@@ -1506,7 +1479,9 @@ def _search_degree_programs(
             payload.update(_select_form_option_by_label(form_tag, "Anbieter", provider))
     payload[search.query_input_name] = query
     partial = session.post(search.form.action_url, payload, partial=True)
-    search_html = _extract_partial_update(partial, search.render_id) or search.form.html
+    search_html = _extract_partial_update(partial, search.render_id)
+    if search_html is None:
+        raise ValueError("MOSES did not return search results. The session may have expired; please try again.")
     return _parse_degree_program_search_results(search_html, final_url)[: max(1, int(max_results or 10))]
 
 

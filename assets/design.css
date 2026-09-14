@@ -324,8 +324,6 @@ html[data-theme] .st-key-nm_card_details_edit_form .sm-edit-section {padding-top
   html[data-theme] .st-key-module_course_overview > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {display:flex!important;flex-direction:column!important}
   html[data-theme] .st-key-module_course_overview > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {width:100%!important;flex:1 1 100%!important}
   html[data-theme] .st-key-module_course_aside {padding:.75rem 1rem}
-  html[data-theme] .st-key-nm_card_details_edit_form > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]:first-child {display:grid!important;grid-template-columns:1fr 1fr!important}
-  html[data-theme] .st-key-nm_card_details_edit_form > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"]:first-child > [data-testid="stColumn"]:first-child {grid-column:1/-1}
 }
 
 html[data-theme] .st-key-nm_card_details_edit_form #edit-course {border-top:0;margin-top:0!important;padding-top:.4rem!important}
@@ -404,4 +402,70 @@ html[data-theme] .workbench-container .artifacts-container code {color:var(--mut
  html[data-theme] .workbench-container .agent-card {min-width:0}
  html[data-theme] .workbench-container .agent-card-header {flex-wrap:wrap;gap:.4rem}
  html[data-theme] .workbench-container .agent-card-model {white-space:normal;overflow-wrap:anywhere}
+}
+
+/* Course reader: academic content, teaching, resources, and catalog provenance. */
+.sm-course-facts {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1.1rem 2rem;margin:.45rem 0 1.35rem;color:var(--ink)}
+.sm-course-facts > div {min-width:0}
+.sm-course-facts dt {font-size:.77rem;font-weight:450;color:var(--muted);margin-bottom:.3rem}
+.sm-course-facts dd {margin:0;font-size:.91rem;line-height:1.5;font-weight:500;overflow-wrap:anywhere}
+.sm-course-facts-strip {grid-template-columns:repeat(6,minmax(0,1fr));gap:1rem;margin:.1rem 0 1.25rem;padding:1rem 1.2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px}
+.sm-course-facts-strip dd {font-size:.86rem}
+html[data-theme] .st-key-course_overview_reading,html[data-theme] .st-key-course_teaching_reading,html[data-theme] .st-key-course_files_reading,html[data-theme] .st-key-course_catalog_reading {padding-top:.8rem}
+html[data-theme] .st-key-course_overview_reading h3,html[data-theme] .st-key-course_teaching_reading h3,html[data-theme] .st-key-course_files_reading h3,html[data-theme] .st-key-course_catalog_reading h3 {font-size:1.17rem!important;font-weight:650!important;padding:.4rem 0 .6rem!important;letter-spacing:-.015em}
+html[data-theme] .st-key-course_overview_reading [data-testid="stMarkdownContainer"],html[data-theme] .st-key-course_teaching_reading [data-testid="stMarkdownContainer"] {line-height:1.75}
+html[data-theme] .st-key-detail_learning_outcomes {padding:1.2rem 1.4rem;border-radius:12px;border:1px solid var(--border);background:var(--surface)}
+html[data-theme] .st-key-detail_learning_outcomes li {padding:.2rem 0 .4rem .2rem}
+html[data-theme] .st-key-detail_contents {padding-top:.8rem}
+html[data-theme] .st-key-detail_contents li {padding:.05rem 0 .2rem}
+html[data-theme] .st-key-course_context {padding:.45rem 0 0 1.3rem;border-left:1px solid var(--border);gap:.4rem}
+html[data-theme] .st-key-course_context h3 {font-size:.92rem!important;padding:.45rem 0!important}
+html[data-theme] .st-key-course_context .sm-course-facts {grid-template-columns:1fr;gap:.7rem;margin:.1rem 0 .7rem}
+.sm-course-topics {display:flex;flex-wrap:wrap;gap:.4rem;margin:.25rem 0 .7rem}
+.sm-course-registrations {display:grid;gap:.7rem;margin:.25rem 0 .8rem}
+.sm-course-registrations > div {display:flex;align-items:center;flex-wrap:wrap;gap:.6rem;font-size:.85rem;color:var(--muted)}
+.sm-course-catalogs {padding:0 0 0 1rem;margin:.2rem 0 .8rem;font-size:.86rem;line-height:1.6;color:var(--muted)}
+.sm-course-section-nav {display:flex;flex-wrap:wrap;gap:.5rem 1.5rem;margin:0 0 1rem;padding:.6rem 0 1rem;border-bottom:1px solid var(--border)}
+.sm-course-section-nav a {font-size:.85rem;color:var(--muted)!important;text-decoration:none!important}
+.sm-course-section-nav a:hover {color:var(--ink)!important}
+.sm-course-anchor {scroll-margin-top:76px}
+.sm-course-table-wrap {max-width:100%;overflow-x:auto;border:1px solid var(--border);border-radius:10px;margin:.15rem 0 1.15rem}
+html[data-theme] table.sm-course-table {width:100%;border-collapse:collapse;border:0!important;background:var(--surface);font-size:.88rem}
+html[data-theme] table.sm-course-table th {background:var(--surface-2);color:var(--muted);font-size:.76rem;font-weight:550;text-transform:none;letter-spacing:0;padding:.75rem .85rem!important;border:0!important;border-bottom:1px solid var(--border)!important;text-align:left;white-space:normal}
+html[data-theme] table.sm-course-table td {padding:.8rem .85rem!important;line-height:1.5;border:0!important;border-bottom:1px solid var(--border)!important;vertical-align:top;color:var(--ink);overflow-wrap:anywhere}
+html[data-theme] table.sm-course-table tr:last-child td {border-bottom:0!important}
+html[data-theme] table.sm-course-table a {color:var(--info)!important}
+.sm-course-total {display:flex;justify-content:space-between;gap:1rem;color:var(--muted);font-size:.85rem;margin:0 0 1rem}
+.sm-course-total strong {color:var(--ink)}
+@media(min-width:1100px) {
+ html[data-theme] .st-key-detail_contents ul {columns:2;column-gap:2rem}
+ html[data-theme] .st-key-detail_contents li {break-inside:avoid}
+}
+@media(max-width:1000px) {.sm-course-facts-strip {grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:700px) {
+ .sm-course-facts-strip {grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem;padding:1rem}
+ .sm-course-facts {gap:.9rem 1rem}
+ html[data-theme] .st-key-course_overview_reading > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"],html[data-theme] .st-key-course_files_reading > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {flex-direction:column!important}
+ html[data-theme] .st-key-course_overview_reading > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"],html[data-theme] .st-key-course_files_reading > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {width:100%!important;flex:1 1 100%!important}
+ html[data-theme] .st-key-course_context {border-left:0;border-top:1px solid var(--border);padding:1rem 0 0}
+ html[data-theme] .st-key-detail_learning_outcomes {padding:1rem}
+ html[data-theme] table.sm-course-table thead {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+ html[data-theme] table.sm-course-table tr {display:block;padding:.55rem .75rem;border-bottom:1px solid var(--border)}
+ html[data-theme] table.sm-course-table tr:last-child {border:0}
+ html[data-theme] table.sm-course-table td {display:grid;grid-template-columns:minmax(85px,.8fr) minmax(0,1.5fr);gap:.7rem;padding:.35rem 0!important;border:0!important;font-size:.85rem}
+ html[data-theme] table.sm-course-table td::before {content:attr(data-label);color:var(--muted);font-size:.76rem;font-weight:450}
+}
+@media(max-width:700px) {
+ html[data-theme] table.sm-course-table.is-compact thead {position:static;width:auto;height:auto;overflow:visible;clip-path:none}
+ html[data-theme] table.sm-course-table.is-compact tr {display:table-row;padding:0}
+ html[data-theme] table.sm-course-table.is-compact td {display:table-cell;padding:.7rem .6rem!important;border-bottom:1px solid var(--border)!important}
+ html[data-theme] table.sm-course-table.is-compact td::before {content:none}
+}
+
+@media(max-width:700px) {
+ html[data-theme] .st-key-nm_card_details_edit_form > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {display:flex!important;flex-direction:column!important}
+ html[data-theme] .st-key-nm_card_details_edit_form > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {width:100%!important;flex:1 1 100%!important}
+ html[data-theme] .st-key-detail_edit_actions [data-testid="stHorizontalBlock"] {display:grid!important;grid-template-columns:1fr 1fr!important;gap:.6rem!important}
+ html[data-theme] .st-key-detail_edit_actions [data-testid="stColumn"] {width:100%!important;min-width:0!important}
+ html[data-theme] .st-key-detail_edit_actions [data-testid="stColumn"]:first-child {grid-column:1/-1}
 }

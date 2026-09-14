@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 import base64
-import hashlib
 import html
 import os
 import re
@@ -26,15 +27,6 @@ from ui.term_controls import profile_term_options, render_guided_term_input
 
 UPLOAD_DIR = "data/uploads"
 _MAX_INLINE_PDF_BYTES = 12 * 1024 * 1024
-_ACCENT_PALETTE = [
-    "#1d4ed8",  # blue
-    "#0f766e",  # teal
-    "#9333ea",  # purple
-    "#b45309",  # amber
-    "#dc2626",  # red
-    "#0e7490",  # cyan
-]
-
 
 def _module_label(module: Module) -> str:
     short_id = module.id[:6] if module.id else "na"
@@ -49,6 +41,25 @@ def _normalize_text(value: str | None) -> str | None:
     if not value:
         return value
     return value.replace("\\n", "\n")
+
+
+
+def _readable_course_text(value: str | None) -> str:
+    """Restore list structure in flattened catalog text without summarizing it."""
+    text = (_normalize_text(value) or "").strip()
+    text = re.sub(r"[ \t]*[•●]\s*", "\n- ", text)
+    text = re.sub(r"(?<!\n)\s+(?=\d+[.)]\s+[A-Z])", "\n", text)
+    text = re.sub(r"\s+(TOPICS|CONTENTS|THEMEN):\s*", r"\n\n**\1**\n\n", text)
+    text = re.sub(r"(?:^|\s+)((?:Recommended|Required|Mandatory|Desirable)[^:\n]{0,100}):\s*", r"\n\n**\1**\n\n", text)
+    return text.strip()
+
+
+def _set_editor_mode(module_id: str, editing: bool) -> None:
+    st.session_state["details_editing"] = module_id if editing else None
+    for key in list(st.session_state):
+        if not (key.startswith(f"edit_{module_id}") or key in {f"edit_grade_{module_id}", f"edit_estimate_{module_id}"}):
+            continue
+        st.session_state.pop(key, None)
 
 
 def _normalize_compact_text(value: str | None) -> str:
@@ -80,6 +91,10 @@ def _set_detail_query_params(*, module_id: str, program_view: str) -> None:
         "program_view": program_view or "All",
     }
     if hasattr(st, "query_params"):
+        if st.query_params.get("return_to") in {"portfolio", "modules"}:
+            desired["return_to"] = st.query_params["return_to"]
+        if st.query_params.get("detail_tab") == "Files & links":
+            desired["detail_tab"] = "Files & links"
         current = dict(st.query_params)
         normalized_current = {
             key: value[0] if isinstance(value, list) else value
@@ -91,33 +106,6 @@ def _set_detail_query_params(*, module_id: str, program_view: str) -> None:
         st.query_params.update(desired)
         return
     st.experimental_set_query_params(**desired)
-
-
-def _accent_for_area(area: str) -> str:
-    text = (area or "General").strip().lower()
-    digest = hashlib.md5(text.encode("utf-8")).hexdigest()
-    idx = int(digest[:8], 16) % len(_ACCENT_PALETTE)
-    return _ACCENT_PALETTE[idx]
-
-
-def _status_color(state: ModuleState) -> str:
-    if state == ModuleState.COMPLETED:
-        return "#16a34a"
-    if state == ModuleState.IN_PROGRESS:
-        return "#f59e0b"
-    if state == ModuleState.POSSIBLE_CANDIDATE:
-        return "#94a3b8"
-    return "#64748b"
-
-
-def _status_tone(state: ModuleState) -> str:
-    if state == ModuleState.COMPLETED:
-        return "success"
-    if state == ModuleState.IN_PROGRESS:
-        return "warn"
-    if state == ModuleState.POSSIBLE_CANDIDATE:
-        return "muted"
-    return "info"
 
 
 def _pill(label: str, *, cls: str = "course-pill", style: str = "") -> str:
@@ -156,15 +144,6 @@ def _program_pill(program_key: str | None) -> str:
     return _pill(short, cls=cls)
 
 
-def _source_pill(source: ModuleSource) -> str:
-    cls = "course-pill course-pill-outline"
-    if source == ModuleSource.EXTERNAL:
-        cls = "course-pill course-pill-muted"
-    elif source == ModuleSource.MOSES:
-        cls = "course-pill"
-    return _pill(source.value, cls=cls)
-
-
 def _pill_list_tags(items: Iterable[str], *, max_items: int) -> str:
     shown, extra = _truncate(items, max_items=max_items)
     pills = []
@@ -187,6 +166,8 @@ def _html_value(value: str | int | float | None) -> str:
 
 
 def _format_grade(module: Module) -> Tuple[str, str]:
+    if not module.is_graded:
+        return "Result", "Passed" if module.state == ModuleState.COMPLETED else "Pass / fail"
     if module.grade is not None:
         return "Final grade", f"{module.grade:.1f}"
     if module.estimated_grade is not None:
@@ -212,20 +193,6 @@ def _link_meta(url: str | None) -> str:
     return host or url
 
 
-def _first_text_block(value: str | None, *, max_chars: int = 260) -> str | None:
-    text = _normalize_text(value) or ""
-    if not text:
-        return None
-    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
-    blocks = [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
-    candidate = blocks[0] if blocks else text.strip()
-    candidate = re.sub(r"\s+", " ", candidate).strip()
-    if len(candidate) <= max_chars:
-        return candidate
-    trimmed = candidate[: max_chars - 1].rsplit(" ", 1)[0].strip()
-    return f"{trimmed}…" if trimmed else candidate[:max_chars]
-
-
 def _description_is_generated(module: Module, moses: MosesModuleData | None) -> bool:
     if not module.description or not moses:
         return False
@@ -240,26 +207,6 @@ def _manual_description(module: Module, moses: MosesModuleData | None) -> str | 
     return _normalize_text(module.description)
 
 
-def _hero_stat(label: str, value: str, *, tone: str = "") -> str:
-    tone_class = f" module-hero-stat-{tone}" if tone else ""
-    return (
-        f"<div class=\"module-hero-stat{tone_class}\">"
-        f"<div class=\"module-hero-stat-label\">{html.escape(label)}</div>"
-        f"<div class=\"module-hero-stat-value\">{html.escape(value)}</div>"
-        f"</div>"
-    )
-
-
-def _portfolio_metric(label: str, value: str, *, tone: str = "") -> str:
-    tone_class = f" module-portfolio-metric-{tone}" if tone else ""
-    return (
-        f"<div class=\"module-portfolio-metric{tone_class}\">"
-        f"<div class=\"module-portfolio-label\">{html.escape(label)}</div>"
-        f"<div class=\"module-portfolio-value\">{html.escape(value)}</div>"
-        f"</div>"
-    )
-
-
 def _render_fact_panel(
     title: str,
     rows: List[Tuple[str, str | None]],
@@ -269,11 +216,10 @@ def _render_fact_panel(
     empty_text: str = "No details available.",
 ) -> None:
     present = [(label, value) for label, value in rows if value]
+    if not present:
+        return
     with st.container(border=True, key=key):
         st.subheader(title)
-        if not present:
-            st.caption(empty_text)
-            return
         rows_html = "".join(
             (
                 "<div class=\"module-fact-item\">"
@@ -301,14 +247,14 @@ def _render_text_sections(
     empty_text: str = "No content available.",
 ) -> None:
     present = [(label, _normalize_text(value)) for label, value in sections if _normalize_text(value)]
+    if not present:
+        return
     with st.container(border=True, key=key):
         st.subheader(title)
-        if not present:
-            st.caption(empty_text)
-            return
         for idx, (label, value) in enumerate(present):
-            st.markdown(f"<div class=\"module-section-label\">{html.escape(label)}</div>", unsafe_allow_html=True)
-            st.markdown(value)
+            if len(present) > 1:
+                st.markdown(f"<div class=\"module-section-label\">{html.escape(label)}</div>", unsafe_allow_html=True)
+            st.markdown(_readable_course_text(value))
             if idx < len(present) - 1:
                 st.markdown("<div class=\"module-section-divider\"></div>", unsafe_allow_html=True)
 
@@ -335,8 +281,8 @@ def _render_links_panel(
     key: str,
     empty_text: str = "No links provided.",
 ) -> None:
-    present = [(eyebrow, label, url) for eyebrow, label, url in links if url]
-    with st.container(border=True, key=key):
+    present = [(eyebrow, label, url) for eyebrow, label, url in links if _valid_resource_url(url)]
+    with st.container(key=key):
         st.subheader(title)
         if not present:
             st.caption(empty_text)
@@ -415,19 +361,51 @@ def _collect_attachment_records(module: Module) -> List[dict]:
     return records
 
 
-def _render_table_section(title: str, rows: List[dict], *, key: str) -> None:
+def _course_table_html(rows: List[dict]) -> str:
+    """Read-only tables with field labels when rows stack on a phone."""
     if not rows:
-        return
-    with st.container(border=True, key=key):
-        st.subheader(title)
-        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+        return ""
+    columns = list(dict.fromkeys(column for row in rows for column in row))
+    head = "".join(f"<th scope='col'>{html.escape(str(column))}</th>" for column in columns)
+    body = []
+    for row in rows:
+        cells = []
+        for column in columns:
+            value = row.get(column)
+            content = _html_value(value)
+            if isinstance(value, str) and _valid_resource_url(value):
+                content = f"<a href='{html.escape(value, quote=True)}' target='_blank' rel='noopener noreferrer'>{html.escape(_link_meta(value))} ↗</a>"
+            cells.append(f"<td data-label='{html.escape(str(column), quote=True)}'>{content}</td>")
+        body.append("<tr>" + "".join(cells) + "</tr>")
+    compact = " is-compact" if len(columns) <= 3 else ""
+    return f"<div class='sm-course-table-wrap'><table class='sm-course-table{compact}'><thead><tr>{head}</tr></thead><tbody>{''.join(body)}</tbody></table></div>"
+
+
+def _render_table_section(title: str, rows: List[dict], *, key: str) -> None:
+    if rows:
+        with st.container(key=key):
+            st.subheader(title)
+            st.html(_course_table_html(rows))
+
+
+def _course_facts_html(rows: list[tuple[str, object]], *, class_name: str = "sm-course-facts") -> str:
+    facts = "".join(f"<div><dt>{html.escape(label)}</dt><dd>{_html_value(value)}</dd></div>" for label, value in rows if value is not None and value != "")
+    return f"<dl class='{class_name}'>{facts}</dl>"
+
+
+def _render_course_section(title: str, text: str | None, *, key: str) -> None:
+    if text:
+        with st.container(key=key):
+            st.subheader(title)
+            st.markdown(_readable_course_text(text))
+
 
 
 def _render_degree_usage_section(moses: MosesModuleData, *, key: str) -> None:
     if not moses.degree_usages and not moses.normalized_catalogs_by_program:
         return
     with st.container(border=True, key=key):
-        st.subheader("Degree Usage")
+        st.subheader("Degree & catalog mappings")
         if moses.normalized_catalogs_by_program:
             rows = [
                 {
@@ -441,7 +419,7 @@ def _render_degree_usage_section(moses: MosesModuleData, *, key: str) -> None:
                 }
                 for program_key, catalogs in moses.normalized_catalogs_by_program.items()
             ]
-            st.caption("Canonical catalogs mapped to app programs.")
+
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
         if moses.catalog_fallbacks_by_program:
             fallback_rows = [
@@ -494,118 +472,33 @@ def _render_degree_usage_section(moses: MosesModuleData, *, key: str) -> None:
                     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
-def _render_module_hero(
-    module: Module,
-    *,
-    accent: str,
-    moses: MosesModuleData | None,
-    attachment_records: List[dict],
-    hero_summary: str | None,
-) -> None:
+def _valid_resource_url(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlsplit(value.strip())
+        return parsed.scheme in {"https", "http"} and bool(parsed.netloc)
+    except ValueError:
+        return False
+
+
+def _render_module_hero(module: Module, *, editing: bool = False) -> None:
     grade_label, grade_value = _format_grade(module)
-    program_pill = _program_pill(module.program_key)
-    status_color = _status_color(module.state)
-    repo_count = 1 if module.github_url else 0
-    existing_attachments = [record for record in attachment_records if record["exists"]]
-    pdf_count = sum(1 for record in existing_attachments if record["kind"] == "pdf")
-    action_cards = []
-    if module.github_url:
-        safe_git = html.escape(module.github_url, quote=True)
-        action_cards.append(
-            f"<a class=\"module-hero-action\" href=\"{safe_git}\" target=\"_blank\" rel=\"noopener noreferrer\">Open GitHub</a>"
-        )
-    if module.url:
-        safe_url = html.escape(module.url, quote=True)
-        action_cards.append(
-            f"<a class=\"module-hero-action module-hero-action-muted\" href=\"{safe_url}\" target=\"_blank\" rel=\"noopener noreferrer\">Official page</a>"
-        )
-    status_pill = _pill(
-        module.state.value,
-        cls="course-pill",
-        style=f"border-color:{status_color}; color:{status_color}; background:rgba(255,255,255,0.78);",
+    pills = _program_pill(module.program_key)
+    for registration in module.extra_registrations:
+        pills += _program_pill(registration.program_key)
+    state_class = "completed" if module.state == ModuleState.COMPLETED else "active" if module.state == ModuleState.IN_PROGRESS else "planned"
+    facts = [("Credits", f"{module.cp:g} LP"), (grade_label, grade_value), ("Semester", module.term or "Unscheduled")]
+    facts.extend((label, value) for label, value in [("Start date", module.start_date), ("End date", module.end_date)] if value)
+    facts_html = "".join(f"<div><dt>{html.escape(label)}</dt><dd>{html.escape(value)}</dd></div>" for label, value in facts)
+    stats_html = "" if editing else f"<dl class='sm-course-stats'>{facts_html}</dl>"
+    st.html(
+        f"<header class='sm-course-header'><div class='sm-course-eyebrow'>{html.escape(module.institution or 'Course')}"
+        f"<span>·</span>{html.escape(module.area or 'General')}</div>"
+        f"<h1>{html.escape(module.name)}</h1>"
+        f"<div class='sm-course-badges'><span class='sm-course-state {state_class}'>{html.escape(module.state.value)}</span>{pills}</div>"
+        f"{stats_html}</header>"
     )
-    hero_pills = "".join(
-        [
-            _pill(f"{module.cp:g} ECTS", cls="course-pill course-pill-solid"),
-            status_pill,
-            _pill(grade_value, cls="course-pill course-pill-outline"),
-            _pill("Graded" if module.is_graded else "Pass/Fail", cls="course-pill course-pill-muted"),
-            _source_pill(module.source),
-            program_pill,
-        ]
-        # Extra-registration degree pills (secondary degree badges).
-        + [
-            _pill(
-                f"{short_program_label(reg.program_key)} | {reg.area}",
-                cls="course-pill course-pill-muted",
-            )
-            for reg in module.extra_registrations
-            if short_program_label(reg.program_key)
-        ]
-    )
-    hero_stats = "".join(
-        [
-            _hero_stat("Area", module.area or "General", tone="neutral"),
-            _hero_stat("Term", module.term or "Unscheduled", tone="neutral"),
-            _hero_stat(grade_label, grade_value, tone="neutral"),
-            _hero_stat("Status", module.state.value, tone=_status_tone(module.state)),
-        ]
-    )
-    portfolio_metrics = "".join(
-        [
-            _portfolio_metric("Code", "GitHub linked" if repo_count else "No repo yet", tone="info" if repo_count else "muted"),
-            _portfolio_metric(
-                "Reports",
-                f"{pdf_count} PDF upload{'s' if pdf_count != 1 else ''}" if pdf_count else "No report uploaded",
-                tone="success" if pdf_count else "muted",
-            ),
-            _portfolio_metric(
-                "Artifacts",
-                f"{len(existing_attachments)} uploaded file{'s' if len(existing_attachments) != 1 else ''}"
-                if existing_attachments
-                else "No artifacts added",
-                tone="neutral",
-            ),
-            _portfolio_metric(
-                "Public source",
-                "Linked" if module.url else "Not linked",
-                tone="info" if module.url else "muted",
-            ),
-        ]
-    )
-    subtitle_bits = [module.area or "General", module.term or "No term assigned"]
-    if short_program_label(module.program_key):
-        subtitle_bits.append(short_program_label(module.program_key))
-
-    hero_summary_html = f'<div class="module-hero-summary">{html.escape(hero_summary)}</div>' if hero_summary else ""
-    action_cards_html = f'<div class="module-hero-action-grid">{"".join(action_cards)}</div>' if action_cards else ""
-
-    with st.container(border=True, key="nm_card_details_hero"):
-        st.markdown(
-            f"""
-            <div class="module-hero-shell" style="--module-accent:{accent};">
-              <div class="module-hero-grid">
-                <div class="module-hero-main">
-                  <div class="module-hero-eyebrow">Course Detail</div>
-                  <div class="module-hero-title">{html.escape(module.name)}</div>
-                  <div class="module-hero-subtitle">{html.escape(" • ".join(subtitle_bits))}</div>
-                  {hero_summary_html}
-                  <div class="module-chip-cloud">{hero_pills}</div>
-                  <div class="module-hero-stat-grid">{hero_stats}</div>
-                </div>
-                <div class="module-hero-rail">
-                  <div class="module-hero-rail-card">
-                    <div class="module-hero-rail-head">Portfolio Signals</div>
-                    <div class="module-portfolio-metric-grid">{portfolio_metrics}</div>
-                    <div class="module-hero-rail-note">Built to show what this course produced: code, reports, and official context in one place.</div>
-                    {action_cards_html}
-                  </div>
-                </div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
 
 
 def _render_attachment_preview(records: List[dict], *, key: str, title: str) -> None:
@@ -614,7 +507,7 @@ def _render_attachment_preview(records: List[dict], *, key: str, title: str) -> 
     with st.container(border=True, key=key):
         st.subheader(title)
         if not pdf_records and not image_records:
-            st.caption("No previewable course artifacts are available yet. Upload PDF reports or images in the Edit tab.")
+            st.caption("No previewable course artifacts are available yet. Upload a PDF or image in Files & links.")
             return
 
         if pdf_records:
@@ -679,7 +572,7 @@ def _render_attachment_inventory(
     empty_text: str = "No uploaded course artifacts yet.",
 ) -> None:
     records = _collect_attachment_records(module)
-    with st.container(border=True, key=f"{key_prefix}_attachments"):
+    with st.container(border=False, key=f"{key_prefix}_attachments"):
         st.subheader(title)
         if show_uploader:
             uploaded = st.file_uploader(
@@ -694,7 +587,7 @@ def _render_attachment_inventory(
                     file_handle.write(uploaded.getbuffer())
                 if file_path not in module.attachments:
                     module.attachments.append(file_path)
-                    save_modules(modules, st.session_state["active_profile"])
+                    save_modules(st.session_state["modules"], st.session_state["active_profile"])
                     st.success(f"{uploaded.name} uploaded.")
                     st.rerun()
 
@@ -736,7 +629,7 @@ def _render_attachment_inventory(
                 st.rerun()
 
         if limit and len(records) > limit:
-            st.caption(f"{len(records) - limit} more artifact(s) are available in the Evidence tab.")
+            st.caption(f"{len(records) - limit} more artifact(s) are available in Files & links.")
 
 
 def render_details_page() -> None:
@@ -763,29 +656,26 @@ def render_details_page() -> None:
                 default_index = idx
                 break
 
-    toolbar_left, toolbar_right = st.columns([1.35, 1.0], vertical_alignment="bottom")
-    with toolbar_left:
-        st.markdown(
-            f"""
-            <div class="details-header">
-              <a class="back-link" href="?page=Study%20Plan&program_view={view_encoded}" target="_self">← Back to Study Plan</a>
-            </div>
-            <div class="module-page-intro">
-              <div class="module-page-eyebrow">Academic Portfolio</div>
-              <div class="module-page-title">Course Portfolio</div>
-              <div class="module-page-subtitle">A professional course page built to present academic scope, outcomes, reports, code, and official university references in one structured view.</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    with toolbar_right:
-        selected_label = st.selectbox(
-            "Select module",
-            labels,
-            index=default_index,
-            key="details_module_picker",
-            help="Switch between modules without leaving the detail page.",
-        )
+    if st.session_state.get("details_query_seen") != query_id or st.session_state.get("details_module_picker") not in labels:
+        st.session_state["details_module_picker"] = labels[default_index]
+    st.session_state["details_query_seen"] = query_id
+
+    with st.container(key="module_detail_toolbar"):
+        toolbar_left, toolbar_right = st.columns([3, 1], vertical_alignment="center")
+        from_portfolio = st.query_params.get("return_to") == "portfolio"
+        back_url = f"?page=Dashboard&dashboard_tab=Portfolio&program_view={view_encoded}" if from_portfolio else f"?page=Study%20Plan&program_view={view_encoded}"
+        back_label = "Back to portfolio" if from_portfolio else "Back to Study Plan"
+        if st.query_params.get("return_to") == "modules":
+            back_url = f"?page=Modules&program_view={view_encoded}"
+            back_label = "Back to modules"
+        with toolbar_left:
+            st.html(f'<a class="back-link" href="{back_url}" target="_self">← {back_label}</a>')
+        with toolbar_right:
+            with st.popover("Switch module", icon=":material/swap_horiz:", width="stretch"):
+                selected_label = st.selectbox("Select module", labels, index=None, key="details_module_picker")
+    if selected_label is None:
+        st.info("Select a module to see its details.")
+        return
 
     selected_id = label_map[selected_label]
     if st.session_state.get("selected_module_id") != selected_id:
@@ -809,7 +699,6 @@ def render_details_page() -> None:
         and registration_for_program(selected_module, detail_program_key) is not None
     )
 
-    accent = _accent_for_area(display_module.area)
     moses = selected_module.moses
     detail_catalogs = effective_catalogs_for_program(
         display_module,
@@ -818,12 +707,6 @@ def render_details_page() -> None:
     )
     manual_description = _manual_description(selected_module, moses)
     attachment_records = _collect_attachment_records(selected_module)
-    grade_label, grade_value = _format_grade(display_module)
-    hero_summary = (
-        _first_text_block(manual_description)
-        or _first_text_block(moses.learning_outcomes if moses else None)
-        or _first_text_block(moses.contents if moses else None)
-    )
     resource_links = [
         (
             "Code repository",
@@ -839,590 +722,388 @@ def render_details_page() -> None:
         ("Contact website", "Course website", moses.contact_website if moses else None),
     ]
 
-    _render_module_hero(
-        display_module,
-        accent=accent,
-        moses=moses,
-        attachment_records=attachment_records,
-        hero_summary=hero_summary,
-    )
+    editing = st.session_state.get("details_editing") == selected_id
+    with st.container(key="module_detail_title"):
+        title_col, edit_col = st.columns([4.8, 1], vertical_alignment="top")
+        with title_col:
+            _render_module_hero(display_module, editing=editing)
+        with edit_col:
+            if not editing:
+                st.button("Edit module", icon=":material/edit:", type="primary", key="details_open_edit", width="stretch", on_click=_set_editor_mode, args=(selected_id, True))
+    if st.session_state.pop("details_saved", False):
+        st.toast("Changes saved.", icon=":material/check:")
+    if editing:
+        _render_module_editor(selected_module, display_module, moses, detail_program_key, editing_secondary_registration, view_param)
+        return
 
-    overview_sections: List[Tuple[str, str | None]] = []
-    if manual_description:
-        overview_sections.append(("Custom summary", manual_description))
-    elif moses and moses.learning_outcomes:
-        overview_sections.append(("Learning outcomes", moses.learning_outcomes))
-    if moses and moses.contents:
-        overview_sections.append(("Contents", moses.contents))
-    elif selected_module.description and not overview_sections:
-        overview_sections.append(("Description", selected_module.description))
-
-    academic_sections = [
-        ("Custom summary", manual_description),
-        ("Learning outcomes", moses.learning_outcomes if moses else None),
-        ("Contents", moses.contents if moses else None),
-        ("Teaching and learning methods", moses.teaching_and_learning_methods if moses else None),
-        ("Prerequisites", moses.prerequisites if moses else None),
-        ("Exam description", moses.exam_description if moses else None),
-        ("Registration requirements", moses.registration_requirements if moses else None),
-        ("Literature notes", moses.literature_notes if moses else None),
+    # Course facts describe the catalog; the header above is the student's record.
+    course_facts = [
+        ("Course format", ", ".join({"PR": "Practical course (PR)", "VL": "Lecture (VL)", "UE": "Exercise (UE)", "IV": "Integrated course (IV)", "PJ": "Project (PJ)", "SEM": "Seminar (SEM)"}.get(kind, kind) for kind in selected_module.module_types)),
+        ("Language", ", ".join(moses.teaching_languages) if moses else None),
+        ("Offered", display_module.offered_in.value),
+        ("Duration", f"{display_module.semester_span} semester" + ("s" if display_module.semester_span != 1 else "")),
+        ("Assessment", moses.exam_type if moses else ("Graded" if display_module.is_graded else "Pass / fail")),
+        ("Workload", moses.workload_total if moses else None),
     ]
+    st.html(_course_facts_html(course_facts, class_name="sm-course-facts sm-course-facts-strip"))
+    tab_labels = ["Overview", "Teaching & assessment", "Files & links", "Catalog record"]
+    requested_tab = st.query_params.get("detail_tab")
+    overview_tab, teaching_tab, files_tab, record_tab = st.tabs(tab_labels, default=requested_tab if requested_tab in tab_labels else "Overview")
 
-    academic_available = any(_normalize_text(value) for _, value in academic_sections) or bool(moses and moses.literature)
-    planning_available = bool(
-        moses
-        and (
-            moses.module_elements
-            or moses.workload_items
-            or moses.exam_elements
-            or (moses.grading_table and moses.grading_table.rows)
-            or moses.degree_usages
-            or moses.normalized_catalogs_by_program
-            or moses.number
-        )
-    )
+    with overview_tab:
+        with st.container(key="course_overview_reading"):
+            main, context = st.columns([2, 1], gap="large")
+            with main:
+                _render_course_section("Learning outcomes", moses.learning_outcomes if moses else None, key="detail_learning_outcomes")
+                if manual_description:
+                    _render_course_section("About this course", manual_description, key="detail_description")
+                contents = moses.contents if moses else (None if manual_description else selected_module.description)
+                _render_course_section("Course content", contents, key="detail_contents")
+                if not contents and not manual_description and not (moses and moses.learning_outcomes):
+                    st.caption("Add a description using Edit module.")
+                _render_course_section("My notes", selected_module.notes, key="detail_notes")
+            with context:
+                with st.container(key="course_context"):
+                    if selected_module.tags:
+                        st.subheader("Topics")
+                        st.html("<div class='sm-course-topics'>" + "".join(_pill(tag) for tag in selected_module.tags) + "</div>")
+                    st.subheader("In your degrees")
+                    registrations = [(display_module.program_key, display_module.area)] + [(reg.program_key, reg.area) for reg in display_module.extra_registrations]
+                    st.html("<div class='sm-course-registrations'>" + "".join(f"<div>{_program_pill(program)}<span>{html.escape(area)}</span></div>" for program, area in registrations) + "</div>")
+                    if detail_catalogs:
+                        st.subheader("Study areas")
+                        st.html("<ul class='sm-course-catalogs'>" + "".join(f"<li>{html.escape(catalog)}</li>" for catalog in detail_catalogs) + "</ul>")
+                    if moses and (moses.responsible_person or moses.contact_person):
+                        st.subheader("Teaching team")
+                        st.html(_course_facts_html([("Responsible", moses.responsible_person), ("Contact", moses.contact_person), ("Email", moses.contact_email)]))
+                    _render_links_panel("Course links", resource_links, key="detail_overview_links")
 
-    tab_labels = ["Overview", "Evidence"]
-    if academic_available:
-        tab_labels.append("Academic")
-    if planning_available:
-        tab_labels.append("Planning")
-    tab_labels.append("Edit")
-    tabs = dict(zip(tab_labels, st.tabs(tab_labels)))
-
-    with tabs["Overview"]:
-        left, right = st.columns([1.18, 0.9])
-        with left:
-            _render_text_sections(
-                "Course Brief",
-                overview_sections,
-                key="nm_card_details_overview_brief",
-                empty_text="No narrative description is available for this module yet.",
-            )
-            if selected_module.notes:
-                _render_text_sections(
-                    "Personal Notes",
-                    [("Study notes", selected_module.notes)],
-                    key="nm_card_details_overview_notes",
-                )
-        with right:
-            _render_fact_panel(
-                "At a Glance",
-                [
-                    ("Program", display_module.program_key),
-                    (
-                        "Stored under",
-                        selected_module.program_key if selected_module.program_key != display_module.program_key else None,
-                    ),
-                    ("Term", display_module.term),
-                    ("Offering", display_module.offered_in.value),
-                    ("Semester span", f"{display_module.semester_span} semester(s)"),
-                    ("Start date", display_module.start_date),
-                    ("End date", display_module.end_date),
-                    ("Institution", display_module.institution),
-                    ("Source", display_module.source.value),
-                    ("Created", _format_timestamp(display_module.created_at)),
-                ],
-                key="nm_card_details_overview_glance",
-            )
-            _render_fact_panel(
-                "Assessment",
-                [
-                    ("Status", display_module.state.value),
-                    (grade_label, grade_value),
-                    ("Credits", f"{display_module.cp:g} ECTS"),
-                    ("Grading mode", "Graded" if display_module.is_graded else "Pass / Fail"),
-                    ("Last MOSES sync", _format_timestamp(selected_module.moses_last_synced_at) if moses else None),
-                ],
-                key="nm_card_details_overview_assessment",
-            )
-            if display_module.extra_registrations:
-                _render_fact_panel(
-                    "Cross-Degree Registrations",
-                    [
-                        (
-                            short_program_label(reg.program_key) or reg.program_key,
-                            reg.area,
-                        )
-                        for reg in display_module.extra_registrations
-                    ],
-                    key="nm_card_details_overview_cross_degree",
-                )
-        evidence_left, evidence_right = st.columns([1.25, 0.95])
-        with evidence_left:
-            _render_attachment_preview(
-                attachment_records,
-                key="nm_card_details_overview_preview",
-                title="Featured Report Preview",
-            )
-        with evidence_right:
-            _render_links_panel(
-                "Featured Links",
-                resource_links,
-                key="nm_card_details_overview_links",
-                empty_text="Add a GitHub repository or official course page to strengthen the portfolio view.",
-            )
-            _render_attachment_inventory(
-                selected_module,
-                modules,
-                key_prefix="overview",
-                title="Uploaded Artifacts",
-                manage=False,
-                limit=4,
-                empty_text="No course artifacts have been uploaded yet.",
-            )
-        chip_left, chip_right = st.columns([1.0, 1.0])
-        with chip_left:
-            _render_chip_panel(
-                "Classification",
-                (
-                    "".join(
-                        [
-                            _pill_list(selected_module.module_types, cls="course-pill", max_items=12)
-                            if selected_module.module_types
-                            else "",
-                            _pill_list(detail_catalogs, cls="course-pill course-pill-outline", max_items=12)
-                            if detail_catalogs
-                            else "",
-                        ]
-                    )
-                    or _pill("No classification metadata", cls="course-pill course-pill-muted")
-                ),
-                key="nm_card_details_overview_classification",
-            )
-        with chip_right:
-            _render_chip_panel(
-                "Topics & Tags",
-                _pill_list_tags(selected_module.tags, max_items=16),
-                key="nm_card_details_overview_tags",
-            )
-
-    with tabs["Evidence"]:
-        evidence_left, evidence_right = st.columns([1.32, 0.9])
-        with evidence_left:
-            _render_attachment_preview(
-                attachment_records,
-                key="nm_card_details_evidence_preview",
-                title="Artifact Preview",
-            )
-        with evidence_right:
-            _render_links_panel(
-                "External References",
-                resource_links,
-                key="nm_card_details_evidence_links",
-                empty_text="No external references linked yet.",
-            )
-            _render_attachment_inventory(
-                selected_module,
-                modules,
-                key_prefix="evidence",
-                title="Course Artifacts",
-                manage=False,
-                empty_text="No course artifacts uploaded yet.",
-            )
-            _render_fact_panel(
-                "Contact & Context",
-                [
-                    ("Institution", display_module.institution),
-                    ("Office", moses.office if moses else None),
-                    ("Contact person", moses.contact_person if moses else None),
-                    ("Email", moses.contact_email if moses else None),
-                    ("Website", moses.contact_website if moses else None),
-                ],
-                key="nm_card_details_evidence_contact",
-                empty_text="No contact information is available.",
-            )
-
-    if "Academic" in tabs:
-        with tabs["Academic"]:
-            left, right = st.columns([1.25, 1.0])
-            with left:
-                _render_text_sections(
-                    "Academic Narrative",
-                    [
-                        ("Custom summary", manual_description),
-                        ("Learning outcomes", moses.learning_outcomes if moses else None),
-                        ("Contents", moses.contents if moses else None),
-                    ],
-                    key="nm_card_details_academic_narrative",
-                    empty_text="No learning outcomes or course contents are available.",
-                )
-            with right:
-                _render_text_sections(
-                    "Teaching & Assessment Notes",
-                    [
-                        ("Teaching and learning methods", moses.teaching_and_learning_methods if moses else None),
-                        ("Prerequisites", moses.prerequisites if moses else None),
-                        ("Exam description", moses.exam_description if moses else None),
-                        ("Registration requirements", moses.registration_requirements if moses else None),
-                    ],
-                    key="nm_card_details_academic_methods",
-                    empty_text="No additional teaching or assessment notes are available.",
-                )
-            if moses and (moses.literature_notes or moses.literature):
-                literature_sections: List[Tuple[str, str | None]] = []
-                if moses.literature_notes:
-                    literature_sections.append(("Literature notes", moses.literature_notes))
-                if moses.literature:
-                    literature_sections.append(("Literature list", "\n".join(f"- {item}" for item in moses.literature)))
-                _render_text_sections(
-                    "Literature",
-                    literature_sections,
-                    key="nm_card_details_academic_literature",
-                )
-
-    if "Planning" in tabs:
-        with tabs["Planning"]:
-            meta_left, meta_right = st.columns(2)
-            with meta_left:
-                _render_fact_panel(
-                    "MOSES Core Metadata",
-                    [
-                        ("MOSES number", moses.number if moses else None),
-                        ("Version", str(moses.version) if moses else None),
-                        ("Validity", moses.validity if moses else None),
-                        ("Responsible person", moses.responsible_person if moses else None),
-                        ("Faculty", moses.faculty if moses else None),
-                        ("Institute", moses.institute if moses else None),
-                        ("Department", moses.department if moses else None),
-                        ("Examination board", moses.examination_board if moses else None),
-                    ],
-                    key="nm_card_details_planning_core",
-                )
-            with meta_right:
-                _render_fact_panel(
-                    "Planning Snapshot",
-                    [
-                        ("Semester count", moses.semester_count if moses else None),
-                        ("Start semesters", ", ".join(moses.start_semesters) if moses else None),
-                        ("Offered in", moses.offered_in.value if moses else None),
-                        ("Thesis start", selected_module.start_date),
-                        ("Thesis end", selected_module.end_date),
-                        ("Workload total", moses.workload_total if moses else None),
-                        ("Max participants", moses.max_participants if moses else None),
-                        ("Grading", moses.grading_mode if moses else None),
-                        ("Exam type", moses.exam_type if moses else None),
-                        ("Teaching languages", ", ".join(moses.teaching_languages) if moses else None),
-                        ("Available languages", ", ".join(moses.available_languages) if moses else None),
-                    ],
-                    key="nm_card_details_planning_schedule",
-                )
-
-            _render_table_section(
-                "Module Elements",
-                [
-                    {
-                        "Title": item.title,
-                        "Type": item.course_type,
-                        "Number": item.number,
-                        "Cycle": item.cycle,
-                        "Language": item.language,
-                        "SWS": item.sws,
-                        "VVZ URL": item.vvz_url,
-                    }
-                    for item in (moses.module_elements if moses else [])
-                ],
-                key="nm_card_details_planning_elements",
-            )
-            workload_col, exam_col = st.columns(2)
-            with workload_col:
-                _render_table_section(
-                    "Workload",
-                    [
-                        {
-                            "Description": item.description,
-                            "Multiplier": item.multiplier,
-                            "Hours": item.hours,
-                            "Total": item.total,
-                        }
-                        for item in (moses.workload_items if moses else [])
-                    ],
-                    key="nm_card_details_planning_workload",
-                )
-            with exam_col:
-                _render_table_section(
-                    "Exam Elements",
-                    [
-                        {
-                            "Name": item.name,
-                            "Points": item.points,
-                            "Category": item.category,
-                            "Duration": item.duration,
-                        }
-                        for item in (moses.exam_elements if moses else [])
-                    ],
-                    key="nm_card_details_planning_exam",
-                )
-
-            if moses and moses.grading_table and moses.grading_table.rows:
-                _render_table_section(
-                    f"Grading Table{f' ({moses.grading_table.name})' if moses.grading_table.name else ''}",
-                    [
-                        {"Total points": row.total_points, **row.thresholds}
-                        for row in moses.grading_table.rows
-                    ],
-                    key="nm_card_details_planning_grading",
-                )
-
-            if moses:
-                _render_degree_usage_section(moses, key="nm_card_details_planning_degree_usage")
-
-    with tabs["Edit"]:
-        with st.container(border=True, key="nm_card_details_edit_form"):
-            st.subheader("Edit module")
-            st.caption("Update core planning fields here. Portfolio artifacts and admin actions stay below.")
-
-            programs = list(st.session_state.get("selectable_programs") or list_programs())
-            current_prog = detail_program_key or selected_module.program_key or (programs[0] if programs else "")
-
-            st.markdown("#### Identity")
-            row0 = st.columns([1.1, 1.9, 1.0, 1.0])
-            new_program = row0[0].selectbox(
-                "Program",
-                programs,
-                index=programs.index(current_prog) if current_prog in programs else 0,
-                disabled=editing_secondary_registration,
-                help=(
-                    "This is the active degree context from the current view. "
-                    "Use Cross-Degree Registrations to change which degrees share this course."
-                    if editing_secondary_registration
-                    else None
-                ),
-            )
-            managers = st.session_state["managers"]
-            if new_program not in managers:
-                managers[new_program] = DegreeManager(create_program(new_program))
-            strategy = managers[new_program].strategy
-            valid_areas = strategy.get_valid_areas()
-            current_area = strategy.normalize_area(display_module.area)
-            new_name = row0[1].text_input("Name", value=selected_module.name)
-            new_area = row0[2].selectbox(
-                "Area",
-                valid_areas,
-                index=valid_areas.index(current_area) if current_area in valid_areas else 0,
-            )
-            new_source = row0[3].selectbox(
-                "Source",
-                [value.value for value in ModuleSource],
-                index=[value.value for value in ModuleSource].index(selected_module.source.value),
-            )
-
-            st.markdown("#### Planning")
-            row1 = st.columns(3)
-            new_cp = row1[0].number_input("Credits", value=float(selected_module.cp))
-            new_grade = row1[1].number_input(
-                "Grade",
-                value=float(selected_module.grade) if selected_module.grade else 0.0,
-                min_value=0.0,
-                max_value=5.0,
-                step=0.1,
-            )
-            new_est = row1[2].number_input(
-                "Estimated grade",
-                value=float(selected_module.estimated_grade) if selected_module.estimated_grade else 0.0,
-                min_value=0.0,
-                max_value=5.0,
-                step=0.1,
-            )
-
-            row2 = st.columns([1.35, 1, 1, 1, 1])
-            with row2[0]:
-                new_term = render_guided_term_input(
-                    label="Semester",
-                    key_prefix=f"edit_{selected_module.id}",
-                    available_terms=profile_term_options(st.session_state.get("modules") or [], current_term=selected_module.term),
-                    current_term=selected_module.term,
-                    allow_empty=True,
-                    empty_label="No semester assigned",
-                    help_text="Choose an existing semester or create a canonical WS/SS label.",
-                )
-            new_state = row2[1].selectbox(
-                "Status",
-                [state.value for state in ModuleState],
-                index=list(ModuleState).index(selected_module.state),
-            )
-            new_graded = row2[2].checkbox("Graded", value=selected_module.is_graded)
-            new_offering = row2[3].selectbox(
-                "Offering",
-                [offering.value for offering in ModuleOffering],
-                index=list(ModuleOffering).index(selected_module.offered_in),
-            )
-            new_semester_span = int(
-                row2[4].number_input(
-                    "Semester span",
-                    value=int(selected_module.semester_span or 1),
-                    min_value=1,
-                    step=1,
-                )
-            )
-
-            row2b = st.columns(2)
-            new_start_date = row2b[0].date_input(
-                "Thesis start date",
-                value=_parse_iso_date(selected_module.start_date),
-                format="YYYY-MM-DD",
-                help="Optional, but required if you want the thesis deadline rule to run.",
-            )
-            new_end_date = row2b[1].date_input(
-                "Thesis end date",
-                value=_parse_iso_date(selected_module.end_date),
-                format="YYYY-MM-DD",
-                help="Optional, but required if you want the thesis deadline rule to run.",
-            )
-            if new_start_date and new_end_date and new_end_date < new_start_date:
-                st.warning("Thesis end date is before start date.")
-
-            st.markdown("#### Metadata")
-            new_catalog_mode = st.selectbox(
-                "Catalog assignment",
-                [mode.value for mode in CatalogAssignmentMode],
-                index=[mode.value for mode in CatalogAssignmentMode].index(display_module.catalog_mode.value),
-                help="Auto uses MOSES catalogs for the active degree when MOSES metadata is available. Manual uses the catalogs entered below.",
-            )
-            new_catalogs = st.text_input(
-                "Catalogs (comma separated)",
-                value=", ".join(
-                    effective_catalogs_for_program(
-                        display_module,
-                        new_program,
-                        registration_for_program(display_module, new_program),
-                    )
-                ),
-                disabled=new_catalog_mode == CatalogAssignmentMode.AUTO.value,
-            )
-            new_tags = st.text_input(
-                "Tags (comma separated)",
-                value=", ".join(selected_module.tags),
-            )
-            new_institution = st.text_input("Institution", value=selected_module.institution or "")
-            new_desc = st.text_area(
-                "Description",
-                value=_normalize_text(selected_module.description) or "",
-            )
-            new_notes = st.text_area("Notes", value=selected_module.notes or "")
-
-            row3 = st.columns(2)
-            new_url = row3[0].text_input("Course link", value=selected_module.url or "")
-            new_git = row3[1].text_input("GitHub link", value=selected_module.github_url or "")
-
-            with st.expander(
-                "Cross-Degree Registrations"
-                + (f" ({len(selected_module.extra_registrations)} active)" if selected_module.extra_registrations else ""),
-                expanded=bool(selected_module.extra_registrations),
-            ):
-                new_extra_regs = render_registration_editor(
-                    key_prefix=f"edit_{selected_module.id}",
-                    primary_program=selected_module.program_key,
-                    existing_registrations=selected_module.extra_registrations,
-                    moses=moses,
-                )
-
-            submitted = st.button("Save changes", type="primary", width="stretch", key=f"edit_save_{selected_module.id}")
-
-            if submitted:
-                if new_start_date and new_end_date and new_end_date < new_start_date:
-                    st.error("Please correct the thesis dates before saving.")
-                    st.stop()
-                selected_module.name = new_name
-                selected_module.cp = new_cp
-                selected_module.grade = new_grade if new_grade > 0 else None
-                selected_module.estimated_grade = new_est if new_est > 0 else None
-                selected_module.term = new_term
-                selected_module.state = ModuleState(new_state)
-                selected_module.source = ModuleSource(new_source)
-                selected_module.institution = new_institution.strip() if new_institution.strip() else None
-                selected_module.is_graded = new_graded
-                selected_module.offered_in = ModuleOffering(new_offering)
-                selected_module.semester_span = max(1, new_semester_span)
-                selected_module.start_date = new_start_date.isoformat() if new_start_date else None
-                selected_module.end_date = new_end_date.isoformat() if new_end_date else None
-                selected_module.tags = [tag.strip() for tag in new_tags.split(",") if tag.strip()]
-                selected_module.description = new_desc
-                selected_module.notes = new_notes
-                selected_module.url = new_url
-                selected_module.github_url = new_git
-                selected_module.extra_registrations = new_extra_regs
-                parsed_catalog_mode = CatalogAssignmentMode(new_catalog_mode)
-                parsed_catalogs = (
-                    []
-                    if parsed_catalog_mode == CatalogAssignmentMode.AUTO
-                    else [catalog.strip() for catalog in new_catalogs.split(",") if catalog.strip()]
-                )
-                if editing_secondary_registration:
-                    target_reg = registration_for_program(selected_module, detail_program_key)
-                    if target_reg is None:
-                        target_reg = DegreeRegistration(program_key=detail_program_key, area=new_area)
-                        selected_module.extra_registrations.append(target_reg)
-                    target_reg.area = new_area
-                    target_reg.catalog_mode = parsed_catalog_mode
-                    target_reg.catalogs = parsed_catalogs
-                else:
-                    selected_module.program_key = new_program
-                    selected_module.area = new_area
-                    selected_module.catalog_mode = parsed_catalog_mode
-                    selected_module.catalogs = parsed_catalogs
-                save_modules(st.session_state["modules"], st.session_state["active_profile"])
-                st.success("Module saved.")
-                st.rerun()
-
-        _render_attachment_inventory(
-            selected_module,
-            st.session_state["modules"],
-            key_prefix="edit",
-            title="Manage course artifacts",
-            manage=True,
-            show_uploader=True,
-            empty_text="Upload PDF reports, images, or supporting files for this course.",
-        )
-
-        with st.container(border=True, key="nm_card_details_edit_sync"):
-            st.subheader("TU MOSES Sync")
-            can_refresh_from_moses = bool(
-                (selected_module.moses_number and selected_module.moses_version is not None)
-                or (selected_module.url and "moseskonto.tu-berlin.de" in selected_module.url)
-                or selected_module.source == ModuleSource.MOSES
-            )
-            if can_refresh_from_moses:
-                st.caption("Reload the structured MOSES dataset without overwriting your planning fields such as status, notes, tags, or attached artifacts.")
-                if st.button("Refresh metadata from TU MOSES", width="stretch", type="primary"):
-                    if not selected_module.url and not (
-                        selected_module.moses_number and selected_module.moses_version is not None
-                    ):
-                        st.error("Please provide a TU MOSES link or MOSES number/version first.")
-                    else:
-                        try:
-                            with st.spinner("Refreshing MOSES metadata ..."):
-                                refresh_module_from_moses(selected_module)
-                            save_modules(st.session_state["modules"], st.session_state["active_profile"])
-                            st.success("MOSES metadata updated.")
-                            st.rerun()
-                        except Exception as exc:
-                            st.error(f"Failed to refresh MOSES data: {exc}")
+    with teaching_tab:
+        with st.container(key="course_teaching_reading"):
+            if not moses:
+                st.caption("No additional catalog information is linked to this course.")
             else:
-                st.caption("MOSES refresh is available once the module is linked to a TU MOSES detail page.")
+                st.html('<nav class="sm-course-section-nav"><a href="#course-classes">Classes</a><a href="#course-workload">Workload</a><a href="#course-prerequisites">Prerequisites</a><a href="#course-assessment">Assessment</a><a href="#course-registration">Registration</a></nav>')
+                st.html('<div class="sm-course-anchor" id="course-classes"></div>')
+                _render_course_section("Teaching & learning", moses.teaching_and_learning_methods, key="detail_methods")
+                _render_table_section("Classes", [{"Class": item.title, "Format": item.course_type, "Number": item.number, "Cycle": item.cycle, "Language": item.language, "SWS": item.sws, "ISIS": item.isis_search_url, "Course directory": item.vvz_url} for item in moses.module_elements], key="detail_classes")
+                st.html('<div class="sm-course-anchor" id="course-workload"></div>')
+                _render_table_section("Workload", [{"Activity": item.description, "Multiplier": item.multiplier, "Hours": item.hours, "Total": item.total} for item in moses.workload_items], key="detail_workload")
+                if moses.workload_total:
+                    st.html(f"<p class='sm-course-total'>Total workload <strong>{html.escape(moses.workload_total)}</strong></p>")
+                st.html('<div class="sm-course-anchor" id="course-prerequisites"></div>')
+                _render_course_section("Prerequisites", moses.prerequisites, key="detail_prerequisites")
+                st.html('<div class="sm-course-anchor" id="course-assessment"></div>')
+                st.subheader("Assessment")
+                st.html(_course_facts_html([("Format", moses.exam_type), ("Grading", moses.grading_mode)]))
+                if moses.exam_description:
+                    st.markdown(_readable_course_text(moses.exam_description))
+                _render_table_section("Assessment components", [{"Component": item.name, "Weight / points": item.points, "Category": item.category, "Duration / scope": item.duration} for item in moses.exam_elements], key="detail_assessment")
+                if moses.grading_table and moses.grading_table.rows:
+                    _render_table_section("Grading scale", [{"Grade": grade, "Threshold": threshold, "Total points": row.total_points} for row in moses.grading_table.rows for grade, threshold in row.thresholds.items()], key="detail_grading")
+                    if moses.grading_table.name:
+                        st.caption(moses.grading_table.name)
+                st.html('<div class="sm-course-anchor" id="course-registration"></div>')
+                _render_course_section("Registration", moses.registration_requirements, key="detail_registration")
+                st.html(_course_facts_html([("Maximum participants", moses.max_participants), ("Start semesters", ", ".join(moses.start_semesters)), ("Expected duration", moses.semester_count), ("Start date", selected_module.start_date), ("End date", selected_module.end_date)]))
+                if moses.literature_notes or moses.literature:
+                    literature = "\n\n".join(part for part in [moses.literature_notes, "\n".join(f"- {item}" for item in moses.literature)] if part)
+                    _render_course_section("Reading & literature", literature, key="detail_literature")
 
-        with st.container(border=True, key="nm_card_details_delete"):
-            st.subheader("Danger Zone")
-            st.caption("Remove this module from the study plan.")
-            delete_secondary_registration = (
-                view_param != "All"
-                and selected_module.program_key != view_param
-                and registration_for_program(selected_module, view_param) is not None
+    with files_tab:
+        with st.container(key="course_files_reading"):
+            evidence_left, evidence_right = st.columns([1.3, 1], gap="large")
+            with evidence_left:
+                _render_attachment_inventory(selected_module, modules, key_prefix="evidence", title="Course files", manage=True, show_uploader=True, empty_text="No files uploaded yet.")
+                if any(record["exists"] and record["kind"] in {"pdf", "image"} for record in attachment_records):
+                    _render_attachment_preview(attachment_records, key="nm_card_details_evidence_preview", title="Preview")
+            with evidence_right:
+                _render_links_panel("Links", resource_links, key="detail_resource_links", empty_text="Add a course website or code repository using Edit module.")
+                if moses:
+                    st.subheader("Contact details")
+                    st.html(_course_facts_html([("Institution", display_module.institution), ("Office", moses.office), ("Contact person", moses.contact_person), ("Email", moses.contact_email), ("Website", moses.contact_website)]))
+
+    with record_tab:
+        with st.container(key="course_catalog_reading"):
+            if moses:
+                st.subheader("Official catalog record")
+                st.html(_course_facts_html([("MOSES number", moses.number), ("Version", str(moses.version)), ("Valid for", moses.validity), ("Official title", moses.title), ("Catalog credits", f"{moses.credits:g} LP" if moses.credits is not None else None), ("Available languages", ", ".join(moses.available_languages)), ("Catalog offering", moses.offered_in.value)]))
+                st.subheader("Academic responsibility")
+                st.html(_course_facts_html([("Responsible person", moses.responsible_person), ("Faculty", moses.faculty), ("Institute", moses.institute), ("Department", moses.department), ("Examination board", moses.examination_board)]))
+                _render_degree_usage_section(moses, key="detail_degree_mappings")
+            st.subheader("Your record")
+            st.html(_course_facts_html([("Source", selected_module.source.value), ("Created", _format_timestamp(selected_module.created_at)), ("Last MOSES sync", _format_timestamp(selected_module.moses_last_synced_at)), ("Stored under", selected_module.program_key), ("Course types", ", ".join(selected_module.module_types)), ("Start date", selected_module.start_date), ("End date", selected_module.end_date)]))
+
+
+
+def _render_module_editor(selected_module, display_module, moses, detail_program_key, editing_secondary_registration, view_param) -> None:
+    with st.container(border=True, key="nm_card_details_edit_form"):
+        with st.container(key="detail_edit_actions"):
+            action_title, action_cancel, action_save = st.columns([3, 1, 1], vertical_alignment="center")
+            action_title.subheader("Edit module")
+            action_cancel.button("Cancel", key="details_cancel_edit", width="stretch", on_click=_set_editor_mode, args=(selected_module.id, False))
+            save_from_top = action_save.button("Save changes", type="primary", key=f"edit_save_top_{selected_module.id}", width="stretch")
+        st.html('<nav class="sm-edit-nav"><a href="#edit-course">Course</a><a href="#edit-grades">Grades</a><a href="#edit-schedule">Schedule</a><a href="#edit-topics">Topics</a><a href="#edit-notes">Notes & links</a><a href="#edit-degrees">Degrees</a></nav>')
+
+        programs = list(st.session_state.get("selectable_programs") or list_programs())
+        current_prog = detail_program_key or selected_module.program_key or (programs[0] if programs else "")
+
+        st.html('<h3 class="sm-edit-section" id="edit-course">Course</h3>')
+        new_name = st.text_input("Module name", value=selected_module.name)
+        row0 = st.columns(2)
+        new_program = row0[0].selectbox(
+            "Program",
+            programs,
+            format_func=short_program_label,
+            index=programs.index(current_prog) if current_prog in programs else 0,
+            disabled=editing_secondary_registration,
+            help=(
+                "This is the active degree context from the current view. "
+                "Use Degree registrations below to change which degrees share this course."
+                if editing_secondary_registration
+                else None
+            ),
+        )
+        managers = st.session_state["managers"]
+        if new_program not in managers:
+            managers[new_program] = DegreeManager(create_program(new_program))
+        strategy = managers[new_program].strategy
+        valid_areas = strategy.get_valid_areas()
+        current_area = strategy.normalize_area(display_module.area)
+        new_area = row0[1].selectbox(
+            "Area",
+            valid_areas,
+            index=valid_areas.index(current_area) if current_area in valid_areas else 0,
+        )
+        source_row = st.columns(2)
+        new_source = source_row[0].selectbox(
+            "Source",
+            [value.value for value in ModuleSource],
+            index=[value.value for value in ModuleSource].index(selected_module.source.value),
+        )
+        new_institution = source_row[1].text_input("Institution", value=selected_module.institution or "")
+
+        st.html('<h3 class="sm-edit-section" id="edit-grades">Credits & grades</h3>')
+        row1 = st.columns(3)
+        new_cp = row1[0].number_input("Credits", value=float(selected_module.cp))
+        grade_key = f"edit_grade_{selected_module.id}"
+        estimate_key = f"edit_estimate_{selected_module.id}"
+        st.session_state.setdefault(grade_key, selected_module.grade)
+        st.session_state.setdefault(estimate_key, selected_module.estimated_grade)
+        new_grade = row1[1].number_input(
+            "Grade",
+            value=None,
+            key=grade_key,
+            min_value=1.0,
+            max_value=5.0,
+            step=0.1,
+            placeholder="Not graded yet",
+        )
+        new_est = row1[2].number_input(
+            "Estimated grade",
+            value=None,
+            key=estimate_key,
+            min_value=1.0,
+            max_value=5.0,
+            step=0.1,
+            placeholder="No estimate",
+        )
+
+        new_graded = st.checkbox("Graded module", value=selected_module.is_graded)
+        st.html('<h3 class="sm-edit-section" id="edit-schedule">Schedule & status</h3>')
+        row2 = st.columns(2)
+        with row2[0]:
+            new_term = render_guided_term_input(
+                label="Semester",
+                key_prefix=f"edit_{selected_module.id}",
+                available_terms=profile_term_options(st.session_state.get("modules") or [], current_term=selected_module.term),
+                current_term=selected_module.term,
+                allow_empty=True,
+                empty_label="No semester assigned",
+                help_text="Choose a semester or add a new one.",
             )
-            delete_label = "Remove from this degree" if delete_secondary_registration else "Delete module"
-            if st.button(delete_label, type="primary", width="stretch"):
-                delete_message = "Module deleted."
-                if delete_secondary_registration:
-                    selected_module.extra_registrations = [
-                        reg for reg in selected_module.extra_registrations if reg.program_key != view_param
-                    ]
-                    delete_message = "Degree registration removed."
+        new_state = row2[1].selectbox(
+            "Status",
+            [state.value for state in ModuleState],
+            index=list(ModuleState).index(selected_module.state),
+        )
+        schedule_row = st.columns(2)
+        new_offering = schedule_row[0].selectbox(
+            "Offering",
+            [offering.value for offering in ModuleOffering],
+            index=list(ModuleOffering).index(selected_module.offered_in),
+        )
+        new_semester_span = int(
+            schedule_row[1].number_input(
+                "Semester span",
+                value=int(selected_module.semester_span or 1),
+                min_value=1,
+                step=1,
+            )
+        )
+
+        row2b = st.columns(2)
+        new_start_date = row2b[0].date_input(
+            "Start date",
+            value=_parse_iso_date(selected_module.start_date),
+            format="YYYY-MM-DD",
+            help="Optional, but required if you want the thesis deadline rule to run.",
+        )
+        new_end_date = row2b[1].date_input(
+            "End date",
+            value=_parse_iso_date(selected_module.end_date),
+            format="YYYY-MM-DD",
+            help="Optional, but required if you want the thesis deadline rule to run.",
+        )
+        if new_start_date and new_end_date and new_end_date < new_start_date:
+            st.warning("Thesis end date is before start date.")
+
+        st.html('<h3 class="sm-edit-section" id="edit-topics">Topics & classification</h3>')
+        type_options = sorted(set(selected_module.module_types) | {"PJ", "PWS", "SEM", "VL", "IV", "UE", "EX", "TUT", "LAB", "PR", "PRA", "Thesis", "Project", "Seminar"})
+        new_module_types = st.multiselect("Course types", type_options, default=selected_module.module_types, help="Used for course classification and the Portfolio’s project/practical-work grouping.")
+        new_catalog_mode = st.selectbox(
+            "Catalog assignment",
+            [mode.value for mode in CatalogAssignmentMode],
+            index=[mode.value for mode in CatalogAssignmentMode].index(display_module.catalog_mode.value),
+            help="Auto uses MOSES catalogs for the active degree when MOSES metadata is available. Manual uses the catalogs entered below.",
+        )
+        new_catalogs = st.text_input(
+            "Catalogs (comma separated)",
+            value=", ".join(
+                effective_catalogs_for_program(
+                    display_module,
+                    new_program,
+                    registration_for_program(display_module, new_program),
+                )
+            ),
+            disabled=new_catalog_mode == CatalogAssignmentMode.AUTO.value,
+        )
+        new_tags = st.text_input(
+            "Tags (comma separated)",
+            value=", ".join(selected_module.tags),
+        )
+        st.html('<h3 class="sm-edit-section" id="edit-notes">Description, notes & links</h3>')
+        new_desc = st.text_area(
+            "Description",
+            value=_normalize_text(selected_module.description) or "",
+        )
+        new_notes = st.text_area("Notes", value=selected_module.notes or "")
+
+        row3 = st.columns(2)
+        new_url = row3[0].text_input("Course link", value=selected_module.url or "")
+        new_git = row3[1].text_input("GitHub link", value=selected_module.github_url or "")
+
+        st.html('<h3 class="sm-edit-section" id="edit-degrees">Degree registrations</h3>')
+        with st.container():
+            new_extra_regs = render_registration_editor(
+                key_prefix=f"edit_{selected_module.id}",
+                primary_program=selected_module.program_key,
+                existing_registrations=selected_module.extra_registrations,
+                moses=moses,
+            )
+
+        save_from_bottom = st.button("Save changes", type="primary", key=f"edit_save_{selected_module.id}")
+        submitted = save_from_top or save_from_bottom
+
+        if submitted:
+            if not new_name.strip() or new_cp <= 0:
+                st.error("Enter a module name and a positive number of credits.")
+                st.stop()
+            if new_start_date and new_end_date and new_end_date < new_start_date:
+                st.error("Please correct the thesis dates before saving.")
+                st.stop()
+            selected_module.name = new_name
+            selected_module.cp = new_cp
+            selected_module.grade = new_grade if new_grade else None
+            selected_module.estimated_grade = new_est if new_est else None
+            selected_module.term = new_term
+            selected_module.state = ModuleState(new_state)
+            selected_module.source = ModuleSource(new_source)
+            selected_module.institution = new_institution.strip() if new_institution.strip() else None
+            selected_module.is_graded = new_graded
+            selected_module.offered_in = ModuleOffering(new_offering)
+            selected_module.semester_span = max(1, new_semester_span)
+            selected_module.start_date = new_start_date.isoformat() if new_start_date else None
+            selected_module.end_date = new_end_date.isoformat() if new_end_date else None
+            selected_module.tags = [tag.strip() for tag in new_tags.split(",") if tag.strip()]
+            selected_module.module_types = new_module_types
+            selected_module.description = new_desc
+            selected_module.notes = new_notes
+            selected_module.url = new_url
+            selected_module.github_url = new_git
+            selected_module.extra_registrations = new_extra_regs
+            parsed_catalog_mode = CatalogAssignmentMode(new_catalog_mode)
+            parsed_catalogs = (
+                []
+                if parsed_catalog_mode == CatalogAssignmentMode.AUTO
+                else [catalog.strip() for catalog in new_catalogs.split(",") if catalog.strip()]
+            )
+            if editing_secondary_registration:
+                target_reg = registration_for_program(selected_module, detail_program_key)
+                if target_reg is None:
+                    target_reg = DegreeRegistration(program_key=detail_program_key, area=new_area)
+                    selected_module.extra_registrations.append(target_reg)
+                target_reg.area = new_area
+                target_reg.catalog_mode = parsed_catalog_mode
+                target_reg.catalogs = parsed_catalogs
+            else:
+                selected_module.program_key = new_program
+                selected_module.area = new_area
+                selected_module.catalog_mode = parsed_catalog_mode
+                selected_module.catalogs = parsed_catalogs
+            save_modules(st.session_state["modules"], st.session_state["active_profile"])
+            st.session_state["details_editing"] = None
+            st.session_state["details_saved"] = True
+            st.rerun()
+
+    with st.container(border=True, key="nm_card_details_edit_sync"):
+        st.subheader("Refresh course information")
+        can_refresh_from_moses = bool(
+            (selected_module.moses_number and selected_module.moses_version is not None)
+            or (selected_module.url and "moseskonto.tu-berlin.de" in selected_module.url)
+            or selected_module.source == ModuleSource.MOSES
+        )
+        if can_refresh_from_moses:
+            st.caption("Reload the structured MOSES dataset without overwriting your planning fields such as status, notes, tags, or attached artifacts.")
+            if st.button("Refresh from TU MOSES"):
+                if not selected_module.url and not (
+                    selected_module.moses_number and selected_module.moses_version is not None
+                ):
+                    st.error("Please provide a TU MOSES link or MOSES number/version first.")
                 else:
-                    st.session_state["modules"] = [
-                        module
-                        for module in st.session_state["modules"]
-                        if module.id != selected_module.id
-                    ]
-                save_modules(st.session_state["modules"], st.session_state["active_profile"])
-                st.warning(delete_message)
-                st.rerun()
+                    try:
+                        with st.spinner("Refreshing MOSES metadata ..."):
+                            refresh_module_from_moses(selected_module)
+                        save_modules(st.session_state["modules"], st.session_state["active_profile"])
+                        st.success("MOSES metadata updated.")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Failed to refresh MOSES data: {exc}")
+        else:
+            st.caption("MOSES refresh is available once the module is linked to a TU MOSES detail page.")
+
+    with st.container(border=True, key="nm_card_details_delete"):
+        st.subheader("Remove course")
+        st.caption("Remove this module from the study plan.")
+        delete_secondary_registration = (
+            view_param != "All"
+            and selected_module.program_key != view_param
+            and registration_for_program(selected_module, view_param) is not None
+        )
+        delete_label = "Remove from this degree" if delete_secondary_registration else "Delete module"
+        if st.button(delete_label):
+            delete_message = "Module deleted."
+            if delete_secondary_registration:
+                selected_module.extra_registrations = [
+                    reg for reg in selected_module.extra_registrations if reg.program_key != view_param
+                ]
+                delete_message = "Degree registration removed."
+            else:
+                st.session_state["modules"] = [
+                    module
+                    for module in st.session_state["modules"]
+                    if module.id != selected_module.id
+                ]
+            save_modules(st.session_state["modules"], st.session_state["active_profile"])
+            st.warning(delete_message)
+            st.rerun()

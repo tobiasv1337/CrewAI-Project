@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import List
+import html
+from urllib.parse import urlencode
 
 import pandas as pd
 import streamlit as st
@@ -19,8 +21,9 @@ from core.registry import (
     registration_for_program,
 )
 from core.terms import term_sort_key
-from ui.manual_add import render_manual_add_panel
-from ui.moses import render_batch_refresh_button, render_moses_add_panel
+from ui.manual_add import render_manual_add_dialog_button
+from ui.moses import render_batch_refresh_button, render_moses_add_dialog_button
+from ui.course_style import course_area_color
 from ui.program_labels import short_program_label
 
 
@@ -107,9 +110,35 @@ def _effective_catalogs_for_all_registrations(module: Module) -> list[str]:
     return catalogs
 
 
+def _reset_module_filters() -> None:
+    for key in list(st.session_state):
+        if key.startswith("modules_filter_"):
+            del st.session_state[key]
+
+
+def _modules_by_topic(modules: list[Module]) -> dict[str, list[Module]]:
+    """Use the student's topic tags, preserving courses assigned to several topics."""
+    grouped: dict[str, list[Module]] = {}
+    for module in modules:
+        for topic in dict.fromkeys(tag.strip() for tag in module.tags if tag.strip()) or {"Without a topic": None}:
+            grouped.setdefault(topic, []).append(module)
+    return dict(sorted(grouped.items(), key=lambda item: (item[0] == "Without a topic", -len(item[1]), item[0].casefold())))
+
+
+def _module_card_html(module: Module, view: str | None) -> str:
+    url = "?" + urlencode({"page": "Module Details", "module_id": module.id, "program_view": view or "All", "return_to": "modules"})
+    grade = f"Grade {module.grade:.1f}" if module.grade is not None else (f"Expected {module.estimated_grade:.1f}" if module.estimated_grade is not None else ("Pass / Fail" if not module.is_graded else "Grade pending"))
+    kind = "bsc" if "b.sc" in module.program_key.lower() else "msc"
+    return (
+        f"<article class='sm-module-list-card sm-state-{module.state.name.lower()}'><div class='sm-course-accent' style='--course-area:{course_area_color(module.area)}'></div><a class='sm-module-name' href='{html.escape(url, quote=True)}' target='_self'>{html.escape(module.name)}</a>"
+        f"<div class='sm-module-meta'>{html.escape(module.term or 'Unscheduled')} · {module.cp:g} LP · {html.escape(grade)}</div>"
+        f"<div class='sm-module-meta'>{html.escape(module.area)}</div>"
+        f"<div class='sm-module-badges'><span>{html.escape(module.state.value)}</span><span class='pill-program-{kind}'>{html.escape(short_program_label(module.program_key))}</span></div></article>"
+    )
+
+
 def render_modules_page() -> None:
     st.title("Modules")
-    st.caption("Manage modules, status, grades, and metadata.")
 
     modules_all = st.session_state["modules"]
     managers = st.session_state["managers"]
@@ -126,49 +155,48 @@ def render_modules_page() -> None:
     candidate_count = len([m for m in modules if m.state == ModuleState.POSSIBLE_CANDIDATE])
     total_count = len(modules)
 
-    with st.container(border=True, key="nm_card_modules_overview"):
-        top_left, _ = st.columns([3, 1])
-        top_left.subheader("Overview")
-        top_left.caption("Filter, edit, and maintain your module records.")
-        if modules:
-            c1, c2, c3, c4, c5 = st.columns(5)
-            c1.metric("Total modules", total_count)
-            c2.metric("Completed", completed_count)
-            c3.metric("In Progress", in_progress_count)
-            c4.metric("Planned", planned_count)
-            c5.metric("Candidates", candidate_count)
-        else:
-            st.info("No modules yet. Add one below.")
-
-    add_tabs = st.tabs(["MOSES", "Manual / External"])
-    with add_tabs[0]:
-        render_moses_add_panel(
-            key_prefix="modules_page",
-            title="Add From MOSES",
-            caption="Search the TU Berlin MOSES catalog and add a module with canonical program areas.",
-            selectable_programs=selectable_programs,
-            default_program=view if view in selectable_programs else (selectable_programs[0] if selectable_programs else None),
-            create_state=ModuleState.PLANNED,
-            add_button_label="Add module from MOSES",
-        )
-    with add_tabs[1]:
-        render_manual_add_panel(
-            key_prefix="modules_page",
-            title="Add Manually",
-            caption="Add TU modules without MOSES metadata or external courses from other universities.",
-            selectable_programs=selectable_programs,
-            default_program=view if view in selectable_programs else (selectable_programs[0] if selectable_programs else None),
-            create_state=ModuleState.PLANNED,
-            add_button_label="Create manual course",
-            default_source=ModuleSource.EXTERNAL,
-        )
-
-    render_batch_refresh_button(
-        key_prefix="modules_page",
-        modules=modules_all,
-        program_key=view if view != "All" else None,
-        button_label="Refresh visible modules from MOSES",
+    st.html(
+        "<div class='sm-module-counts'>"
+        f"<strong>{total_count} modules</strong><span>{completed_count} completed</span>"
+        f"<span>{in_progress_count} in progress</span><span>{planned_count} planned</span>"
+        f"<span>{candidate_count} candidates</span></div>"
     )
+
+    with st.container(key="modules_toolbar"):
+        add_columns = st.columns(3)
+        with add_columns[0]:
+            render_moses_add_dialog_button(
+                trigger_label="Add from MOSES",
+                button_type="primary",
+                key_prefix="modules_page",
+                title="Add From MOSES",
+                caption="Search the TU Berlin MOSES catalog and add a module with canonical program areas.",
+                selectable_programs=selectable_programs,
+                default_program=view if view in selectable_programs else (selectable_programs[0] if selectable_programs else None),
+                create_state=ModuleState.PLANNED,
+                add_button_label="Add module from MOSES",
+            )
+        with add_columns[1]:
+            render_manual_add_dialog_button(
+                trigger_label="Add manually",
+                key_prefix="modules_page",
+                title="Add Manually",
+                caption="Add TU modules without MOSES metadata or external courses from other universities.",
+                selectable_programs=selectable_programs,
+                default_program=view if view in selectable_programs else (selectable_programs[0] if selectable_programs else None),
+                create_state=ModuleState.PLANNED,
+                add_button_label="Create manual course",
+                default_source=ModuleSource.EXTERNAL,
+            )
+
+        with add_columns[2]:
+            with st.popover("Update from MOSES", width="stretch"):
+                render_batch_refresh_button(
+                    key_prefix="modules_page",
+                    modules=modules_all,
+                    program_key=view if view != "All" else None,
+                    button_label="Refresh degree modules",
+                )
 
     program_pool = sorted({key for module in modules for key in module_program_keys(module)})
     if not program_pool:
@@ -200,20 +228,24 @@ def render_modules_page() -> None:
     catalog_options = catalog_pool + (["No Catalog"] if has_missing_catalogs else [])
     tag_options = tag_pool + (["No Tags"] if has_missing_tags else [])
 
-    with st.expander("Filters", expanded=False):
-        row1 = st.columns(5)
-        filter_program = row1[0].multiselect("Program", program_pool, default=program_pool)
-        filter_area = row1[1].multiselect("Area", areas, default=areas)
-        filter_state = row1[2].multiselect("Status", states, default=states)
-        filter_source = row1[3].multiselect("Source", source_values, default=source_values)
-        filter_term = row1[4].multiselect("Term", terms, default=terms)
+    st.session_state.setdefault("modules_filter_states", [state for state in states if state != ModuleState.POSSIBLE_CANDIDATE.value])
+    search = st.text_input("Search modules", placeholder="Search by name, topic, semester, or institution", key="module_search")
+    with st.popover("Filters", icon=":material/tune:"):
+        with st.container(key="module_filter_fields"):
+            st.button("Reset filters", key="modules_reset_filters", on_click=_reset_module_filters)
+            row1 = st.columns(2)
+            filter_program = row1[0].multiselect("Program", program_pool, key="modules_filter_program_pool", placeholder="All", format_func=short_program_label) or program_pool
+            filter_area = row1[1].multiselect("Area", areas, key="modules_filter_areas", placeholder="All") or areas
+            row_status = st.columns(2)
+            filter_state = row_status[0].multiselect("Status", states, key="modules_filter_states", placeholder="All") or states
+            filter_source = row_status[1].multiselect("Source", source_values, key="modules_filter_source_values", placeholder="All") or source_values
+            filter_term = st.multiselect("Term", terms, key="modules_filter_terms", placeholder="All") or terms
 
-        row2 = st.columns(3)
-        filter_types = row2[0].multiselect("Module Types", type_options, default=type_options)
-        filter_catalogs = row2[1].multiselect("Catalogs", catalog_options, default=catalog_options)
-        filter_tags = row2[2].multiselect("Tags", tag_options, default=tag_options)
+            row2 = st.columns(3)
+            filter_types = row2[0].multiselect("Module Types", type_options, key="modules_filter_type_options", placeholder="All") or type_options
+            filter_catalogs = row2[1].multiselect("Catalogs", catalog_options, key="modules_filter_catalog_options", placeholder="All") or catalog_options
+            filter_tags = row2[2].multiselect("Tags", tag_options, key="modules_filter_tag_options", placeholder="All") or tag_options
 
-    st.markdown("---")
 
     filtered_modules = [
         m
@@ -243,13 +275,47 @@ def render_modules_page() -> None:
         )
     ]
 
+    if search.strip():
+        query = search.strip().casefold()
+        filtered_modules = [module for module in filtered_modules if query in " ".join([module.name, module.area, module.term or "", module.institution or "", *module.tags]).casefold()]
+
     filtered_modules = sorted(
-        filtered_modules, key=lambda m: (term_sort_key(m.term),) + module_area_sort_key(m)
+        filtered_modules, key=lambda m: (term_sort_key(m.term, newest_first=True),) + module_area_sort_key(m)
     )
+
+    # Migrate the former list preference while keeping bulk editing available.
+    if st.session_state.get("modules_view") == "List":
+        st.session_state["modules_view"] = "Topics"
+    mode = st.segmented_control("View", ["Topics", "All courses", "Edit table"], default="Topics", key="modules_view", label_visibility="collapsed")
+    if mode != "Edit table":
+        if not filtered_modules:
+            st.info("No modules match your search and filters.")
+            return
+        if mode == "All courses":
+            st.caption(f"{len(filtered_modules)} courses")
+            st.html("<div class='sm-module-browser'>" + "".join(_module_card_html(module, view) for module in filtered_modules) + "</div>")
+            return
+        groups = _modules_by_topic(filtered_modules)
+        st.caption(f"{len(filtered_modules)} courses · {len(groups)} topic groups. Courses with several topics appear in each.")
+        if "modules_topic_focus" in st.session_state:
+            st.session_state["modules_topic_focus"] = [topic for topic in st.session_state["modules_topic_focus"] if topic in groups]
+        selected_topics = st.multiselect("Browse topics", list(groups), key="modules_topic_focus", placeholder="All topics — type to narrow down")
+        if selected_topics:
+            groups = {topic: courses for topic, courses in groups.items() if topic in selected_topics}
+        sections = []
+        for index, (topic, courses) in enumerate(groups.items()):
+            completed = sum(module.state == ModuleState.COMPLETED for module in courses)
+            sections.append(
+                f"<section class='sm-topic-section' id='module-topic-{index}'>"
+                f"<div class='sm-topic-heading'><h2>{html.escape(topic)}</h2><span>{len(courses)} {'course' if len(courses) == 1 else 'courses'} · {completed} completed</span></div>"
+                "<div class='sm-module-browser'>" + "".join(_module_card_html(module, view) for module in courses) + "</div></section>"
+            )
+        st.html("".join(sections))
+        return
 
     with st.container(border=True, key="nm_card_modules_table"):
         head_left, head_right = st.columns([3, 1])
-        head_left.subheader("Module table")
+        head_left.subheader("Edit modules")
         head_right.caption(f"{len(filtered_modules)} results")
 
         data = []
@@ -338,9 +404,11 @@ def render_modules_page() -> None:
             "GitHub URL": st.column_config.LinkColumn("GitHub", display_text="Code"),
         }
 
+        advanced_columns = st.toggle("Show metadata columns", key="module_advanced_columns")
         edited_df = st.data_editor(
             df,
             column_config=column_config,
+            column_order=df_columns if advanced_columns else ["Name", "Status", "Term", "Credits", "Grade", "Estimated", "Area"],
             hide_index=True,
             num_rows="dynamic",
             key="module_editor",

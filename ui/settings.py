@@ -68,14 +68,13 @@ def _set_discard_variant_key(program_key: str, selected: str) -> None:
 
 def render_settings_page() -> None:
     st.title("Settings")
-    st.caption("Personalization and technical settings for the grade manager.")
 
     with st.container(border=True, key="nm_card_settings_general"):
         st.subheader("General")
         hide_chrome = st.toggle(
-            "Hide Streamlit toolbar",
+            "Hide deployment controls",
             value=bool(st.session_state.get("ui_hide_streamlit_chrome", True)),
-            help="Hides Streamlit's desktop header/menu/footer. On mobile, the sidebar opener stays visible.",
+            help="The appearance menu remains available at the top right.",
         )
         if hide_chrome != st.session_state.get("ui_hide_streamlit_chrome"):
             st.session_state["ui_hide_streamlit_chrome"] = hide_chrome
@@ -137,10 +136,6 @@ def render_settings_page() -> None:
                     st.info(
                         "The current plan produces the same forecast with all available discard strategies."
                     )
-
-    with st.container(border=True, key="nm_card_settings_data"):
-        st.subheader("Data & Import")
-        st.write("Planned: campus imports, module catalog validation, and sync options.")
 
     # ── User Profiles ──────────────────────────────────────────────────────────
     with st.container(border=True, key="nm_card_settings_profiles"):

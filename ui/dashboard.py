@@ -298,7 +298,7 @@ def _completed_grade_average(modules: list) -> dict[str, float] | None:
 def _status_color_map() -> dict[str, str]:
     return {
         ModuleState.COMPLETED.value: "#16a34a",
-        ModuleState.IN_PROGRESS.value: "#f59e0b",
+        ModuleState.IN_PROGRESS.value: "#3b82f6",
         ModuleState.PLANNED.value: "#64748b",
         ModuleState.POSSIBLE_CANDIDATE.value: "#94a3b8",
     }
@@ -309,7 +309,7 @@ def _apply_chart_style(fig, *, height: int = 320, showlegend: bool = False) -> N
         height=height,
         autosize=True,
         showlegend=showlegend,
-        margin=dict(l=10, r=10, t=30, b=10),
+        margin=dict(l=24, r=32, t=55 if showlegend else 30, b=55),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         legend=dict(
@@ -319,10 +319,23 @@ def _apply_chart_style(fig, *, height: int = 320, showlegend: bool = False) -> N
             xanchor="left",
             x=0.0,
             title=None,
+            bgcolor="rgba(0,0,0,0)",
+            font=dict(size=11),
+            entrywidth=0.5,
+            entrywidthmode="fraction",
         ),
     )
-    fig.update_xaxes(showgrid=False, zeroline=False)
-    fig.update_yaxes(gridcolor="rgba(148,163,184,0.16)", zeroline=False)
+    fig.update_xaxes(showgrid=False, zeroline=False, automargin=True, title_standoff=12)
+    fig.update_yaxes(gridcolor="rgba(148,163,184,0.16)", zeroline=False, automargin=True, title_standoff=12)
+    fig.update_layout(coloraxis_colorbar=dict(thickness=12, len=.8, title_side="right"))
+    fig.update_traces(cliponaxis=False, selector=dict(type="bar"))
+    horizontal_labels = list(dict.fromkeys(
+        str(value) for trace in fig.data if getattr(trace, "orientation", None) == "h"
+        for value in (trace.y if trace.y is not None else []) if isinstance(value, str)
+    ))
+    if horizontal_labels and any(len(value) > 28 for value in horizontal_labels):
+        fig.update_yaxes(tickmode="array", tickvals=horizontal_labels,
+                         ticktext=[html.escape(value if len(value) <= 28 else value[:26].rstrip() + "…") for value in horizontal_labels])
 
 
 def _insight_chip(label: str, value: str, *, tone: str = "neutral") -> str:
@@ -1231,7 +1244,7 @@ def _render_topic_cluster_section(
     with st.container(border=True, key=f"nm_card_dash_topic_clusters_{key_suffix}"):
         st.subheader("Topic Clusters")
         st.caption(
-            "Credits by academic tags and catalogs. Possible candidates are hidden by default so speculative courses do not dominate the map."
+            "Credits by topic and catalog. Candidates are optional."
         )
         if show_candidate_toggle and candidate_modules:
             include_choice = st.toggle(
@@ -1282,7 +1295,8 @@ def _render_topic_cluster_section(
         chart_df["Scope"] = chart_df["Scope"].str.replace(" Credits", "", regex=False)
         chart_df = chart_df[chart_df["Scope Credits"] > 0]
 
-        chart_col, table_col = st.columns([1.8, 1])
+        chart_col = st.container()
+        table_col = st.expander("Topic data")
         with chart_col:
             if not chart_df.empty:
                 fig_topics = px.bar(
@@ -1747,11 +1761,8 @@ def _render_target_grade_optimizer(
             )
 
         with controls[1]:
-            st.markdown(
-                "Use each row to choose whether the optimizer may change that grade. "
-                "`Best allowed` is the best grade it may suggest; `Worst allowed` starts at the current plan grade by default, "
-                "so the search only asks for required improvements unless you loosen it."
-            )
+            with st.popover("About grade bounds"):
+                st.write("Enable a module to let the optimizer suggest a grade. Best allowed and Worst allowed limit its suggestions. The worst bound starts at your current estimate, so the optimizer asks only for improvements unless you change it.")
 
         for variable in variables:
             use_key = _target_variable_key(program_key, variable.id, "use")
@@ -1763,7 +1774,7 @@ def _render_target_grade_optimizer(
             _ensure_slider_value(worst_key, variable.baseline_grade, variable.grade_options)
 
         if variables:
-            bulk_cols = st.columns([1, 1, 1.4, 2.6])
+            bulk_cols = st.columns([1, 1, 2])
             if bulk_cols[0].button("Allow all", key=f"target_allow_all_{key_suffix}"):
                 for variable in variables:
                     st.session_state[_target_variable_key(program_key, variable.id, "use")] = True
@@ -1776,9 +1787,6 @@ def _render_target_grade_optimizer(
                 "Only changes",
                 value=False,
                 key=f"target_changes_only_{key_suffix}",
-            )
-            bulk_cols[3].caption(
-                "Rows are sorted by action: changes first, fixed constraints next, and optimizer-off rows last."
             )
             st.markdown(_target_legend_html(), unsafe_allow_html=True)
         else:
@@ -1811,23 +1819,14 @@ def _render_target_grade_optimizer(
         raw_baseline = _format_raw_grade(
             simulation.baseline_result.calculation_details.get("raw_average")
         )
-        metric_cols = st.columns(5)
+        metric_cols = st.columns(4)
         metric_cols[0].metric("Target", _format_grade(simulation.target_grade))
         metric_cols[1].metric("Forecast", _format_grade(simulation.forecast_result.final_grade))
-        metric_cols[2].metric(
-            "Constraint start",
-            _format_grade(simulation.baseline_result.final_grade),
-            help=f"Raw average: {raw_baseline}",
-        )
-        metric_cols[3].metric("Best reachable", _format_grade(simulation.best_result.final_grade))
-        metric_cols[4].metric(
-            "Suggested result",
-            _format_grade(simulation.solution_result.final_grade),
-            help=f"Raw average: {raw_solution}",
-        )
+        metric_cols[2].metric("Best reachable", _format_grade(simulation.best_result.final_grade))
+        metric_cols[3].metric("Suggested result", _format_grade(simulation.solution_result.final_grade), help=f"Raw average: {raw_solution}")
 
         if simulation.feasible:
-            st.success(simulation.message)
+            st.success(f"{simulation.changed_count} grade change{'s' if simulation.changed_count != 1 else ''} to reach your target." if simulation.changed_count else "Your current estimates already reach this target.")
             if simulation.solution_result.final_grade < simulation.target_grade - 1e-9:
                 st.info(
                     "The weakest assignment found still lands better than the selected target because of the available grade steps and credit weights."
@@ -1847,14 +1846,13 @@ def _render_target_grade_optimizer(
             _render_result_course_tabs(simulation.solution_result)
             return
 
-        summary_cols = st.columns(3)
-        summary_cols[0].metric("Changed open grades", str(simulation.changed_count))
-        summary_cols[1].metric(
-            "Weighted improvement",
-            f"{simulation.total_weighted_improvement:.1f}",
-            help="Sum of LP-weighted grade improvements versus the current forecast.",
-        )
-        summary_cols[2].metric("Suggested raw", raw_solution)
+        with st.expander("Calculation details"):
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Constraint start", _format_grade(simulation.baseline_result.final_grade), help=f"Raw average: {raw_baseline}")
+            summary_cols[1].metric("Changed open grades", str(simulation.changed_count))
+            summary_cols[2].metric("Weighted improvement", f"{simulation.total_weighted_improvement:.1f}", help="Sum of LP-weighted grade improvements versus the current forecast.")
+            summary_cols[3].metric("Suggested raw", raw_solution)
+            st.caption(simulation.message)
 
         assignment_by_id = {assignment.id: assignment for assignment in simulation.assignments}
         ordered_variables = sorted(
@@ -1983,7 +1981,7 @@ def _combined_degree_cards_html(degree_rows: list[dict[str, object]]) -> str:
         best = html.escape(_format_grade(float(row.get("Best") or 0.0)))
         worst = html.escape(_format_grade(float(row.get("Worst") or 0.0)))
         cards.append(
-            "<section class='nm-degree-card'>"
+            f"<section class='nm-degree-card nm-degree-card-{'bsc' if 'B.Sc' in program else 'msc'}'>"
             "<div class='nm-degree-card-head'>"
             "<div>"
             f"<div class='nm-degree-card-title'>{program}</div>"
@@ -2010,6 +2008,60 @@ def _combined_degree_cards_html(degree_rows: list[dict[str, object]]) -> str:
     return f"<div class='nm-degree-card-grid'>{''.join(cards)}</div>"
 
 
+def _render_rule_rows(results) -> None:
+    rows = []
+    for result in results:
+        severity = "success" if _validation_completed(result) else _validation_display_severity(result)
+        status = "Satisfied" if _validation_completed(result) else _validation_display_status(result)
+        status = status.replace("Info: covered by planned", "Covered by plan").replace("Info: covered by in-progress", "In progress")
+        message = str(result.message)
+        if len(message) > 200:
+            summary = message.split(". ", 1)[0].rstrip(".") + "."
+            explanation = f"<div>{html.escape(summary)}</div><details class='sm-rule-detail'><summary>Details</summary><div>{html.escape(message)}</div></details>"
+        else:
+            explanation = f"<div>{html.escape(message)}</div>"
+        rows.append(
+            f"<div class='sm-rule-row'><span class='sm-rule-status sm-rule-{html.escape(severity)}'>{html.escape(status)}</span>"
+            f"<div><strong>{html.escape(result.rule_name)}</strong>{explanation}</div></div>"
+        )
+    st.html("<div class='sm-rule-list'>" + "".join(rows) + "</div>")
+
+
+def _render_requirement_results(results) -> None:
+    attention = [result for result in results if not _validation_completed(result) and _validation_display_severity(result) in {"error", "warning"}]
+    covered = [result for result in results if not _validation_completed(result) and result not in attention]
+    completed = [result for result in results if _validation_completed(result)]
+    attention.sort(key=lambda result: _validation_display_severity(result) != "error")
+    if attention:
+        _render_rule_rows(attention)
+    else:
+        st.success("No requirement issues need attention.")
+    if covered:
+        st.markdown(f"##### Covered by your plan · {len(covered)}")
+        _render_rule_rows(covered)
+    if completed:
+        st.markdown(f"##### Satisfied requirements · {len(completed)}")
+        _render_rule_rows(completed)
+
+
+def _dashboard_sections(labels, key_suffix):
+    key = f"dashboard_sections_{key_suffix}"
+    requested = st.query_params.get("dashboard_tab", "Overview")
+    def select_section():
+        st.query_params["dashboard_tab"] = st.session_state[key]
+    return st.tabs(labels, key=key, default=requested if requested in labels else "Overview", on_change=select_section)
+
+
+def _render_portfolio_section(modules, programs, key_suffix):
+    from ui.portfolio import completed_portfolio_modules, render_portfolio
+    completed = completed_portfolio_modules(modules)
+    render_portfolio(
+        modules, view=str(st.session_state.get("program_view") or "All"), key_suffix=key_suffix,
+        degree_rows=_combined_degree_summary_rows(programs, st.session_state.get("managers", {}), st.session_state.get("modules", [])),
+        topic_rows=_topic_tag_treemap_rows(completed), style_chart=_apply_chart_style,
+    )
+
+
 def _render_combined_dashboard(programs: list[str]) -> None:
     managers = st.session_state.get("managers", {})
     all_modules = list(st.session_state.get("modules") or [])
@@ -2023,425 +2075,405 @@ def _render_combined_dashboard(programs: list[str]) -> None:
         st.info("No modules are available for the combined dashboard yet.")
         return
 
-    with st.container(border=True, key=f"nm_card_dash_overview_{key_suffix}"):
-        st.subheader("Overview")
-        st.caption(
-            "Official grades stay separated by degree. Combined workload and topic visuals use unique physical modules unless a chart is explicitly degree-registration based."
-        )
+    overview_tab, portfolio_tab, grades_tab, requirements_tab, workload_tab, topics_tab = _dashboard_sections(['Overview', 'Portfolio', 'Grades', 'Requirements', 'Workload', 'Topics'], key_suffix)
+    with portfolio_tab:
+        _render_portfolio_section(physical_modules, programs, key_suffix)
 
-        if degree_rows:
-            st.html(_combined_degree_cards_html(degree_rows))
-
-        rule_issues = sum(int(row.get("Rule issues") or 0) for row in degree_rows)
-        aggregate_items = [
-            {"label": "Degrees", "value": str(len(programs))},
-            {
-                "label": "Unique completed LP",
-                "value": f"{float(physical_metrics['completed_cp']):.0f}",
-                "help": "Physical completed credits counted once, even if a course is registered in multiple degrees.",
-            },
-            {
-                "label": "Unique planned LP",
-                "value": f"{float(physical_metrics['planned_cp']):.0f}",
-                "help": "Physical non-candidate credits counted once.",
-            },
-            {
-                "label": "Candidates",
-                "value": f"{float(physical_metrics['candidate_cp']):.0f}",
-                "help": f"{int(physical_metrics['candidate_count'])} possible candidate module(s).",
-            },
-            {
-                "label": "Active semesters",
-                "value": str(int(physical_metrics["active_terms"])),
-            },
-            {
-                "label": "Open modules",
-                "value": str(int(physical_metrics["open_modules"])),
-            },
-            {
-                "label": "Unofficial current",
-                "value": _format_grade(float(physical_metrics["current_grade"])),
-                "help": "Physical weighted average over completed graded modules only. This is not an official degree grade.",
-            },
-            {
-                "label": "Unofficial forecast",
-                "value": _format_grade(float(physical_metrics["forecast_grade"])),
-                "help": "Physical weighted average over final and estimated grades. This is not an official degree grade.",
-            },
-            {
-                "label": "Rule issues",
-                "value": str(rule_issues),
-                "help": "Errors and warnings across degree-specific rule checks.",
-            },
-        ]
-        st.markdown("##### Combined physical workload")
-        _render_metric_items(aggregate_items, columns=4)
-
-    st.markdown("---")
-
-    _render_topic_cluster_section(
-        modules=_combined_topic_modules(programs, all_modules),
-        key_suffix=key_suffix,
-        show_candidate_toggle=True,
-    )
-
-    st.markdown("---")
-
-    program_colors = _program_color_map(programs)
-    term_physical_rows = _combined_term_physical_rows(programs, all_modules)
-    term_degree_rows = _combined_term_degree_rows(programs, all_modules)
-    with st.container(border=True, key=f"nm_card_dash_semester_load_{key_suffix}"):
-        st.subheader("Credits / Semester")
-        st.caption(
-            "Default view counts every real course once. Shared courses get their own color so the total semester workload is not inflated."
-        )
-        show_degree_accounting = st.toggle(
-            "Show degree-registration accounting",
-            value=False,
-            key=f"semester_show_degree_registration_{key_suffix}",
-            help="Counts a cross-registered course once per degree. Useful for requirement accounting, not for physical workload.",
-        )
-        active_rows = term_degree_rows if show_degree_accounting else term_physical_rows
-        if active_rows:
-            term_df = pd.DataFrame(active_rows)
-            term_order = sorted(term_df["Term"].unique().tolist(), key=term_sort_key)
-            program_order = [short_program_label(key) for key in programs]
-            if _SHARED_COURSE_LABEL in set(term_df["Program"]):
-                program_order.append(_SHARED_COURSE_LABEL)
-            fig_terms = px.bar(
-                term_df,
-                x="Term",
-                y="Credits",
-                color="Program",
-                barmode="stack",
-                category_orders={"Term": term_order, "Program": program_order},
-                color_discrete_map=program_colors,
-                text="Credits",
-                hover_data={
-                    "Credits": ":.1f",
-                    "Program": True,
-                    **(
-                        {
-                            "Course": True,
-                            "Registered Degrees": True,
-                        }
-                        if not show_degree_accounting
-                        else {}
-                    ),
-                },
+    with overview_tab:
+        with st.container(border=True, key=f"nm_card_dash_overview_{key_suffix}"):
+            st.subheader("Overview")
+            st.caption(
+                "Courses are counted once across degrees. Each degree keeps its own official grade."
             )
-            _apply_chart_style(fig_terms, height=380, showlegend=True)
-            fig_terms.update_layout(
-                xaxis=dict(title=""),
-                yaxis=dict(title="Degree-registration credits" if show_degree_accounting else "Physical credits"),
-            )
-            fig_terms.update_traces(texttemplate="%{y:.0f}", textposition="inside")
-            fig_terms.add_hline(
-                y=30,
-                line_dash="dot",
-                line_color="#94a3b8",
-                annotation_text="30 LP reference",
-                annotation_position="top left",
-            )
-            st.plotly_chart(fig_terms, width="stretch", key=f"combined_terms_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-        else:
-            st.info("No semester credit data yet.")
 
-        shared_rows = _combined_shared_course_rows(programs, all_modules)
-        if shared_rows:
-            with st.expander("Shared courses counted once in the default workload view", expanded=False):
-                st.dataframe(
-                    pd.DataFrame(shared_rows),
-                    width="stretch",
-                    hide_index=True,
-                    height=min(360, 88 + 35 * len(shared_rows)),
-                    column_config={"Credits": st.column_config.NumberColumn("Credits", format="%.1f")},
-                )
-
-    st.markdown("---")
-
-    with st.container(border=True, key=f"nm_card_dash_degree_comparison_{key_suffix}"):
-        st.subheader("Degree Comparison")
-        left, right = st.columns(2)
-
-        with left:
-            st.markdown("##### Progress to requirement")
             if degree_rows:
-                progress_df = pd.DataFrame(
-                    [
-                        {
-                            "Program": row["Program"],
-                            "Segment": "Completed",
-                            "Credits": float(row["Completed Credits"]),
-                        }
-                        for row in degree_rows
-                    ]
-                    + [
-                        {
-                            "Program": row["Program"],
-                            "Segment": "Remaining",
-                            "Credits": max(
-                                0.0,
-                                float(row["Required Credits"]) - float(row["Completed Credits"]),
-                            ),
-                        }
-                        for row in degree_rows
-                    ]
-                )
-                fig_progress = px.bar(
-                    progress_df,
-                    x="Credits",
-                    y="Program",
-                    color="Segment",
-                    orientation="h",
+                st.html(_combined_degree_cards_html(degree_rows))
+
+            rule_issues = sum(int(row.get("Rule issues") or 0) for row in degree_rows)
+            aggregate_items = [
+                {"label": "Degrees", "value": str(len(programs))},
+                {
+                    "label": "Completed LP",
+                    "value": f"{float(physical_metrics['completed_cp']):.0f}",
+                    "help": "Physical completed credits counted once, even if a course is registered in multiple degrees.",
+                },
+                {
+                    "label": "Total plan LP",
+                    "value": f"{float(physical_metrics['planned_cp']):.0f}",
+                    "help": "Physical non-candidate credits counted once.",
+                },
+                {
+                    "label": "Candidate modules",
+                    "value": str(int(physical_metrics["candidate_count"])),
+                    "help": f"{float(physical_metrics['candidate_cp']):.0f} LP, excluded from calculations.",
+                },
+                {
+                    "label": "Active semesters",
+                    "value": str(int(physical_metrics["active_terms"])),
+                },
+                {
+                    "label": "Open modules",
+                    "value": str(int(physical_metrics["open_modules"])),
+                },
+                {
+                    "label": "Unofficial current",
+                    "value": _format_grade(float(physical_metrics["current_grade"])),
+                    "help": "Physical weighted average over completed graded modules only. This is not an official degree grade.",
+                },
+                {
+                    "label": "Unofficial forecast",
+                    "value": _format_grade(float(physical_metrics["forecast_grade"])),
+                    "help": "Physical weighted average over final and estimated grades. This is not an official degree grade.",
+                },
+                {
+                    "label": "Rule issues",
+                    "value": str(rule_issues),
+                    "help": "Errors and warnings across degree-specific rule checks.",
+                },
+            ]
+            st.markdown("##### Combined physical workload")
+            _render_metric_items([aggregate_items[i] for i in (1, 2, 4, 8)], columns=4)
+            _render_metric_items([aggregate_items[i] for i in (0, 3, 5)], columns=3)
+            st.markdown("##### Grades across completed and planned courses")
+            _render_metric_items([aggregate_items[i] for i in (6, 7)], columns=2)
+
+
+    with topics_tab:
+        _render_topic_cluster_section(
+            modules=_combined_topic_modules(programs, all_modules),
+            key_suffix=key_suffix,
+            show_candidate_toggle=True,
+        )
+
+
+    with workload_tab:
+        program_colors = _program_color_map(programs)
+        term_physical_rows = _combined_term_physical_rows(programs, all_modules)
+        term_degree_rows = _combined_term_degree_rows(programs, all_modules)
+        with st.container(border=True, key=f"nm_card_dash_semester_load_{key_suffix}"):
+            st.subheader("Credits / Semester")
+            st.caption(
+                "Shared courses count once in your workload."
+            )
+            show_degree_accounting = st.toggle(
+                "Show degree-registration accounting",
+                value=False,
+                key=f"semester_show_degree_registration_{key_suffix}",
+                help="Counts a cross-registered course once per degree. Useful for requirement accounting, not for physical workload.",
+            )
+            active_rows = term_degree_rows if show_degree_accounting else term_physical_rows
+            if active_rows:
+                term_df = pd.DataFrame(active_rows)
+                term_order = sorted(term_df["Term"].unique().tolist(), key=term_sort_key)
+                program_order = [short_program_label(key) for key in programs]
+                if _SHARED_COURSE_LABEL in set(term_df["Program"]):
+                    program_order.append(_SHARED_COURSE_LABEL)
+                fig_terms = px.bar(
+                    term_df,
+                    x="Term",
+                    y="Credits",
+                    color="Program",
                     barmode="stack",
+                    category_orders={"Term": term_order, "Program": program_order},
+                    color_discrete_map=program_colors,
                     text="Credits",
-                    color_discrete_map={
-                        "Completed": "#16a34a",
-                        "Remaining": "#dbe2ea",
+                    hover_data={
+                        "Credits": ":.1f",
+                        "Program": True,
+                        **(
+                            {
+                                "Course": True,
+                                "Registered Degrees": True,
+                            }
+                            if not show_degree_accounting
+                            else {}
+                        ),
                     },
                 )
-                _apply_chart_style(fig_progress, height=320, showlegend=True)
-                fig_progress.update_layout(xaxis=dict(title="Credits"), yaxis=dict(title=""))
-                fig_progress.update_traces(texttemplate="%{x:.0f}", textposition="inside")
-                st.plotly_chart(fig_progress, width="stretch", key=f"combined_degree_progress_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                _apply_chart_style(fig_terms, height=380, showlegend=True)
+                fig_terms.update_layout(
+                    xaxis=dict(title=""),
+                    yaxis=dict(title="Degree-registration credits" if show_degree_accounting else "Physical credits"),
+                )
+                fig_terms.update_traces(texttemplate="%{y:.0f}", textposition="inside")
+                fig_terms.add_hline(
+                    y=30,
+                    line_dash="dot",
+                    line_color="#94a3b8",
+                    annotation_text="30 LP reference",
+                    annotation_position="top left",
+                )
+                st.plotly_chart(fig_terms, width="stretch", key=f"combined_terms_{key_suffix}", config={"displayModeBar": False, "responsive": True})
             else:
-                st.info("No degree progress data available.")
+                st.info("No semester credit data yet.")
 
-        with right:
-            st.markdown("##### Grade outlook by degree")
-            grade_rows = []
-            for row in degree_rows:
-                for scenario in ["Current", "Forecast", "Best", "Worst"]:
-                    grade = float(row.get(scenario) or 0.0)
-                    if grade > 0:
-                        grade_rows.append(
+            shared_rows = _combined_shared_course_rows(programs, all_modules)
+            if shared_rows:
+                with st.expander("Shared courses counted once in the default workload view", expanded=False):
+                    st.dataframe(
+                        pd.DataFrame(shared_rows),
+                        width="stretch",
+                        hide_index=True,
+                        height=min(360, 88 + 35 * len(shared_rows)),
+                        column_config={"Credits": st.column_config.NumberColumn("Credits", format="%.1f")},
+                    )
+
+
+    with overview_tab:
+        with st.container(border=True, key=f"nm_card_dash_degree_comparison_{key_suffix}"):
+            st.subheader("Degree Comparison")
+            left, right = st.columns(2)
+
+            with left:
+                st.markdown("##### Progress to requirement")
+                if degree_rows:
+                    progress_df = pd.DataFrame(
+                        [
                             {
                                 "Program": row["Program"],
-                                "Scenario": scenario,
-                                "Grade": grade,
+                                "Segment": "Completed",
+                                "Credits": float(row["Completed Credits"]),
                             }
-                        )
-            if grade_rows:
-                grade_outlook_df = pd.DataFrame(grade_rows)
-                fig_grades = px.bar(
-                    grade_outlook_df,
-                    x="Program",
-                    y="Grade",
-                    color="Scenario",
-                    barmode="group",
-                    text="Grade",
-                    color_discrete_map={
-                        "Current": "#1d4ed8",
-                        "Forecast": "#14b8a6",
-                        "Best": "#10b981",
-                        "Worst": "#ef4444",
-                    },
-                )
-                _apply_chart_style(fig_grades, height=320, showlegend=True)
-                fig_grades.update_layout(
-                    xaxis=dict(title=""),
-                    yaxis=dict(title="Average grade", autorange="reversed"),
-                )
-                fig_grades.update_traces(texttemplate="%{y:.1f}", textposition="outside")
-                st.plotly_chart(fig_grades, width="stretch", key=f"combined_degree_grades_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No official grade data available yet.")
+                            for row in degree_rows
+                        ]
+                        + [
+                            {
+                                "Program": row["Program"],
+                                "Segment": "Remaining",
+                                "Credits": max(
+                                    0.0,
+                                    float(row["Required Credits"]) - float(row["Completed Credits"]),
+                                ),
+                            }
+                            for row in degree_rows
+                        ]
+                    )
+                    fig_progress = px.bar(
+                        progress_df,
+                        x="Credits",
+                        y="Program",
+                        color="Segment",
+                        orientation="h",
+                        barmode="stack",
+                        text="Credits",
+                        color_discrete_map={
+                            "Completed": "#16a34a",
+                            "Remaining": "#dbe2ea",
+                        },
+                    )
+                    _apply_chart_style(fig_progress, height=320, showlegend=True)
+                    fig_progress.update_layout(xaxis=dict(title="Credits"), yaxis=dict(title=""))
+                    fig_progress.update_traces(texttemplate="%{x:.0f}", textposition="inside")
+                    st.plotly_chart(fig_progress, width="stretch", key=f"combined_degree_progress_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No degree progress data available.")
 
-    st.markdown("---")
+            with right:
+                st.markdown("##### Grade outlook by degree")
+                grade_rows = []
+                for row in degree_rows:
+                    for scenario in ["Current", "Forecast", "Best", "Worst"]:
+                        grade = float(row.get(scenario) or 0.0)
+                        if grade > 0:
+                            grade_rows.append(
+                                {
+                                    "Program": row["Program"],
+                                    "Scenario": scenario,
+                                    "Grade": grade,
+                                }
+                            )
+                if grade_rows:
+                    grade_outlook_df = pd.DataFrame(grade_rows)
+                    fig_grades = px.bar(
+                        grade_outlook_df,
+                        x="Program",
+                        y="Grade",
+                        color="Scenario",
+                        barmode="group",
+                        text="Grade",
+                        color_discrete_map={
+                            "Current": "#1d4ed8",
+                            "Forecast": "#14b8a6",
+                            "Best": "#10b981",
+                            "Worst": "#ef4444",
+                        },
+                    )
+                    _apply_chart_style(fig_grades, height=320, showlegend=True)
+                    fig_grades.update_layout(
+                        xaxis=dict(title=""),
+                        yaxis=dict(title="Average grade", autorange="reversed"),
+                    )
+                    fig_grades.update_traces(texttemplate="%{y:.1f}", textposition="outside")
+                    st.plotly_chart(fig_grades, width="stretch", key=f"combined_degree_grades_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No official grade data available yet.")
 
-    with st.container(border=True, key=f"nm_card_dash_composition_{key_suffix}"):
-        st.subheader("Combined Composition")
-        st.caption("Status and area charts use unique physical modules and exclude possible candidates. Credits by degree use degree-registration credits.")
-        status_df = pd.DataFrame(status_distribution(counted_physical_modules))
-        program_credit_df = pd.DataFrame(_combined_program_credit_rows(programs, all_modules))
-        area_df = pd.DataFrame(area_distribution(counted_physical_modules))
-        left, middle, right = st.columns(3)
 
-        with left:
-            st.markdown("##### Physical status mix")
-            if not status_df.empty:
-                fig_status = px.pie(
-                    status_df,
-                    names="Status",
-                    values="Credits",
-                    hole=0.62,
-                    color="Status",
-                    color_discrete_map=_status_color_map(),
-                )
-                _apply_chart_style(fig_status, height=320, showlegend=True)
-                fig_status.update_traces(textinfo="percent+label", sort=False)
-                st.plotly_chart(fig_status, width="stretch", key=f"combined_status_mix_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No status data yet.")
+    with workload_tab:
+        with st.container(border=True, key=f"nm_card_dash_composition_{key_suffix}"):
+            st.subheader("Combined Composition")
+            st.caption("Status and area charts use unique physical modules and exclude possible candidates. Credits by degree use degree-registration credits.")
+            status_df = pd.DataFrame(status_distribution(counted_physical_modules))
+            program_credit_df = pd.DataFrame(_combined_program_credit_rows(programs, all_modules))
+            area_df = pd.DataFrame(area_distribution(counted_physical_modules))
+            left, middle = st.columns(2)
+            right = st.container()
 
-        with middle:
-            st.markdown("##### Credits by degree")
-            if not program_credit_df.empty:
-                sorted_program_df = program_credit_df.sort_values("Credits", ascending=True)
-                fig_program = px.bar(
-                    sorted_program_df,
-                    x="Credits",
-                    y="Program",
-                    orientation="h",
-                    color="Program",
-                    text="Credits",
-                    color_discrete_map=program_colors,
-                )
-                _apply_chart_style(fig_program, height=320, showlegend=False)
-                fig_program.update_layout(xaxis=dict(title="Degree-registration credits"), yaxis=dict(title=""))
-                fig_program.update_traces(texttemplate="%{x:.0f}", textposition="outside")
-                st.plotly_chart(fig_program, width="stretch", key=f"combined_degree_credits_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No degree credit data yet.")
+            with left:
+                st.markdown("##### Physical status mix")
+                if not status_df.empty:
+                    fig_status = px.pie(
+                        status_df,
+                        names="Status",
+                        values="Credits",
+                        hole=0.62,
+                        color="Status",
+                        color_discrete_map=_status_color_map(),
+                    )
+                    _apply_chart_style(fig_status, height=320, showlegend=True)
+                    fig_status.update_traces(textinfo="percent", textposition="inside", sort=False)
+                    st.plotly_chart(fig_status, width="stretch", key=f"combined_status_mix_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No status data yet.")
 
-        with right:
-            st.markdown("##### Physical credits by area")
-            if not area_df.empty:
-                sorted_area_df = area_df.sort_values("Credits", ascending=True)
-                fig_area = px.bar(
-                    sorted_area_df,
-                    x="Credits",
-                    y="Area",
-                    orientation="h",
-                    color="Area",
-                    text="Credits",
-                    color_discrete_sequence=px.colors.qualitative.Set2,
-                )
-                _apply_chart_style(fig_area, height=320, showlegend=False)
-                fig_area.update_layout(xaxis=dict(title="Physical credits"), yaxis=dict(title=""))
-                fig_area.update_traces(texttemplate="%{x:.0f}", textposition="outside")
-                st.plotly_chart(fig_area, width="stretch", key=f"combined_area_credits_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No area data yet.")
+            with middle:
+                st.markdown("##### Credits by degree")
+                if not program_credit_df.empty:
+                    sorted_program_df = program_credit_df.sort_values("Credits", ascending=True)
+                    fig_program = px.bar(
+                        sorted_program_df,
+                        x="Credits",
+                        y="Program",
+                        orientation="h",
+                        color="Program",
+                        text="Credits",
+                        color_discrete_map=program_colors,
+                    )
+                    _apply_chart_style(fig_program, height=320, showlegend=False)
+                    fig_program.update_layout(xaxis=dict(title="Degree-registration credits"), yaxis=dict(title=""))
+                    fig_program.update_traces(texttemplate="%{x:.0f}", textposition="outside")
+                    st.plotly_chart(fig_program, width="stretch", key=f"combined_degree_credits_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No degree credit data yet.")
 
-    st.markdown("---")
+            with right:
+                st.markdown("##### Physical credits by area")
+                if not area_df.empty:
+                    sorted_area_df = area_df.sort_values("Credits", ascending=True)
+                    fig_area = px.bar(
+                        sorted_area_df,
+                        x="Credits",
+                        y="Area",
+                        orientation="h",
+                        color="Area",
+                        text="Credits",
+                        color_discrete_sequence=px.colors.qualitative.Set2,
+                    )
+                    _apply_chart_style(fig_area, height=320, showlegend=False)
+                    fig_area.update_layout(xaxis=dict(title="Physical credits"), yaxis=dict(title=""))
+                    fig_area.update_traces(texttemplate="%{x:.0f}", textposition="outside")
+                    st.plotly_chart(fig_area, width="stretch", key=f"combined_area_credits_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No area data yet.")
 
-    with st.container(border=True, key=f"nm_card_dash_grades_{key_suffix}"):
-        st.subheader("Combined Performance Patterns")
-        st.caption("These visuals use unique physical graded modules. Estimates are included where available.")
-        grade_df = pd.DataFrame(grade_timeline(counted_physical_modules, include_estimates=True))
-        estimated_grade_df = grade_df[grade_df["Source"] == "Estimated"].copy() if not grade_df.empty else pd.DataFrame()
-        final_grade_df = grade_df[grade_df["Source"] == "Final"].copy() if not grade_df.empty else pd.DataFrame()
-        left, right = st.columns(2)
 
-        with left:
-            st.markdown("##### Grade map")
-            if not grade_df.empty:
-                term_order = list(dict.fromkeys(grade_df["Term"].tolist()))
-                fig_grade = px.scatter(
-                    grade_df,
-                    x="Term",
-                    y="Grade",
-                    size="Credits",
-                    color="Source",
-                    hover_name="Module",
-                    hover_data={
-                        "Area": True,
-                        "State": True,
-                        "Credits": ":.0f",
-                        "Source": False,
-                    },
-                    category_orders={"Term": term_order},
-                    color_discrete_map={
-                        "Final": "#1d4ed8",
-                        "Estimated": "#f59e0b",
-                    },
-                    size_max=20,
-                )
-                _apply_chart_style(fig_grade, height=340, showlegend=True)
-                fig_grade.update_layout(
-                    xaxis=dict(title=""),
-                    yaxis=dict(title="Grade", autorange="reversed", range=[4.1, 0.9]),
-                )
-                st.plotly_chart(fig_grade, width="stretch", key=f"combined_grade_map_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No graded modules available yet.")
+    with grades_tab:
+        with st.container(border=True, key=f"nm_card_dash_grades_{key_suffix}"):
+            st.subheader("Combined Performance Patterns")
+            st.caption("These visuals use unique physical graded modules. Estimates are included where available.")
+            grade_df = pd.DataFrame(grade_timeline(counted_physical_modules, include_estimates=True))
+            estimated_grade_df = grade_df[grade_df["Source"] == "Estimated"].copy() if not grade_df.empty else pd.DataFrame()
+            final_grade_df = grade_df[grade_df["Source"] == "Final"].copy() if not grade_df.empty else pd.DataFrame()
+            left, right = st.columns(2)
 
-        with right:
-            if not estimated_grade_df.empty:
-                st.markdown("##### Forecast risk")
-                risk_df = estimated_grade_df.sort_values(["Grade", "Credits"], ascending=[False, False]).head(10)
-                fig_risk = px.bar(
-                    risk_df,
-                    x="Grade",
-                    y="Module",
-                    orientation="h",
-                    text="Grade",
-                    color="Credits",
-                    color_continuous_scale=["#fde68a", "#f59e0b", "#b45309"],
-                )
-                _apply_chart_style(fig_risk, height=340, showlegend=False)
-                fig_risk.update_layout(xaxis=dict(title="Estimated grade"), yaxis=dict(title=""))
-                fig_risk.update_traces(texttemplate="%{x:.1f}", textposition="outside")
-                st.plotly_chart(fig_risk, width="stretch", key=f"combined_risk_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            elif not final_grade_df.empty:
-                st.markdown("##### Final grade distribution")
-                fig_hist = px.histogram(
-                    final_grade_df,
-                    x="Grade",
-                    nbins=8,
-                    color="Area",
-                    color_discrete_sequence=px.colors.qualitative.Set2,
-                )
-                _apply_chart_style(fig_hist, height=340, showlegend=True)
-                fig_hist.update_layout(xaxis=dict(title="Grade"), yaxis=dict(title="Modules"))
-                st.plotly_chart(fig_hist, width="stretch", key=f"combined_grade_hist_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No grade data to visualize yet.")
+            with left:
+                st.markdown("##### Grade map")
+                if not grade_df.empty:
+                    term_order = list(dict.fromkeys(grade_df["Term"].tolist()))
+                    fig_grade = px.scatter(
+                        grade_df,
+                        x="Term",
+                        y="Grade",
+                        size="Credits",
+                        color="Source",
+                        hover_name="Module",
+                        hover_data={
+                            "Area": True,
+                            "State": True,
+                            "Credits": ":.0f",
+                            "Source": False,
+                        },
+                        category_orders={"Term": term_order},
+                        color_discrete_map={
+                            "Final": "#1d4ed8",
+                            "Estimated": "#f59e0b",
+                        },
+                        size_max=20,
+                    )
+                    _apply_chart_style(fig_grade, height=340, showlegend=True)
+                    fig_grade.update_layout(
+                        xaxis=dict(title=""),
+                        yaxis=dict(title="Grade", autorange="reversed", range=[4.1, 0.9]),
+                    )
+                    st.plotly_chart(fig_grade, width="stretch", key=f"combined_grade_map_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No graded modules available yet.")
 
-    st.markdown("---")
+            with right:
+                if not estimated_grade_df.empty:
+                    st.markdown("##### Forecast risk")
+                    risk_df = estimated_grade_df.sort_values(["Grade", "Credits"], ascending=[False, False]).head(10)
+                    fig_risk = px.bar(
+                        risk_df,
+                        x="Grade",
+                        y="Module",
+                        orientation="h",
+                        text="Grade",
+                        color="Credits",
+                        color_continuous_scale=["#fde68a", "#f59e0b", "#b45309"],
+                    )
+                    _apply_chart_style(fig_risk, height=340, showlegend=False)
+                    fig_risk.update_layout(xaxis=dict(title="Estimated grade"), yaxis=dict(title=""))
+                    fig_risk.update_traces(texttemplate="%{x:.1f}", textposition="outside")
+                    st.plotly_chart(fig_risk, width="stretch", key=f"combined_risk_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                elif not final_grade_df.empty:
+                    st.markdown("##### Final grade distribution")
+                    fig_hist = px.histogram(
+                        final_grade_df,
+                        x="Grade",
+                        nbins=8,
+                        color="Area",
+                        color_discrete_sequence=px.colors.qualitative.Set2,
+                    )
+                    _apply_chart_style(fig_hist, height=340, showlegend=True)
+                    fig_hist.update_layout(xaxis=dict(title="Grade"), yaxis=dict(title="Modules"))
+                    st.plotly_chart(fig_hist, width="stretch", key=f"combined_grade_hist_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No grade data to visualize yet.")
 
-    with st.container(border=True, key=f"nm_card_dash_rules_{key_suffix}"):
-        st.subheader("Combined Rule Summary")
-        if degree_rows:
-            summary_cols = st.columns(4)
-            summary_cols[0].metric("Errors", str(sum(int(row["Errors"]) for row in degree_rows)))
-            summary_cols[1].metric("Warnings", str(sum(int(row["Warnings"]) for row in degree_rows)))
-            summary_cols[2].metric("Info", str(sum(int(row["Info"]) for row in degree_rows)))
-            summary_cols[3].metric("Satisfied", str(sum(int(row["Satisfied"]) for row in degree_rows)))
 
-            rule_df = pd.DataFrame(
-                [
-                    {
-                        "Degree": row["Program"],
-                        "Errors": int(row["Errors"]),
-                        "Warnings": int(row["Warnings"]),
-                        "Info": int(row["Info"]),
-                        "Satisfied": int(row["Satisfied"]),
-                    }
-                    for row in degree_rows
-                ]
-            )
-            st.dataframe(rule_df, width="stretch", hide_index=True, height=min(220, 88 + 35 * len(rule_df)))
+    with requirements_tab:
+        with st.container(border=True, key=f"nm_card_dash_rules_{key_suffix}"):
+            st.subheader("Combined Rule Summary")
+            if degree_rows:
+                summary_cols = st.columns(4)
+                summary_cols[0].metric("Errors", str(sum(int(row["Errors"]) for row in degree_rows)))
+                summary_cols[1].metric("Warnings", str(sum(int(row["Warnings"]) for row in degree_rows)))
+                summary_cols[2].metric("Info", str(sum(int(row["Info"]) for row in degree_rows)))
+                summary_cols[3].metric("Satisfied", str(sum(int(row["Satisfied"]) for row in degree_rows)))
 
-        issue_rows = []
-        for program_key in programs:
-            manager = managers.get(program_key)
-            if manager is None:
-                continue
-            for result in manager.validate(projected_modules_for_program(program_key, all_modules)):
-                if _validation_completed(result):
+            for program_key in programs:
+                manager = managers.get(program_key)
+                if manager is None:
                     continue
-                issue_rows.append(
-                    {
-                        "Degree": short_program_label(program_key),
-                        "Severity": _validation_display_severity(result).title(),
-                        "Rule": result.rule_name,
-                        "Message": result.message,
-                    }
-                )
-
-        if issue_rows:
-            st.markdown("##### Open issues")
-            st.dataframe(
-                pd.DataFrame(issue_rows),
-                width="stretch",
-                hide_index=True,
-                height=min(360, 88 + 35 * len(issue_rows)),
-            )
-        else:
-            st.success("No open degree rule issues.")
+                results = manager.validate(projected_modules_for_program(program_key, all_modules))
+                st.markdown(f"##### {short_program_label(program_key)}")
+                _render_requirement_results(results)
+                with st.expander("Rule data"):
+                    st.dataframe(pd.DataFrame([
+                        {"Rule": result.rule_name, "Status": _validation_display_status(result), "Details": result.message}
+                        for result in results
+                    ]), hide_index=True, width="stretch")
 
 
 def _render_dashboard_content(program_key: str, *, show_header: bool) -> None:
@@ -2465,7 +2497,7 @@ def _render_dashboard_content(program_key: str, *, show_header: bool) -> None:
         with export_col:
             _render_dashboard_study_plan_export()
     else:
-        st.subheader(f"Dashboard ({short_program_label(program_key)})")
+        pass
 
     if not modules:
         st.info("No degree-relevant modules for this program yet. Add modules first.")
@@ -2571,812 +2603,735 @@ def _render_dashboard_content(program_key: str, *, show_header: bool) -> None:
     # Forecast grade computed from all candidates before ANY discard is applied.
     # We use the debug_candidates of the forecast result which lists all modules before selection.
     forecast_no_discard_grade = _no_discard_grade(base_plan_results["forecast"]) if supports_discard else None
-    with st.container(border=True, key=f"nm_card_dash_overview_{key_suffix}"):
-        st.subheader("Overview")
+    overview_tab, portfolio_tab, grades_tab, requirements_tab, workload_tab, topics_tab, optimizer_tab = _dashboard_sections(['Overview', 'Portfolio', 'Grades', 'Requirements', 'Workload', 'Topics', 'Optimizer'], key_suffix)
+    with portfolio_tab:
+        _render_portfolio_section(modules_all, [program_key], key_suffix)
 
-        if supports_discard:
-            # Discard-based degrees (e.g. CS Master): show naive current average and then the
-            # official grade after discard/Streichliste, plus a no-discard forecast reference.
-            _current_label = "Current grade"
-            _current_help = f"Naive weighted average of all completed graded modules ({current_plain_cp:.0f} LP), before discard."
-            _official_label = "Current w/ discard"
-            _official_help = "Completed modules after the degree Streichliste rules (up to 30 LP dropped)."
-            grade_metric_items = [
+    with overview_tab:
+        with st.container(border=True, key=f"nm_card_dash_overview_{key_suffix}"):
+            st.subheader("Overview")
+
+            if supports_discard:
+                # Discard-based degrees (e.g. CS Master): show naive current average and then the
+                # official grade after discard/Streichliste, plus a no-discard forecast reference.
+                _current_label = "Current grade"
+                _current_help = f"Naive weighted average of all completed graded modules ({current_plain_cp:.0f} LP), before discard."
+                _official_label = "Current w/ discard"
+                _official_help = "Completed modules after the degree Streichliste rules (up to 30 LP dropped)."
+                grade_metric_items = [
+                    {
+                        "label": _current_label,
+                        "value": _format_grade(current_plain_grade),
+                        "help": _current_help,
+                    },
+                    {
+                        "label": _official_label,
+                        "value": _format_grade(plan_results["current"].final_grade),
+                        "help": _official_help,
+                    },
+                    {
+                        "label": "Forecast grade",
+                        "value": _format_grade(plan_results["forecast"].final_grade),
+                        "help": "Completed modules plus estimates for open modules, after discard rules.",
+                    },
+                ]
+            else:
+                # Non-discard degrees (e.g. TI Bachelor): the strategy result IS the official grade
+                # (zero-weight modules excluded). The 'Incl. zero-weight grades' variant already shows
+                # the naive all-modules average with a helpful delta — no need for a separate metric.
+                _official_label = "Current (official)"
+                _official_help = "Completed modules counted by the official degree rules (zero-weight and excluded modules removed)."
+                grade_metric_items = [
+                    {
+                        "label": _official_label,
+                        "value": _format_grade(plan_results["current"].final_grade),
+                        "help": _official_help,
+                    },
+                    {
+                        "label": "Forecast grade",
+                        "value": _format_grade(plan_results["forecast"].final_grade),
+                        "help": "Completed modules plus estimates for open modules.",
+                    },
+                ]
+            if supports_discard and forecast_no_discard_grade:
+                grade_metric_items.append(
+                    {
+                        "label": "Forecast w/o discard",
+                        "value": _format_grade(forecast_no_discard_grade),
+                        "help": "Forecast grade before the Streichliste is applied. Shows how much the discard improves your average.",
+                    }
+                )
+            grade_metric_items += [
                 {
-                    "label": _current_label,
-                    "value": _format_grade(current_plain_grade),
-                    "help": _current_help,
-                },
-                {
-                    "label": _official_label,
-                    "value": _format_grade(plan_results["current"].final_grade),
-                    "help": _official_help,
-                },
-                {
-                    "label": "Forecast grade",
-                    "value": _format_grade(plan_results["forecast"].final_grade),
-                    "help": "Completed modules plus estimates for open modules, after discard rules.",
-                },
-            ]
-        else:
-            # Non-discard degrees (e.g. TI Bachelor): the strategy result IS the official grade
-            # (zero-weight modules excluded). The 'Incl. zero-weight grades' variant already shows
-            # the naive all-modules average with a helpful delta — no need for a separate metric.
-            _official_label = "Current (official)"
-            _official_help = "Completed modules counted by the official degree rules (zero-weight and excluded modules removed)."
-            grade_metric_items = [
-                {
-                    "label": _official_label,
-                    "value": _format_grade(plan_results["current"].final_grade),
-                    "help": _official_help,
-                },
-                {
-                    "label": "Forecast grade",
-                    "value": _format_grade(plan_results["forecast"].final_grade),
-                    "help": "Completed modules plus estimates for open modules.",
-                },
-            ]
-        if supports_discard and forecast_no_discard_grade:
-            grade_metric_items.append(
-                {
-                    "label": "Forecast w/o discard",
-                    "value": _format_grade(forecast_no_discard_grade),
-                    "help": "Forecast grade before the Streichliste is applied. Shows how much the discard improves your average.",
-                }
-            )
-        grade_metric_items += [
-            {
-                "label": "Current raw",
-                "value": _format_raw_grade(current_plain_raw),
-                "help": (
-                    "Unrounded completed-module average before discard"
-                    if supports_discard
-                    else "Unrounded completed-module average (all modules, no zero-weight filter)"
-                ),
-            },
-            {
-                "label": "Forecast raw",
-                "value": _format_raw_grade(plan_results["forecast"].calculation_details.get("raw_average")),
-                "help": "Unrounded forecast average before the one-decimal truncation",
-            },
-        ]
-        # Always show grade_variants (e.g. 'Incl. zero-weight grades' for TI Bachelor).
-        # For non-discard degrees this badge with its delta is the primary way to communicate
-        # the difference between the official grade and the all-modules inclusive average.
-        for variant in current_grade_variants[:2]:
-            grade_metric_items.append(
-                {
-                    "label": str(variant.get("label") or "Alt. grade"),
-                    "value": _format_grade(float(variant.get("value") or 0.0)),
-                    "delta": (
-                        f"{float(variant.get('delta')):+.1f}"
-                        if isinstance(variant.get("delta"), (int, float))
-                        else None
+                    "label": "Current raw",
+                    "value": _format_raw_grade(current_plain_raw),
+                    "help": (
+                        "Unrounded completed-module average before discard"
+                        if supports_discard
+                        else "Unrounded completed-module average (all modules, no zero-weight filter)"
                     ),
-                    "delta_color": "inverse",
-                    "help": variant.get("help"),
-                }
-            )
+                },
+                {
+                    "label": "Forecast raw",
+                    "value": _format_raw_grade(plan_results["forecast"].calculation_details.get("raw_average")),
+                    "help": "Unrounded forecast average before the one-decimal truncation",
+                },
+            ]
+            # Always show grade_variants (e.g. 'Incl. zero-weight grades' for TI Bachelor).
+            # For non-discard degrees this badge with its delta is the primary way to communicate
+            # the difference between the official grade and the all-modules inclusive average.
+            for variant in current_grade_variants[:2]:
+                grade_metric_items.append(
+                    {
+                        "label": str(variant.get("label") or "Alt. grade"),
+                        "value": _format_grade(float(variant.get("value") or 0.0)),
+                        "delta": (
+                            f"{float(variant.get('delta')):+.1f}"
+                            if isinstance(variant.get("delta"), (int, float))
+                            else None
+                        ),
+                        "delta_color": "inverse",
+                        "help": variant.get("help"),
+                    }
+                )
 
-        credit_metric_items = [
-            {
-                "label": "Degree completed",
-                "value": _format_credit_pair(progress["completed_cp"], visible_completed_cp),
-                "help": "Degree credits (including Additional Courses)",
-            },
-            {
-                "label": "Degree planned",
-                "value": _format_credit_pair(progress["total_cp"], visible_total_cp),
-                "help": "Degree credits (including Additional Courses)",
-            },
-            {
-                "label": "Additional credits",
-                "value": f"{additional_cp:.0f}",
-            },
-        ]
-        if candidate_modules:
+            credit_metric_items = [
+                {
+                    "label": "Degree completed",
+                    "value": _format_credit_pair(progress["completed_cp"], visible_completed_cp),
+                    "help": "Degree credits (including Additional Courses)",
+                },
+                {
+                    "label": "Degree planned",
+                    "value": _format_credit_pair(progress["total_cp"], visible_total_cp),
+                    "help": "Degree credits (including Additional Courses)",
+                },
+                {
+                    "label": "Additional credits",
+                    "value": f"{additional_cp:.0f}",
+                },
+            ]
+            if candidate_modules:
+                credit_metric_items.append(
+                    {
+                        "label": "Candidate modules",
+                        "value": str(len(candidate_modules)),
+                        "help": f"{candidate_cp:.0f} LP; excluded from calculations and validations",
+                    }
+                )
             credit_metric_items.append(
                 {
-                    "label": "Candidates",
-                    "value": f"{candidate_cp:.0f}",
-                    "help": "Shown in the plan, excluded from calculations and validations",
+                    "label": "Progress",
+                    "value": f"{progress['percent']:.0f}%",
+                    "help": f"Target: {total_required:.0f} degree credits",
                 }
             )
-        credit_metric_items.append(
-            {
-                "label": "Progress",
-                "value": f"{progress['percent']:.0f}%",
-                "help": f"Target: {total_required:.0f} degree credits",
-            }
-        )
 
-        for group_label, group_items in (
-            ("Grades", grade_metric_items),
-            ("Credits", credit_metric_items),
-        ):
-            st.markdown(f"##### {group_label}")
-            metric_cols = st.columns(len(group_items))
-            for col, item in zip(metric_cols, group_items):
-                col.metric(
-                    str(item.get("label") or ""),
-                    str(item.get("value") or "-"),
-                    delta=item.get("delta"),
-                    delta_color=item.get("delta_color", "normal"),
-                    help=item.get("help"),
-                )
-        insight_html = "".join(
-            [
-                _insight_chip("Open degree modules", str(open_degree_count), tone="warn" if open_degree_count else "ok"),
-                _insight_chip("Completed modules", str(completed_module_count), tone="ok" if completed_module_count else "neutral"),
-                _insight_chip("Planned terms", str(planned_terms)),
-                _insight_chip("Rule issues", str(error_count + warning_count), tone="err" if error_count else ("warn" if warning_count else "ok")),
-            ]
-        )
-        st.markdown(f"<div class='nm-insight-grid'>{insight_html}</div>", unsafe_allow_html=True)
-
-        percent = max(0.0, min(progress["percent"], 100.0))
-        st.markdown(
-            f"""
-            <div class="nm-progress">
-              <div class="nm-progress-track" role="img" aria-label="Progress in study plan">
-                <div class="nm-progress-fill" style="width:{percent:.0f}%;"></div>
-              </div>
-              <div class="nm-progress-meta">
-                <div><strong>{percent:.0f}%</strong> completed</div>
-                <div>{_format_credit_pair(progress['completed_cp'], visible_completed_cp)} / {total_required:.0f} degree credits</div>
-              </div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    st.markdown("---")
-
-    _render_topic_cluster_section(
-        modules=modules_all,
-        key_suffix=key_suffix,
-        show_candidate_toggle=True,
-    )
-
-    st.markdown("---")
-
-    if analysis_sections:
-        for idx, section in enumerate(analysis_sections):
-            _render_program_analysis_section(
-                section,
-                key=f"nm_card_dash_program_analysis_{key_suffix}_{idx}",
-            )
-
-    with st.container(border=True, key=f"nm_card_dash_scenarios_{key_suffix}"):
-        st.subheader("Grade scenarios")
-        if missing_degree_cp > 0:
-            st.caption(
-                "Forecast uses only currently planned degree modules. Best/Worst complete the still-missing degree credits with synthetic 1.0 / 4.0 grades."
-            )
-        else:
-            st.caption("The scenario corridor shows how much the final average could move under optimistic and pessimistic assumptions for open modules.")
-        scenario_left, scenario_right = st.columns([1, 1.45])
-        scenario_spread = scenario_results["worst"].final_grade - scenario_results["best"].final_grade
-        forecast_delta = (
-            plan_results["forecast"].final_grade - current_plain_grade
-            if current_plain_grade > 0
-            else None
-        )
-
-        with scenario_left:
-            grade_cols_top = st.columns(2)
-            grade_cols_bottom = st.columns(2)
-            grade_cols_top[0].metric(
-                "Current",
-                _format_grade(current_plain_grade),
-                help=(
-                    "Naive weighted average of all completed graded modules, before discard."
-                    if supports_discard
-                    else "Naive average including officially zero-weight modules."
-                ),
-            )
-            grade_cols_top[1].metric("Forecast", _format_grade(plan_results["forecast"].final_grade))
-            grade_cols_bottom[0].metric("Best Case", _format_grade(scenario_results["best"].final_grade))
-            grade_cols_bottom[1].metric("Worst Case", _format_grade(scenario_results["worst"].final_grade))
-            scenario_note = f"<div class='nm-dashboard-note'>Scenario spread: <strong>{scenario_spread:.1f}</strong>"
-            if forecast_delta is not None:
-                scenario_note += f" · Forecast vs current: <strong>{forecast_delta:+.1f}</strong>"
-            current_raw = _format_raw_grade(current_plain_raw)
-            forecast_raw = _format_raw_grade(plan_results["forecast"].calculation_details.get("raw_average"))
-            scenario_note += f" · Raw current/forecast: <strong>{current_raw}</strong> / <strong>{forecast_raw}</strong>"
-            if missing_degree_cp > 0:
-                scenario_note += (
-                    f" · Forecast currently covers <strong>{progress['total_cp']:.0f}/{total_required:.0f} LP</strong>."
-                    f" If the missing <strong>{missing_degree_cp:.0f} LP</strong> finish at <strong>1.0</strong> / <strong>4.0</strong>,"
-                    f" the completion forecast range becomes <strong>{forecast_fill_best.final_grade:.1f}</strong> to"
-                    f" <strong>{forecast_fill_worst.final_grade:.1f}</strong>."
-                )
-            scenario_note += "</div>"
-            st.markdown(
-                scenario_note,
-                unsafe_allow_html=True,
-            )
-
-        with scenario_right:
-            scenario_rows = [
-                {"Scenario": "Current", "Grade": current_plain_grade},
-                {
-                    "Scenario": "Current w/ discard" if supports_discard else "Current (official)",
-                    "Grade": plan_results["current"].final_grade,
-                },
-                {"Scenario": "Forecast", "Grade": plan_results["forecast"].final_grade},
-            ]
-            if supports_discard and forecast_no_discard_grade:
-                scenario_rows.insert(
-                    2,
-                    {"Scenario": "Forecast w/o discard", "Grade": forecast_no_discard_grade},
-                )
-            if missing_degree_cp > 0:
-                scenario_rows.extend(
-                    [
-                        {"Scenario": "Forecast + 1.0 fill", "Grade": forecast_fill_best.final_grade},
-                        {"Scenario": "Forecast + 4.0 fill", "Grade": forecast_fill_worst.final_grade},
-                    ]
-                )
-            scenario_rows.extend(
+            for group_label, group_items in (
+                ("Grades", grade_metric_items),
+                ("Credits", credit_metric_items),
+            ):
+                st.markdown(f"##### {group_label}")
+                _render_metric_items(group_items[:4], columns=4)
+                if len(group_items) > 4:
+                    _render_metric_items(group_items[4:], columns=3)
+            insight_html = "".join(
                 [
-                    {"Scenario": "Best Case", "Grade": scenario_results["best"].final_grade},
-                    {"Scenario": "Worst Case", "Grade": scenario_results["worst"].final_grade},
+                    _insight_chip("Open degree modules", str(open_degree_count), tone="warn" if open_degree_count else "ok"),
+                    _insight_chip("Completed modules", str(completed_module_count), tone="ok" if completed_module_count else "neutral"),
+                    _insight_chip("Planned terms", str(planned_terms)),
+                    _insight_chip("Rule issues", str(error_count + warning_count), tone="err" if error_count else ("warn" if warning_count else "ok")),
                 ]
             )
-            scenario_df = pd.DataFrame(scenario_rows)
-            fig = px.bar(
-                scenario_df,
-                x="Scenario",
-                y="Grade",
-                color="Scenario",
-                color_discrete_map={
-                    "Current": "#1d4ed8",
-                    "Current w/ discard": "#64748b",
-                    "Current (official)": "#64748b",
-                    "Forecast": "#14b8a6",
-                    "Forecast w/o discard": "#0284c7",
-                    "Forecast + 1.0 fill": "#0f766e",
-                    "Forecast + 4.0 fill": "#b45309",
-                    "Best Case": "#10b981",
-                    "Worst Case": "#ef4444",
-                },
-            )
-            _apply_chart_style(fig, height=300, showlegend=False)
-            fig.update_layout(yaxis=dict(title="Average grade", autorange="reversed"), xaxis=dict(title=""))
-            fig.update_traces(texttemplate="%{y:.1f}", textposition="outside")
-            st.plotly_chart(fig, width="stretch", key=f"scenario_grades_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+            st.markdown(f"<div class='nm-insight-grid'>{insight_html}</div>", unsafe_allow_html=True)
 
-    st.markdown("---")
-
-    with st.container(border=True, key=f"nm_card_dash_composition_{key_suffix}"):
-        st.subheader("Plan Composition")
-        st.caption("The charts below combine degree-relevant modules with Additional Courses. Possible Candidates remain excluded.")
-        top_left, top_right = st.columns(2)
-        bottom_left, bottom_right = st.columns(2)
-
-        with top_left:
-            st.markdown("##### Scope mix")
-            if not scope_df.empty:
-                fig_scope = px.pie(
-                    scope_df,
-                    names="Scope",
-                    values="Credits",
-                    hole=0.62,
-                    color="Scope",
-                    color_discrete_map={
-                        "Degree plan": "#1d4ed8",
-                        "Additional Courses": "#0f766e",
-                        "Possible Candidates": "#94a3b8",
-                    },
-                )
-                _apply_chart_style(fig_scope, height=320, showlegend=True)
-                fig_scope.update_traces(textinfo="percent+label", sort=False)
-                st.plotly_chart(fig_scope, width="stretch", key=f"plan_scope_mix_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No scope data yet.")
-
-        with top_right:
-            st.markdown("##### Status mix")
-            if not state_df.empty:
-                fig_status = px.pie(
-                    state_df,
-                    names="Status",
-                    values="Credits",
-                    hole=0.62,
-                    color="Status",
-                    color_discrete_map=_status_color_map(),
-                )
-                _apply_chart_style(fig_status, height=320, showlegend=True)
-                fig_status.update_traces(textinfo="percent+label", sort=False)
-                st.plotly_chart(fig_status, width="stretch", key=f"plan_status_mix_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No status data yet.")
-
-        with bottom_left:
-            st.markdown("##### Credits by area")
-            if not area_df.empty:
-                area_df_sorted = area_df.sort_values("Credits", ascending=True)
-                fig_area = px.bar(
-                    area_df_sorted,
-                    x="Credits",
-                    y="Area",
-                    orientation="h",
-                    text="Credits",
-                    color="Area",
-                    color_discrete_sequence=px.colors.qualitative.Set2,
-                )
-                _apply_chart_style(fig_area, height=340, showlegend=False)
-                fig_area.update_layout(xaxis=dict(title="Credits"), yaxis=dict(title=""))
-                st.plotly_chart(fig_area, width="stretch", key=f"plan_area_credits_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No area data for credit distribution.")
-
-        with bottom_right:
-            st.markdown("##### Term load by status")
-            if not term_state_df.empty:
-                term_order = list(dict.fromkeys(term_state_df["Term"].tolist()))
-                fig_term_load = px.bar(
-                    term_state_df,
-                    x="Term",
-                    y="Credits",
-                    color="Status",
-                    barmode="stack",
-                    category_orders={
-                        "Term": term_order,
-                        "Status": [
-                            ModuleState.COMPLETED.value,
-                            ModuleState.IN_PROGRESS.value,
-                            ModuleState.PLANNED.value,
-                            ModuleState.POSSIBLE_CANDIDATE.value,
-                        ],
-                    },
-                    color_discrete_map=_status_color_map(),
-                )
-                _apply_chart_style(fig_term_load, height=340, showlegend=True)
-                fig_term_load.update_layout(xaxis=dict(title=""), yaxis=dict(title="Credits"))
-                st.plotly_chart(fig_term_load, width="stretch", key=f"plan_term_load_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No term data yet.")
-
-    st.markdown("---")
-
-    with st.container(border=True, key=f"nm_card_dash_grades_{key_suffix}"):
-        st.subheader("Performance Patterns")
-        st.caption("These visuals focus on degree-relevant graded modules. Estimates are included where available.")
-        left, right = st.columns(2)
-
-        with left:
-            st.markdown("##### Grade map")
-            if not grade_df.empty:
-                term_order = list(dict.fromkeys(grade_df["Term"].tolist()))
-                fig_grade = px.scatter(
-                    grade_df,
-                    x="Term",
-                    y="Grade",
-                    size="Credits",
-                    color="Source",
-                    hover_name="Module",
-                    hover_data={
-                        "Area": True,
-                        "State": True,
-                        "Credits": ":.0f",
-                        "Source": False,
-                    },
-                    category_orders={"Term": term_order},
-                    color_discrete_map={
-                        "Final": "#1d4ed8",
-                        "Estimated": "#f59e0b",
-                    },
-                    size_max=20,
-                )
-                _apply_chart_style(fig_grade, height=340, showlegend=True)
-                fig_grade.update_layout(
-                    xaxis=dict(title=""),
-                    yaxis=dict(title="Grade", autorange="reversed", range=[4.1, 0.9]),
-                )
-                st.plotly_chart(fig_grade, width="stretch", key=f"plan_grade_map_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No graded modules available yet.")
-
-        with right:
-            if not estimated_grade_df.empty:
-                st.markdown("##### Forecast risk")
-                risk_df = estimated_grade_df.sort_values(["Grade", "Credits"], ascending=[False, False]).head(10)
-                fig_risk = px.bar(
-                    risk_df,
-                    x="Grade",
-                    y="Module",
-                    orientation="h",
-                    text="Grade",
-                    color="Credits",
-                    color_continuous_scale=["#fde68a", "#f59e0b", "#b45309"],
-                )
-                _apply_chart_style(fig_risk, height=340, showlegend=False)
-                fig_risk.update_layout(xaxis=dict(title="Estimated grade"), yaxis=dict(title=""))
-                st.plotly_chart(fig_risk, width="stretch", key=f"plan_risk_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            elif not final_grade_df.empty:
-                st.markdown("##### Final grade distribution")
-                fig_hist = px.histogram(
-                    final_grade_df,
-                    x="Grade",
-                    nbins=8,
-                    color="Area",
-                    color_discrete_sequence=px.colors.qualitative.Set2,
-                )
-                _apply_chart_style(fig_hist, height=340, showlegend=True)
-                fig_hist.update_layout(xaxis=dict(title="Grade"), yaxis=dict(title="Modules"))
-                st.plotly_chart(fig_hist, width="stretch", key=f"plan_grade_hist_{key_suffix}", config={"displayModeBar": False, "responsive": True})
-            else:
-                st.info("No grade data to visualize yet.")
-
-    st.markdown("---")
-
-    with st.container(border=True, key=f"nm_card_dash_rules_{key_suffix}"):
-        st.subheader("Rule checks")
-        summary_cols = st.columns(4)
-        summary_cols[0].metric("Errors", str(error_count))
-        summary_cols[1].metric("Warnings", str(warning_count))
-        summary_cols[2].metric("Info", str(info_count))
-        summary_cols[3].metric("Satisfied", str(ok_count))
-        for res in validations:
-            display_severity = _validation_display_severity(res)
-            if _validation_completed(res):
-                cls = "nm-rule-ok"
-                badge = "OK"
-            elif display_severity == "error":
-                cls = "nm-rule-err"
-                badge = "Error"
-            elif display_severity == "info":
-                cls = "nm-rule-info"
-                badge = _validation_display_status(res)
-            else:
-                cls = "nm-rule-warn"
-                badge = "Warning"
-
+            percent = max(0.0, min(progress["percent"], 100.0))
             st.markdown(
                 f"""
-                <div class="nm-rule-row {cls}">
-                  <div class="nm-rule-indicator"></div>
-                  <div class="nm-rule-main">
-                    <div class="nm-rule-name">{html.escape(res.rule_name)}</div>
-                    <div class="nm-rule-message">{html.escape(res.message)}</div>
+                <div class="nm-progress">
+                  <div class="nm-progress-track" role="img" aria-label="Progress in study plan">
+                    <div class="nm-progress-fill" style="width:{percent:.0f}%;"></div>
                   </div>
-                  <div class="nm-rule-badge">{badge}</div>
+                  <div class="nm-progress-meta">
+                    <div><strong>{percent:.0f}%</strong> completed</div>
+                    <div>{_format_credit_pair(progress['completed_cp'], visible_completed_cp)} / {total_required:.0f} degree credits</div>
+                  </div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-    if supports_discard:
-        st.markdown("---")
 
-        with st.container(border=True, key=f"nm_card_dash_discard_{key_suffix}"):
-            st.subheader("Discard simulation (30 credits)")
-            scenario_choice = st.selectbox(
-                "Scenario for discard simulation",
-                ["Current", "Forecast", "Best", "Worst"],
-                index=1,
-                key=f"discard_scenario_{program_key}",
-            )
-            scenario_map = {
-                "Current": plan_results["current"],
-                "Forecast": plan_results["forecast"],
-                "Best": plan_results["best"],
-                "Worst": plan_results["worst"],
-            }
-            discard_result = scenario_map[scenario_choice]
-            discard_details = discard_result.calculation_details or {}
-            counted_rows = list(discard_details.get("counted_modules") or [])
-            discard_variants = list(discard_details.get("discard_variants") or [])
-            variants_differ = discard_variants_differ(discard_result)
-            selected_variant_label = str(
-                discard_details.get("selected_discard_variant_label")
-                or (selected_discard_option or {}).get("label")
-                or "Whole modules"
-            )
-
-            discard_cols = st.columns(4)
-            discard_cols[0].metric("Counted credits", f"{discard_result.graded_cp:.0f}")
-            discard_cols[1].metric("Discarded credits", f"{discard_result.discarded_cp:.0f}")
-            discard_cols[2].metric("Selected grade", _format_grade(discard_result.final_grade))
-            discard_cols[3].metric("Raw average", _format_raw_grade(discard_details.get("raw_average")))
-            st.caption(
-                "This uses the modules currently in the plan. Counted courses use the scenario-applied grades; weight is each course's share of graded, non-discarded credits."
-            )
-            if discard_variants:
-                if variants_differ:
-                    st.warning(
-                        f"The available discard strategies produce different results here. This page is using {selected_variant_label}."
-                    )
-                else:
-                    st.info("The available discard strategies currently match for this scenario.")
-
-            counted_tab, discarded_tab, variants_tab = st.tabs(["Counted courses", "Discarded courses", "Variants"])
-
-            with counted_tab:
-                if counted_rows:
-                    counted_df = _format_module_detail_table(
-                        counted_rows,
-                        [
-                            "Module",
-                            "Area",
-                            "State",
-                            "Credits",
-                            "Grade",
-                            "Weight",
-                            "Grade contribution",
-                            "Status",
-                        ],
-                    )
-                    st.dataframe(counted_df, width="stretch", hide_index=True, height=320)
-                else:
-                    st.info("No graded modules count toward the scenario grade.")
-
-            with discarded_tab:
-                if discard_result.discarded_modules:
-                    discard_df = _format_module_detail_table(
-                        [
-                            {
-                                "Module": m.name,
-                                "Area": m.area,
-                                "Credits": m.cp,
-                                "Grade": m.effective_grade,
-                            }
-                            for m in discard_result.discarded_modules
-                        ],
-                        ["Module", "Area", "Credits", "Grade"],
-                    )
-                    st.dataframe(discard_df, width="stretch", hide_index=True, height=260)
-                else:
-                    st.info("No modules in the discard list.")
-
-            with variants_tab:
-                if discard_variants:
-                    variant_rows = []
-                    for variant in discard_variants:
-                        variant_rows.append(
-                            {
-                                "Variant": variant.get("label"),
-                                "Status": variant.get("status"),
-                                "Grade": variant.get("value"),
-                                "Raw average": variant.get("raw_average"),
-                                "Discarded credits": variant.get("discarded_cp"),
-                                "Counted credits": variant.get("counted_cp"),
-                                "Delta raw": variant.get("raw_delta"),
-                            }
-                        )
-                    variant_df = pd.DataFrame(variant_rows)
-                    variant_df["Grade"] = variant_df["Grade"].apply(
-                        lambda value: _format_grade(float(value)) if isinstance(value, (int, float)) else "-"
-                    )
-                    variant_df["Raw average"] = variant_df["Raw average"].apply(_format_raw_grade)
-                    variant_df["Discarded credits"] = variant_df["Discarded credits"].apply(_format_optional_credits)
-                    variant_df["Counted credits"] = variant_df["Counted credits"].apply(_format_optional_credits)
-                    variant_df["Delta raw"] = variant_df["Delta raw"].apply(_format_signed_decimal)
-                    st.dataframe(variant_df, width="stretch", hide_index=True, height=150)
-
-                    selected_variant_label = st.selectbox(
-                        "Variant module details",
-                        [str(variant.get("label") or "Variant") for variant in discard_variants],
-                        key=f"discard_variant_details_{program_key}_{scenario_choice}",
-                    )
-                    selected_variant = next(
-                        (
-                            variant
-                            for variant in discard_variants
-                            if str(variant.get("label") or "Variant") == selected_variant_label
-                        ),
-                        discard_variants[0],
-                    )
-                    variant_modules = list(selected_variant.get("modules") or [])
-                    if variant_modules:
-                        variant_module_df = _format_module_detail_table(
-                            variant_modules,
-                            ["Module", "Area", "Credits", "Discarded credits", "Grade", "Reason", "Partial"],
-                        )
-                        st.dataframe(variant_module_df, width="stretch", hide_index=True, height=220)
-                    else:
-                        st.info("No discarded modules for this variant.")
-                else:
-                    st.info("No discard variants available for this calculation.")
-    elif zero_weight or zero_weight_detail:
-        st.markdown("---")
-        with st.container(border=True, key=f"nm_card_dash_zero_weight_{key_suffix}"):
-            st.subheader("Zero-weight modules (do not affect the final grade)")
-            st.caption("These modules do not affect the final average (weight 0 or pass/fail).")
-            zero_weight_variants = list(plan_results["current"].calculation_details.get("grade_variants") or [])
-            if zero_weight_variants:
-                grade_cols = st.columns(1 + len(zero_weight_variants))
-                grade_cols[0].metric("Official grade", _format_grade(plan_results["current"].final_grade))
-                for col, variant in zip(grade_cols[1:], zero_weight_variants):
-                    col.metric(
-                        str(variant.get("label") or "Alt. grade"),
-                        _format_grade(float(variant.get("value") or 0.0)),
-                        delta=(
-                            f"{float(variant.get('delta')):+.1f}"
-                            if isinstance(variant.get("delta"), (int, float))
-                            else None
-                        ),
-                        delta_color="inverse",
-                        help=variant.get("help"),
-                    )
-            if zero_weight_detail:
-                df = pd.DataFrame(zero_weight_detail)
-                if "Grade" in df.columns:
-                    df["Grade"] = df["Grade"].apply(lambda v: f"{v:.1f}" if isinstance(v, (int, float)) else "-")
-                st.dataframe(df, width="stretch", hide_index=True, height=260)
-            else:
-                st.markdown("\n".join([f"- {html.escape(x)}" for x in zero_weight]) if zero_weight else "—")
-
-    st.markdown("---")
-
-    with st.container(border=True, key=f"nm_card_dash_sensitivity_{key_suffix}"):
-        st.subheader("Sensitivity analysis")
-        st.caption(
-            "Baseline: Forecast. For each module, we recompute the overall grade twice: forcing that single module to 1.0 "
-            "and to 4.0, while everything else stays as in Forecast."
+    with topics_tab:
+        _render_topic_cluster_section(
+            modules=modules_all,
+            key_suffix=key_suffix,
+            show_candidate_toggle=True,
         )
 
-        with st.expander("How to read this", expanded=False):
-            st.markdown(
-                "- `Baseline grade`: grade used for this module in Forecast (final or estimated).\n"
-                "- `Best/Worst delta`: how much the overall grade would change vs baseline if this module became 1.0 or 4.0.\n"
-                "- `Swing`: difference between overall grades for 1.0 vs 4.0 for this module.\n"
-                "- `Status`: whether the module is kept, discarded (30-credit rule), protected (e.g. thesis), or excluded (no grade in baseline)."
+
+    with requirements_tab:
+        if analysis_sections:
+            for idx, section in enumerate(analysis_sections):
+                _render_program_analysis_section(
+                    section,
+                    key=f"nm_card_dash_program_analysis_{key_suffix}_{idx}",
+                )
+
+    with grades_tab:
+        with st.container(border=True, key=f"nm_card_dash_scenarios_{key_suffix}"):
+            st.subheader("Grade scenarios")
+            if missing_degree_cp > 0:
+                st.caption(
+                    "Forecast uses only currently planned degree modules. Best/Worst complete the still-missing degree credits with synthetic 1.0 / 4.0 grades."
+                )
+            else:
+                st.caption("Best and worst outcomes for your remaining modules.")
+            scenario_left, scenario_right = st.columns([1, 1.45])
+            scenario_spread = scenario_results["worst"].final_grade - scenario_results["best"].final_grade
+            forecast_delta = (
+                plan_results["forecast"].final_grade - current_plain_grade
+                if current_plain_grade > 0
+                else None
             )
 
-        controls = st.columns([1, 1, 2])
-        only_open = controls[0].toggle("Only open modules", value=True, key=f"sens_only_open_{program_key}")
-        show_details = controls[1].toggle("Show details", value=False, key=f"sens_show_details_{program_key}")
+            with scenario_left:
+                grade_cols_top = st.columns(2)
+                grade_cols_bottom = st.columns(2)
+                grade_cols_top[0].metric(
+                    "Current",
+                    _format_grade(current_plain_grade),
+                    help=(
+                        "Naive weighted average of all completed graded modules, before discard."
+                        if supports_discard
+                        else "Naive average including officially zero-weight modules."
+                    ),
+                )
+                grade_cols_top[1].metric("Forecast", _format_grade(plan_results["forecast"].final_grade))
+                grade_cols_bottom[0].metric("Best Case", _format_grade(scenario_results["best"].final_grade))
+                grade_cols_bottom[1].metric("Worst Case", _format_grade(scenario_results["worst"].final_grade))
+                scenario_note = f"<div class='nm-dashboard-note'>Scenario spread: <strong>{scenario_spread:.1f}</strong>"
+                if forecast_delta is not None:
+                    scenario_note += f" · Forecast vs current: <strong>{forecast_delta:+.1f}</strong>"
+                current_raw = _format_raw_grade(current_plain_raw)
+                forecast_raw = _format_raw_grade(plan_results["forecast"].calculation_details.get("raw_average"))
+                scenario_note += f" · Raw current/forecast: <strong>{current_raw}</strong> / <strong>{forecast_raw}</strong>"
+                if missing_degree_cp > 0:
+                    scenario_note += (
+                        f" · Forecast currently covers <strong>{progress['total_cp']:.0f}/{total_required:.0f} LP</strong>."
+                        f" If the missing <strong>{missing_degree_cp:.0f} LP</strong> finish at <strong>1.0</strong> / <strong>4.0</strong>,"
+                        f" the completion forecast range becomes <strong>{forecast_fill_best.final_grade:.1f}</strong> to"
+                        f" <strong>{forecast_fill_worst.final_grade:.1f}</strong>."
+                    )
+                scenario_note += "</div>"
+                st.markdown(
+                    scenario_note,
+                    unsafe_allow_html=True,
+                )
 
-        sensitivity = sensitivity_overview(modules, calculate_with_selected_discard, scenario=Scenario.FORECAST)
-        if not sensitivity:
-            st.info("No graded modules for sensitivity analysis.")
-            sens_df = pd.DataFrame()
-            swing_col = None
-        else:
-            sens_df = pd.DataFrame(sensitivity)
-            swing_col = next((c for c in sens_df.columns if c.startswith("Swing (")), None)
-            if swing_col:
-                sens_df = sens_df.sort_values(swing_col, ascending=False)
+            with scenario_right:
+                scenario_rows = [
+                    {"Scenario": "Current", "Grade": current_plain_grade},
+                    {
+                        "Scenario": "Current w/ discard" if supports_discard else "Current (official)",
+                        "Grade": plan_results["current"].final_grade,
+                    },
+                    {"Scenario": "Forecast", "Grade": plan_results["forecast"].final_grade},
+                ]
+                if supports_discard and forecast_no_discard_grade:
+                    scenario_rows.insert(
+                        2,
+                        {"Scenario": "Forecast w/o discard", "Grade": forecast_no_discard_grade},
+                    )
+                if missing_degree_cp > 0:
+                    scenario_rows.extend(
+                        [
+                            {"Scenario": "Forecast + 1.0 fill", "Grade": forecast_fill_best.final_grade},
+                            {"Scenario": "Forecast + 4.0 fill", "Grade": forecast_fill_worst.final_grade},
+                        ]
+                    )
+                scenario_rows.extend(
+                    [
+                        {"Scenario": "Best Case", "Grade": scenario_results["best"].final_grade},
+                        {"Scenario": "Worst Case", "Grade": scenario_results["worst"].final_grade},
+                    ]
+                )
+                scenario_df = pd.DataFrame(scenario_rows)
+                fig = px.bar(
+                    scenario_df,
+                    x="Scenario",
+                    y="Grade",
+                    color="Scenario",
+                    color_discrete_map={
+                        "Current": "#1d4ed8",
+                        "Current w/ discard": "#64748b",
+                        "Current (official)": "#64748b",
+                        "Forecast": "#14b8a6",
+                        "Forecast w/o discard": "#0284c7",
+                        "Forecast + 1.0 fill": "#0f766e",
+                        "Forecast + 4.0 fill": "#b45309",
+                        "Best Case": "#10b981",
+                        "Worst Case": "#ef4444",
+                    },
+                )
+                _apply_chart_style(fig, height=300, showlegend=False)
+                fig.update_layout(yaxis=dict(title="Average grade", range=[max(scenario_df["Grade"]) + .35, 0]), xaxis=dict(title=""))
+                fig.update_traces(texttemplate="%{y:.1f}", textposition="outside", cliponaxis=False)
+                st.plotly_chart(fig, width="stretch", key=f"scenario_grades_{key_suffix}", config={"displayModeBar": False, "responsive": True})
 
-        if only_open and "State" in sens_df.columns:
-            baseline_grade_col = "Baseline grade"
-            is_open = (sens_df["State"] != "Completed") | (
-                sens_df.get(baseline_grade_col, "-").astype(str) == "-"
-            )
-            sens_df = sens_df[is_open]
 
-        if swing_col and not sens_df.empty:
-            st.markdown("##### Highest-impact modules")
-            impact_df = sens_df.head(8).sort_values(swing_col, ascending=True)
-            fig_impact = px.bar(
-                impact_df,
-                x=swing_col,
-                y="Module",
-                orientation="h",
-                color="State",
-                color_discrete_map=_status_color_map(),
-                text=swing_col,
-            )
-            _apply_chart_style(fig_impact, height=320, showlegend=True)
-            fig_impact.update_layout(xaxis=dict(title="Scenario swing"), yaxis=dict(title=""))
-            fig_impact.update_traces(texttemplate="%{x:.2f}", textposition="outside")
-            st.plotly_chart(fig_impact, width="stretch", key=f"sensitivity_impact_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+    with workload_tab:
+        with st.container(border=True, key=f"nm_card_dash_composition_{key_suffix}"):
+            st.subheader("Plan Composition")
+            st.caption("Scope compares the degree plan, additional courses, and candidates. Status and semester charts show your confirmed plan.")
+            top_left, top_right = st.columns(2)
+            bottom_left, bottom_right = st.columns(2)
 
-        if not sensitivity:
-            pass
-        elif not show_details:
-            cols = [
-                "Module",
-                "Credits",
-                "State",
-                "Baseline grade",
-                "Baseline status",
-                "Best delta vs baseline",
-                "Worst delta vs baseline",
-            ]
-            if swing_col:
-                cols.append(swing_col)
-            cols = [c for c in cols if c in sens_df.columns]
-            display_df = sens_df[cols].rename(
-                columns={
-                    "Best delta vs baseline": "Best delta",
-                    "Worst delta vs baseline": "Worst delta",
-                    "Baseline status": "Status",
-                    swing_col: "Swing",
+            with top_left:
+                st.markdown("##### Scope mix")
+                if not scope_df.empty:
+                    fig_scope = px.pie(
+                        scope_df,
+                        names="Scope",
+                        values="Credits",
+                        hole=0.62,
+                        color="Scope",
+                        color_discrete_map={
+                            "Degree plan": "#1d4ed8",
+                            "Additional Courses": "#0f766e",
+                            "Possible Candidates": "#94a3b8",
+                        },
+                    )
+                    _apply_chart_style(fig_scope, height=320, showlegend=True)
+                    fig_scope.update_traces(textinfo="percent", textposition="inside", sort=False)
+                    st.plotly_chart(fig_scope, width="stretch", key=f"plan_scope_mix_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No scope data yet.")
+
+            with top_right:
+                st.markdown("##### Status mix")
+                if not state_df.empty:
+                    fig_status = px.pie(
+                        state_df,
+                        names="Status",
+                        values="Credits",
+                        hole=0.62,
+                        color="Status",
+                        color_discrete_map=_status_color_map(),
+                    )
+                    _apply_chart_style(fig_status, height=320, showlegend=True)
+                    fig_status.update_traces(textinfo="percent", textposition="inside", sort=False)
+                    st.plotly_chart(fig_status, width="stretch", key=f"plan_status_mix_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No status data yet.")
+
+            with bottom_left:
+                st.markdown("##### Credits by area")
+                if not area_df.empty:
+                    area_df_sorted = area_df.sort_values("Credits", ascending=True)
+                    fig_area = px.bar(
+                        area_df_sorted,
+                        x="Credits",
+                        y="Area",
+                        orientation="h",
+                        text="Credits",
+                        color="Area",
+                        color_discrete_sequence=px.colors.qualitative.Set2,
+                    )
+                    _apply_chart_style(fig_area, height=340, showlegend=False)
+                    fig_area.update_layout(xaxis=dict(title="Credits"), yaxis=dict(title=""))
+                    st.plotly_chart(fig_area, width="stretch", key=f"plan_area_credits_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No area data for credit distribution.")
+
+            with bottom_right:
+                st.markdown("##### Term load by status")
+                if not term_state_df.empty:
+                    term_order = list(dict.fromkeys(term_state_df["Term"].tolist()))
+                    fig_term_load = px.bar(
+                        term_state_df,
+                        x="Term",
+                        y="Credits",
+                        color="Status",
+                        barmode="stack",
+                        category_orders={
+                            "Term": term_order,
+                            "Status": [
+                                ModuleState.COMPLETED.value,
+                                ModuleState.IN_PROGRESS.value,
+                                ModuleState.PLANNED.value,
+                                ModuleState.POSSIBLE_CANDIDATE.value,
+                            ],
+                        },
+                        color_discrete_map=_status_color_map(),
+                    )
+                    _apply_chart_style(fig_term_load, height=340, showlegend=True)
+                    fig_term_load.update_layout(xaxis=dict(title=""), yaxis=dict(title="Credits"))
+                    st.plotly_chart(fig_term_load, width="stretch", key=f"plan_term_load_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No term data yet.")
+
+
+    with grades_tab:
+        with st.container(border=True, key=f"nm_card_dash_grades_{key_suffix}"):
+            st.subheader("Performance Patterns")
+            st.caption("These visuals focus on degree-relevant graded modules. Estimates are included where available.")
+            left, right = st.columns(2)
+
+            with left:
+                st.markdown("##### Grade map")
+                if not grade_df.empty:
+                    term_order = list(dict.fromkeys(grade_df["Term"].tolist()))
+                    fig_grade = px.scatter(
+                        grade_df,
+                        x="Term",
+                        y="Grade",
+                        size="Credits",
+                        color="Source",
+                        hover_name="Module",
+                        hover_data={
+                            "Area": True,
+                            "State": True,
+                            "Credits": ":.0f",
+                            "Source": False,
+                        },
+                        category_orders={"Term": term_order},
+                        color_discrete_map={
+                            "Final": "#1d4ed8",
+                            "Estimated": "#f59e0b",
+                        },
+                        size_max=20,
+                    )
+                    _apply_chart_style(fig_grade, height=340, showlegend=True)
+                    fig_grade.update_layout(
+                        xaxis=dict(title=""),
+                        yaxis=dict(title="Grade", autorange="reversed", range=[4.1, 0.9]),
+                    )
+                    st.plotly_chart(fig_grade, width="stretch", key=f"plan_grade_map_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No graded modules available yet.")
+
+            with right:
+                if not estimated_grade_df.empty:
+                    st.markdown("##### Forecast risk")
+                    risk_df = estimated_grade_df.sort_values(["Grade", "Credits"], ascending=[False, False]).head(10)
+                    fig_risk = px.bar(
+                        risk_df,
+                        x="Grade",
+                        y="Module",
+                        orientation="h",
+                        text="Grade",
+                        color="Credits",
+                        color_continuous_scale=["#fde68a", "#f59e0b", "#b45309"],
+                    )
+                    _apply_chart_style(fig_risk, height=340, showlegend=False)
+                    fig_risk.update_layout(xaxis=dict(title="Estimated grade"), yaxis=dict(title=""))
+                    st.plotly_chart(fig_risk, width="stretch", key=f"plan_risk_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                elif not final_grade_df.empty:
+                    st.markdown("##### Final grade distribution")
+                    fig_hist = px.histogram(
+                        final_grade_df,
+                        x="Grade",
+                        nbins=8,
+                        color="Area",
+                        color_discrete_sequence=px.colors.qualitative.Set2,
+                    )
+                    _apply_chart_style(fig_hist, height=340, showlegend=True)
+                    fig_hist.update_layout(xaxis=dict(title="Grade"), yaxis=dict(title="Modules"))
+                    st.plotly_chart(fig_hist, width="stretch", key=f"plan_grade_hist_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+                else:
+                    st.info("No grade data to visualize yet.")
+
+
+    with requirements_tab:
+        with st.container(border=True, key=f"nm_card_dash_rules_{key_suffix}"):
+            st.subheader("Rule checks")
+            summary_cols = st.columns(4)
+            summary_cols[0].metric("Errors", str(error_count))
+            summary_cols[1].metric("Warnings", str(warning_count))
+            summary_cols[2].metric("Info", str(info_count))
+            summary_cols[3].metric("Satisfied", str(ok_count))
+            _render_requirement_results(validations)
+
+    with grades_tab:
+        if supports_discard:
+
+            with st.container(border=True, key=f"nm_card_dash_discard_{key_suffix}"):
+                st.subheader("Discard simulation (30 credits)")
+                scenario_choice = st.selectbox(
+                    "Scenario for discard simulation",
+                    ["Current", "Forecast", "Best", "Worst"],
+                    index=1,
+                    key=f"discard_scenario_{program_key}",
+                )
+                scenario_map = {
+                    "Current": plan_results["current"],
+                    "Forecast": plan_results["forecast"],
+                    "Best": plan_results["best"],
+                    "Worst": plan_results["worst"],
                 }
+                discard_result = scenario_map[scenario_choice]
+                discard_details = discard_result.calculation_details or {}
+                counted_rows = list(discard_details.get("counted_modules") or [])
+                discard_variants = list(discard_details.get("discard_variants") or [])
+                variants_differ = discard_variants_differ(discard_result)
+                selected_variant_label = str(
+                    discard_details.get("selected_discard_variant_label")
+                    or (selected_discard_option or {}).get("label")
+                    or "Whole modules"
+                )
+
+                discard_cols = st.columns(4)
+                discard_cols[0].metric("Counted credits", f"{discard_result.graded_cp:.0f}")
+                discard_cols[1].metric("Discarded credits", f"{discard_result.discarded_cp:.0f}")
+                discard_cols[2].metric("Selected grade", _format_grade(discard_result.final_grade))
+                discard_cols[3].metric("Raw average", _format_raw_grade(discard_details.get("raw_average")))
+                st.caption(
+                    "This uses the modules currently in the plan. Counted courses use the scenario-applied grades; weight is each course's share of graded, non-discarded credits."
+                )
+                if discard_variants:
+                    if variants_differ:
+                        st.warning(
+                            f"The available discard strategies produce different results here. This page is using {selected_variant_label}."
+                        )
+                    else:
+                        st.info("The available discard strategies currently match for this scenario.")
+
+                counted_tab, discarded_tab, variants_tab = st.tabs(["Counted courses", "Discarded courses", "Variants"])
+
+                with counted_tab:
+                    if counted_rows:
+                        counted_df = _format_module_detail_table(
+                            counted_rows,
+                            [
+                                "Module",
+                                "Area",
+                                "State",
+                                "Credits",
+                                "Grade",
+                                "Weight",
+                                "Grade contribution",
+                                "Status",
+                            ],
+                        )
+                        st.dataframe(counted_df, width="stretch", hide_index=True, height=320)
+                    else:
+                        st.info("No graded modules count toward the scenario grade.")
+
+                with discarded_tab:
+                    if discard_result.discarded_modules:
+                        discard_df = _format_module_detail_table(
+                            [
+                                {
+                                    "Module": m.name,
+                                    "Area": m.area,
+                                    "Credits": m.cp,
+                                    "Grade": m.effective_grade,
+                                }
+                                for m in discard_result.discarded_modules
+                            ],
+                            ["Module", "Area", "Credits", "Grade"],
+                        )
+                        st.dataframe(discard_df, width="stretch", hide_index=True, height=260)
+                    else:
+                        st.info("No modules in the discard list.")
+
+                with variants_tab:
+                    if discard_variants:
+                        variant_rows = []
+                        for variant in discard_variants:
+                            variant_rows.append(
+                                {
+                                    "Variant": variant.get("label"),
+                                    "Status": variant.get("status"),
+                                    "Grade": variant.get("value"),
+                                    "Raw average": variant.get("raw_average"),
+                                    "Discarded credits": variant.get("discarded_cp"),
+                                    "Counted credits": variant.get("counted_cp"),
+                                    "Delta raw": variant.get("raw_delta"),
+                                }
+                            )
+                        variant_df = pd.DataFrame(variant_rows)
+                        variant_df["Grade"] = variant_df["Grade"].apply(
+                            lambda value: _format_grade(float(value)) if isinstance(value, (int, float)) else "-"
+                        )
+                        variant_df["Raw average"] = variant_df["Raw average"].apply(_format_raw_grade)
+                        variant_df["Discarded credits"] = variant_df["Discarded credits"].apply(_format_optional_credits)
+                        variant_df["Counted credits"] = variant_df["Counted credits"].apply(_format_optional_credits)
+                        variant_df["Delta raw"] = variant_df["Delta raw"].apply(_format_signed_decimal)
+                        st.dataframe(variant_df, width="stretch", hide_index=True, height=150)
+
+                        selected_variant_label = st.selectbox(
+                            "Variant module details",
+                            [str(variant.get("label") or "Variant") for variant in discard_variants],
+                            key=f"discard_variant_details_{program_key}_{scenario_choice}",
+                        )
+                        selected_variant = next(
+                            (
+                                variant
+                                for variant in discard_variants
+                                if str(variant.get("label") or "Variant") == selected_variant_label
+                            ),
+                            discard_variants[0],
+                        )
+                        variant_modules = list(selected_variant.get("modules") or [])
+                        if variant_modules:
+                            variant_module_df = _format_module_detail_table(
+                                variant_modules,
+                                ["Module", "Area", "Credits", "Discarded credits", "Grade", "Reason", "Partial"],
+                            )
+                            st.dataframe(variant_module_df, width="stretch", hide_index=True, height=220)
+                        else:
+                            st.info("No discarded modules for this variant.")
+                    else:
+                        st.info("No discard variants available for this calculation.")
+        elif zero_weight or zero_weight_detail:
+            with st.container(border=True, key=f"nm_card_dash_zero_weight_{key_suffix}"):
+                st.subheader("Zero-weight modules (do not affect the final grade)")
+                st.caption("These modules do not affect the final average (weight 0 or pass/fail).")
+                zero_weight_variants = list(plan_results["current"].calculation_details.get("grade_variants") or [])
+                if zero_weight_variants:
+                    grade_cols = st.columns(1 + len(zero_weight_variants))
+                    grade_cols[0].metric("Official grade", _format_grade(plan_results["current"].final_grade))
+                    for col, variant in zip(grade_cols[1:], zero_weight_variants):
+                        col.metric(
+                            str(variant.get("label") or "Alt. grade"),
+                            _format_grade(float(variant.get("value") or 0.0)),
+                            delta=(
+                                f"{float(variant.get('delta')):+.1f}"
+                                if isinstance(variant.get("delta"), (int, float))
+                                else None
+                            ),
+                            delta_color="inverse",
+                            help=variant.get("help"),
+                        )
+                if zero_weight_detail:
+                    df = pd.DataFrame(zero_weight_detail)
+                    if "Grade" in df.columns:
+                        df["Grade"] = df["Grade"].apply(lambda v: f"{v:.1f}" if isinstance(v, (int, float)) else "-")
+                    st.dataframe(df, width="stretch", hide_index=True, height=260)
+                else:
+                    st.markdown("\n".join([f"- {html.escape(x)}" for x in zero_weight]) if zero_weight else "—")
+
+
+        with st.container(border=True, key=f"nm_card_dash_sensitivity_{key_suffix}"):
+            st.subheader("Sensitivity analysis")
+            st.caption(
+                "Baseline: Forecast. For each module, we recompute the overall grade twice: forcing that single module to 1.0 "
+                "and to 4.0, while everything else stays as in Forecast."
             )
-            st.dataframe(display_df, width="stretch", hide_index=True, height=320)
-        else:
-            st.dataframe(sens_df, width="stretch", hide_index=True, height=360)
 
-    st.markdown("---")
+            with st.expander("How to read this", expanded=False):
+                st.markdown(
+                    "- `Baseline grade`: grade used for this module in Forecast (final or estimated).\n"
+                    "- `Best/Worst delta`: how much the overall grade would change vs baseline if this module became 1.0 or 4.0.\n"
+                    "- `Swing`: difference between overall grades for 1.0 vs 4.0 for this module.\n"
+                    "- `Status`: whether the module is kept, discarded (30-credit rule), protected (e.g. thesis), or excluded (no grade in baseline)."
+                )
 
-    _render_target_grade_optimizer(
-        program_key=program_key,
-        key_suffix=key_suffix,
-        calculate_fn=calculate_with_selected_discard,
-        modules=modules,
-        missing_degree_cp=missing_degree_cp,
-    )
+            controls = st.columns([1, 1, 2])
+            only_open = controls[0].toggle("Only open modules", value=True, key=f"sens_only_open_{program_key}")
+            show_details = controls[1].toggle("Show details", value=False, key=f"sens_show_details_{program_key}")
+
+            sensitivity = sensitivity_overview(modules, calculate_with_selected_discard, scenario=Scenario.FORECAST)
+            if not sensitivity:
+                st.info("No graded modules for sensitivity analysis.")
+                sens_df = pd.DataFrame()
+                swing_col = None
+            else:
+                sens_df = pd.DataFrame(sensitivity)
+                swing_col = next((c for c in sens_df.columns if c.startswith("Swing (")), None)
+                if swing_col:
+                    sens_df = sens_df.sort_values(swing_col, ascending=False)
+
+            if only_open and "State" in sens_df.columns:
+                baseline_grade_col = "Baseline grade"
+                is_open = (sens_df["State"] != "Completed") | (
+                    sens_df.get(baseline_grade_col, "-").astype(str) == "-"
+                )
+                sens_df = sens_df[is_open]
+
+            if swing_col and not sens_df.empty:
+                st.markdown("##### Highest-impact modules")
+                impact_df = sens_df.head(8).sort_values(swing_col, ascending=True)
+                fig_impact = px.bar(
+                    impact_df,
+                    x=swing_col,
+                    y="Module",
+                    orientation="h",
+                    color="State",
+                    color_discrete_map=_status_color_map(),
+                    text=swing_col,
+                )
+                _apply_chart_style(fig_impact, height=320, showlegend=True)
+                fig_impact.update_layout(xaxis=dict(title="Scenario swing"), yaxis=dict(title=""))
+                fig_impact.update_traces(texttemplate="%{x:.2f}", textposition="outside")
+                st.plotly_chart(fig_impact, width="stretch", key=f"sensitivity_impact_{key_suffix}", config={"displayModeBar": False, "responsive": True})
+
+            if not sensitivity:
+                pass
+            elif not show_details:
+                cols = [
+                    "Module",
+                    "Credits",
+                    "State",
+                    "Baseline grade",
+                    "Baseline status",
+                    "Best delta vs baseline",
+                    "Worst delta vs baseline",
+                ]
+                if swing_col:
+                    cols.append(swing_col)
+                cols = [c for c in cols if c in sens_df.columns]
+                display_df = sens_df[cols].rename(
+                    columns={
+                        "Best delta vs baseline": "Best delta",
+                        "Worst delta vs baseline": "Worst delta",
+                        "Baseline status": "Status",
+                        swing_col: "Swing",
+                    }
+                )
+                st.dataframe(display_df, width="stretch", hide_index=True, height=320)
+            else:
+                st.dataframe(sens_df, width="stretch", hide_index=True, height=360)
+
+
+    with optimizer_tab:
+        _render_target_grade_optimizer(
+            program_key=program_key,
+            key_suffix=key_suffix,
+            calculate_fn=calculate_with_selected_discard,
+            modules=modules,
+            missing_degree_cp=missing_degree_cp,
+        )
+
+
+def _select_dashboard_degree() -> None:
+    selected = st.session_state.get("dashboard_degree_view") or "All"
+    st.session_state["program_view"] = selected
+    st.query_params["program_view"] = selected
 
 
 def render_dashboard_page() -> None:
-    view = st.session_state.get("program_view")
     programs = list(st.session_state.get("relevant_programs") or [])
-
+    title_col, export_col = st.columns([4, 1], vertical_alignment="center")
+    title_col.title("Dashboard")
     if not programs:
-        st.title("Study Dashboard")
-        st.caption("Load a modules file with recognized degree-program keys to see degree-specific dashboards.")
+        st.info("Add a module to see your degree progress.")
         return
-
-    if view == "All":
-        title_col, export_col = st.columns([4, 1], vertical_alignment="center")
-        title_col.title("Study Dashboard")
-        title_col.caption("Dashboards are calculated per degree program.")
-        with export_col:
-            _render_dashboard_study_plan_export()
-
-        # Check for programs available in the registry but not yet enrolled in.
-        unenrolled = list_unenrolled_programs(st.session_state.get("modules", []))
-
-        include_combined = len(programs) > 1
-        tab_labels = _dashboard_tab_labels(
-            programs,
-            include_combined=include_combined,
-            include_unenrolled=bool(unenrolled),
-        )
-
-        tabs = st.tabs(tab_labels)
-
-        program_tab_offset = 1 if include_combined else 0
-        if include_combined:
-            with tabs[0]:
-                _render_combined_dashboard(programs)
-
-        for tab, key in zip(tabs[program_tab_offset:program_tab_offset + len(programs)], programs):
-            with tab:
-                _render_dashboard_content(key, show_header=False)
-
-        if unenrolled:
-            with tabs[-1]:
-                st.subheader("Enroll in a Degree")
-                st.caption(
-                    "The following degree programs are implemented but you have no modules for them yet. "
-                    "Select one to add a placeholder module — delete it once you add your first real course."
-                )
-                chosen = st.selectbox(
-                    "Available programs",
-                    unenrolled,
-                    format_func=lambda k: f"{short_program_label(k)}  —  {k}",
-                    key="dashboard_enroll_selectbox",
-                )
-                if st.button("Enroll", type="primary", key="dashboard_enroll_btn"):
-                    from core.models import ModuleSource, ModuleState
-                    from core.module_ids import new_module_id
-                    from core.persistence import save_modules
-                    from core.registry import create_program
-                    try:
-                        strategy = create_program(chosen)
-                        areas = strategy.get_area_suggestions()
-                        default_area = areas[0] if areas else "General"
-                    except Exception:
-                        default_area = "General"
-                    from core.models import Module
-                    sentinel = Module(
-                        id=new_module_id(),
-                        program_key=chosen,
-                        name="[Degree placeholder — delete after adding your first real course]",
-                        area=default_area,
-                        cp=1.0,
-                        state=ModuleState.POSSIBLE_CANDIDATE,
-                        source=ModuleSource.MANUAL,
-                    )
-                    st.session_state["modules"].append(sentinel)
-                    save_modules(st.session_state["modules"], st.session_state["active_profile"])
-                    st.toast(f"Enrolled in {short_program_label(chosen)}.")
-                    st.rerun()
+    view = st.session_state.get("program_view") or "All"
+    options = ["All"] + programs
+    if view not in options:
+        view = "All"
+    st.session_state["dashboard_degree_view"] = view
+    st.segmented_control(
+        "Degree", options, key="dashboard_degree_view", selection_mode="single",
+        format_func=lambda key: "All degrees" if key == "All" else short_program_label(key),
+        on_change=_select_dashboard_degree, label_visibility="collapsed",
+    )
+    with export_col:
+        _render_dashboard_study_plan_export()
+    if view == "All" and len(programs) > 1:
+        _render_combined_dashboard(programs)
     else:
-        _render_dashboard_content(view, show_header=True)
+        _render_dashboard_content(programs[0] if view == "All" else view, show_header=False)

@@ -111,12 +111,12 @@ def test_portfolio_deep_link_and_completed_scope():
     app.query_params["dashboard_tab"] = "Portfolio"
     app.run()
     assert not app.exception
-    assert app.session_state["dashboard_sections_all_degrees"] == "Portfolio"
-    portfolio = app.tabs[1]
-    assert portfolio.label == "Portfolio"
-    assert [(metric.label, metric.value) for metric in portfolio.metric] == [
-        ("Completed courses", "2"), ("Completed credits", "12 LP"), ("Projects & practical work", "1")
-    ]
+    assert app.session_state["dashboard_sections_all_degrees"] == "Overview"
+    overview = app.tabs[0]
+    assert overview.label == "Overview"
+    assert "Portfolio" not in [tab.label for tab in app.tabs]
+    assert app.text_input(key="portfolio_search_all_degrees")
+    assert "Grade scenarios" in [header.value for header in app.tabs[1].subheader]
     from ui.portfolio import completed_portfolio_modules
     modules = app.session_state["modules"]
     assert [module.id for module in completed_portfolio_modules(modules + modules)] == ["done", "bachelor"]
@@ -284,3 +284,67 @@ def test_completed_ungraded_course_shows_a_result_instead_of_missing_grade():
     from ui.details import _format_grade
     module = Module(id="pass-fail",name="Practical",program_key="TU Berlin - Computer Science (M.Sc.)",area="Elective",cp=6,is_graded=False,state=ModuleState.COMPLETED)
     assert _format_grade(module) == ("Result", "Passed")
+
+
+def test_overview_shows_every_practical_course_and_keeps_completed_scope():
+    script = BOOTSTRAP + '''
+from unittest.mock import patch
+from ui.portfolio import render_portfolio
+st.session_state["modules"] = [Module(id=f"project-{i}", name=f"Project {i}", program_key=MASTER, area="Elective", cp=6, state=ModuleState.COMPLETED, module_types=["PJ"]) for i in range(9)] + st.session_state["modules"][1:3]
+def capture_courses(modules, view):
+    st.session_state["project_ids"] = [module.id for module in modules]
+with patch("ui.portfolio._course_cards", side_effect=capture_courses):
+    render_portfolio(st.session_state["modules"], view="All", key_suffix="test", topic_rows=[])
+'''
+    app = AppTest.from_string(script).run()
+    assert not app.exception
+    assert len(app.session_state["project_ids"]) == 9
+    assert all(value.startswith("project-") for value in app.session_state["project_ids"])
+    assert not any("Show all" in button.label or "Show highlights" in button.label for button in app.button)
+
+
+def test_topic_map_keeps_full_course_credits_and_native_zoom_hierarchy():
+    from ui.portfolio import portfolio_topic_figure
+    rows = [
+        {"Topic": topic, "Subtopic": tag, "Course": "Data Science Toolbox", "Course Link": "course-1", "Course Credits": 6, "Allocated Credits": 1.5}
+        for topic, tag in [("AI", "Data Science"), ("AI", "Python"), ("Math", "Statistics"), ("Software", "Programming")]
+    ]
+    chart = portfolio_topic_figure(rows).data[0]
+    root = chart.labels.index("All topics")
+    assert chart.customdata[root][0] == 6  # Topic repetition never inflates completed credits.
+    for index, label in enumerate(chart.labels):
+        assert chart.customdata[index][0] == 6
+        if label == "Data Science Toolbox":
+            assert chart.values[index] == 6
+        children = [i for i, parent in enumerate(chart.parents) if parent == chart.ids[index]]
+        if children:
+            assert chart.values[index] == sum(chart.values[child] for child in children)
+    assert chart.maxdepth == 2 and chart.pathbar.visible
+    assert len(set(chart.ids)) == len(chart.ids)
+
+
+def test_degree_banner_links_preserve_degree_identity():
+    from bs4 import BeautifulSoup
+    from urllib.parse import parse_qs, urlsplit
+    from ui.portfolio import degree_cards_html
+    name = "TU Berlin - Computer Science (M.Sc.)"
+    markup = degree_cards_html([{"Program Key": name, "Completed Credits": 6, "Required Credits": 120, "Current": 1.3}])
+    link = BeautifulSoup(markup, "html.parser").find("a")
+    query = parse_qs(urlsplit(link["href"]).query)
+    assert query == {"page": ["Dashboard"], "program_view": [name], "dashboard_tab": ["Overview"]}
+    assert link.find(attrs={"role": "progressbar"})["aria-valuenow"] == "5.0"
+
+
+
+@pytest.mark.parametrize("program", ["TU Berlin - Computer Science (M.Sc.)", "TU Berlin - Technische Informatik (B.Sc.)"])
+def test_degree_dashboards_keep_grade_analysis_and_all_optimizer_controls(program):
+    script = BOOTSTRAP + f'\nst.session_state["program_view"] = {program!r}\nfrom ui.dashboard import render_dashboard_page\nrender_dashboard_page()'
+    app = AppTest.from_string(script, default_timeout=30).run()
+    assert not app.exception
+    assert [tab.label for tab in app.tabs if tab.label in {"Overview", "Grades", "Requirements", "Workload", "Topics", "Optimizer"}] == ["Overview", "Grades", "Requirements", "Workload", "Topics", "Optimizer"]
+    grades = app.tabs[1]
+    assert "Grade scenarios" in [heading.value for heading in grades.subheader]
+    assert "Sensitivity analysis" in [heading.value for heading in grades.subheader]
+    assert not any(toggle.label == "Only changes" for toggle in app.toggle)
+    app.run()
+    assert not app.exception

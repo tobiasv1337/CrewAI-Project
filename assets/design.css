@@ -469,3 +469,41 @@ html[data-theme] table.sm-course-table a {color:var(--info)!important}
  html[data-theme] .st-key-detail_edit_actions [data-testid="stColumn"] {width:100%!important;min-width:0!important}
  html[data-theme] .st-key-detail_edit_actions [data-testid="stColumn"]:first-child {grid-column:1/-1}
 }
+
+/* A shared overview for study planning and portfolio browsing. */
+html[data-theme] .sm-portfolio-degree {display:block;position:relative;text-decoration:none!important;color:var(--ink)!important;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease;--degree-accent:var(--degree-bachelor,var(--info))}
+html[data-theme] .sm-portfolio-degree.sm-degree-msc {--degree-accent:var(--degree-master)}
+html[data-theme] .sm-portfolio-degree:hover,html[data-theme] .sm-portfolio-degree:focus-visible {transform:translateY(-3px);box-shadow:inset 0 0 32px color-mix(in srgb,var(--degree-accent) 10%,transparent),0 10px 28px rgba(15,23,42,.1);border-color:color-mix(in srgb,var(--degree-accent) 55%,var(--border));outline:2px solid transparent}
+html[data-theme] .sm-portfolio-degree:focus-visible {outline-color:var(--degree-accent);outline-offset:3px}
+.sm-degree-heading {display:flex;align-items:center;justify-content:space-between;gap:1rem}
+.sm-degree-arrow {font-size:1.3rem!important;transition:transform .2s ease;color:var(--degree-accent)!important}
+.sm-portfolio-degree:hover .sm-degree-arrow {transform:translate(2px,-2px)}
+html[data-theme] .sm-portfolio-degree h3 {font-size:1.25rem!important;line-height:1.4;margin:.25rem 0 1.25rem!important}
+.sm-degree-grades {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:.8rem;margin:0}
+.sm-degree-grades dt {font-size:.78rem;color:var(--muted);font-weight:500}
+.sm-degree-grades dd {margin:.25rem 0 0;font-size:1.65rem;line-height:1.25;font-weight:650;color:var(--ink);font-variant-numeric:tabular-nums}
+.sm-degree-grades > div:first-child dd {font-size:1.9rem;font-weight:750}
+.sm-degree-grades > div:not(:first-child) dd {font-size:1.4rem;font-weight:550;color:var(--muted)}
+.sm-degree-footer {display:flex;justify-content:space-between;gap:.75rem;flex-wrap:wrap}
+html[data-theme] .sm-portfolio-degree-progress {height:8px;margin:1.25rem 0 .7rem;background:var(--surface-2)}
+.sm-portfolio-totals {display:flex;flex-wrap:wrap;gap:.5rem 1.6rem;padding:1.15rem 0;color:var(--muted);font-size:.86rem}
+.sm-portfolio-totals strong {color:var(--ink);font-weight:650}
+.sm-summary-metrics {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1.1rem 1.5rem;padding:1.2rem 0;margin:.3rem 0 1rem;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.sm-summary-metrics dt {font-size:.8rem;color:var(--muted);line-height:1.4}
+.sm-summary-metrics dd {font-size:1.25rem;color:var(--ink);margin:.25rem 0 0;font-weight:600;font-variant-numeric:tabular-nums}
+.sm-summary-metrics dd small {font-size:.8rem;color:var(--muted)}
+@media(max-width:700px) {
+  .sm-summary-metrics {grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}
+  .sm-degree-grades {gap:.4rem}
+  .sm-degree-grades dd {font-size:1.4rem}
+  html[data-theme] .sm-portfolio-degree {padding:1rem}
+  .sm-portfolio-totals {display:grid;gap:.4rem}
+}
+@media(prefers-reduced-motion:reduce) {
+  html[data-theme] .sm-portfolio-degree,.sm-degree-arrow {transition:none}
+  html[data-theme] .sm-portfolio-degree:hover,.sm-portfolio-degree:hover .sm-degree-arrow {transform:none}
+}
+
+/* Dashboard sections share one hierarchy; only individual plots have a surface. */
+html[data-theme] body .stApp [data-testid="stMainBlockContainer"]:has(h1#dashboard) [class*="st-key-nm_card_dash_"] {background:transparent!important;border:0!important;box-shadow:none!important;border-radius:0!important;padding:1rem 0!important}
+html[data-theme] body .stApp [data-testid="stMainBlockContainer"]:has(h1#dashboard) [data-testid="stPlotlyChart"] {background:var(--surface)!important;border:1px solid var(--border);border-radius:12px;overflow:visible}

@@ -4,10 +4,11 @@ from __future__ import annotations
 import html
 import re
 import textwrap
+from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from core.models import ModuleState
@@ -62,6 +63,8 @@ def _course_cards(modules, view: str) -> None:
             tags = f"<span>{html.escape(kind)}</span>" + tags
         description = (module.moses.contents or module.moses.learning_outcomes) if module.moses else module.description
         description = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", description or "")).strip()
+        if description.casefold() in {"keine angabe", "n/a", "none", "-"}:
+            description = ""
         preview = html.escape(description[:220].rsplit(" ", 1)[0] + "…" if len(description) > 220 else description)
         cards.append(
             '<article class="sm-module-list-card">'
@@ -74,65 +77,98 @@ def _course_cards(modules, view: str) -> None:
     st.html('<div class="sm-module-list">' + "".join(cards) + "</div>")
 
 
-def render_portfolio(modules, *, view: str, key_suffix: str, degree_rows, topic_rows, style_chart) -> None:
+def render_portfolio_header(modules, *, degree_rows) -> None:
     completed = completed_portfolio_modules(modules)
-    completed.sort(key=lambda module: term_sort_key(module.term, newest_first=True) + (module.name,))
     projects = [module for module in completed if _is_practical_work(module)]
-    projects.sort(key=lambda module: (bool(_web_url(module.github_url) or module.attachments), portfolio_work_kind(module) in {"Project", "Thesis"}), reverse=True)
     profile_name = active_profile_display_name()
-    st.html(f'<header class="sm-portfolio-hero"><span>Academic portfolio</span><h2>{html.escape(profile_name)}</h2><p>Completed coursework, projects, and academic focus.</p><nav><a href="#portfolio-focus">Academic focus ↓</a><a href="#portfolio-projects">Projects ↓</a><a href="#portfolio-courses">Coursework ↓</a></nav></header>')
-    if not completed:
-        st.info("Completed courses will appear here when you finish your first modules.")
-        return
+    st.html(f'<header class="sm-portfolio-hero"><span>Study overview · Academic portfolio</span><h2>{html.escape(profile_name)}</h2><nav><a href="#portfolio-focus">Academic focus ↓</a><a href="#portfolio-projects">Projects ↓</a><a href="#portfolio-courses">Coursework ↓</a></nav></header>')
+    st.html(degree_cards_html(degree_rows))
+    st.html('<div class="sm-portfolio-totals">'
+            f'<span><strong>{len(completed)}</strong> completed courses</span>'
+            f'<span><strong>{sum(module.cp for module in completed):g} LP</strong> completed</span>'
+            f'<span><strong>{len(projects)}</strong> projects & practical courses</span></div>')
 
-    metrics = st.columns(3)
-    metrics[0].metric("Completed courses", len(completed))
-    metrics[1].metric("Completed credits", f"{sum(module.cp for module in completed):g} LP", help="Each course is counted once, including courses registered in both degrees.")
-    metrics[2].metric("Projects & practical work", len(projects), help="Completed project, lab, practical, or thesis courses, plus courses with code or uploaded work. Each card identifies its category.")
-    degree_cards = []
+
+def degree_cards_html(degree_rows) -> str:
+    cards = []
     for row in degree_rows:
         full_name = str(row.get("Program Key") or row.get("Program") or "")
         institution, _, name = full_name.partition(" - ")
         name = name or institution
         earned, required = float(row["Completed Credits"]), float(row["Required Credits"])
-        grade = float(row.get("Current") or 0)
         kind = "bsc" if "B.Sc." in full_name else "msc"
-        percentage = min(100, 100 * earned / required) if required else 0
-        grade_text = f"Current degree grade <strong>{grade:.1f}</strong>" if grade > 0 else "No graded results yet"
-        degree_cards.append(f'<article class="sm-portfolio-degree sm-degree-{kind}"><span>{html.escape(institution)}</span><h3>{html.escape(name)}</h3><div>{grade_text}</div><div class="sm-portfolio-degree-progress"><span style="width:{percentage:.1f}%"></span></div><small>{earned:g} of {required:g} LP completed · {percentage:.0f}%</small></article>')
-    st.html('<div class="sm-portfolio-degrees">' + "".join(degree_cards) + "</div>")
+        percentage = min(100, max(0, 100 * earned / required)) if required else 0
+        link = "?" + urlencode({"page": "Dashboard", "program_view": full_name, "dashboard_tab": "Overview"})
+        grade_stats = []
+        for label in ("Current", "Forecast", "Best", "Worst"):
+            grade = float(row.get(label) or 0)
+            grade_stats.append(f'<div><dt>{label}</dt><dd>{grade:.1f}</dd></div>' if grade > 0 else f'<div><dt>{label}</dt><dd>—</dd></div>')
+        issues = int(row.get("Rule issues") or 0)
+        issue_text = f"{issues} requirement {'issue' if issues == 1 else 'issues'}" if issues else "Requirements on track"
+        cards.append(f'<a class="sm-portfolio-degree sm-degree-{kind}" href="{html.escape(link, quote=True)}" target="_self" aria-label="Open {html.escape(name, quote=True)} dashboard">'
+                     f'<div class="sm-degree-heading"><span>{html.escape(institution)}</span><span class="sm-degree-arrow" aria-hidden="true">↗</span></div>'
+                     f'<h3>{html.escape(name)}</h3>'
+                     f'<dl class="sm-degree-grades">{"".join(grade_stats)}</dl>'
+                     f'<div class="sm-portfolio-degree-progress" role="progressbar" aria-label="Completed degree credits" aria-valuenow="{percentage:.1f}" aria-valuemin="0" aria-valuemax="100"><span style="width:{percentage:.1f}%"></span></div>'
+                     f'<div class="sm-degree-footer"><small>{earned:g} / {required:g} LP · {percentage:.0f}%</small><small>{issue_text}</small></div></a>')
+    return '<div class="sm-portfolio-degrees">' + "".join(cards) + '</div>'
 
-    st.html('<h3 id="portfolio-focus" class="sm-portfolio-section">Academic focus</h3>')
+
+def portfolio_topic_figure(topic_rows):
+    """Keep the entire hierarchy in one figure so Plotly's native zoom works."""
+    df = pd.DataFrame(topic_rows).copy()
+    palette = ["#3974a3", "#347f76", "#6e64a1", "#4c8993", "#566d98", "#7a6791", "#3a8585", "#627e98", "#466a88"]
+    topics = sorted(df["Topic"].unique())
+    colors = {topic: palette[index % len(palette)] for index, topic in enumerate(topics)}
+    nodes = {("All topics",): {"value": 0.0, "label": "All topics", "color": "#334155", "courses": {}}}
+    for row in df.to_dict("records"):
+        root = ("All topics",)
+        topic = root + (row["Topic"],)
+        subtopic = topic + (row["Subtopic"],)
+        course = subtopic + (row["Course Link"],)
+        for path in (root, topic, subtopic, course):
+            node = nodes.setdefault(path, {"value": 0.0, "label": row["Course"] if path == course else path[-1], "color": colors[row["Topic"]], "courses": {}})
+            node["value"] += float(row["Course Credits"])
+            node["courses"][row["Course Link"]] = float(row["Course Credits"])
+    ids = {path: f"node-{index}" for index, path in enumerate(nodes)}
+    figure = go.Figure(go.Treemap(
+        ids=list(ids.values()), labels=[node["label"] for node in nodes.values()],
+        parents=[ids.get(path[:-1], "") for path in nodes], values=[node["value"] for node in nodes.values()],
+        customdata=[[sum(node["courses"].values()), len(node["courses"])] for node in nodes.values()],
+        branchvalues="total", maxdepth=2, sort=False,
+        marker=dict(colors=[node["color"] for node in nodes.values()], line=dict(width=2, color="rgba(255,255,255,.2)")),
+        textfont=dict(color="#ffffff", size=15), textinfo="label", root_color="#334155",
+        pathbar=dict(visible=True, edgeshape=">", textfont=dict(color="#ffffff", size=13)),
+        tiling=dict(pad=4), hovertemplate="<b>%{label}</b><br>%{customdata[0]:~g} LP · %{customdata[1]} completed course(s)<extra></extra>",
+    ))
+    figure.update_traces(text=["<br>".join(html.escape(line) for line in textwrap.wrap(str(node["label"]), width=23)) for node in nodes.values()], texttemplate="%{text}<br><b>%{customdata[0]:~g} LP</b>")
+    figure.update_layout(height=540, margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)")
+    return figure
+
+
+def render_portfolio(modules, *, view: str, key_suffix: str, topic_rows) -> None:
+    completed = completed_portfolio_modules(modules)
+    completed.sort(key=lambda module: term_sort_key(module.term, newest_first=True) + (module.name,))
+    projects = [module for module in completed if _is_practical_work(module)]
+    projects.sort(key=lambda module: (bool(_web_url(module.github_url) or module.attachments), portfolio_work_kind(module) in {"Project", "Thesis"}), reverse=True)
+    if not completed:
+        st.info("Completed courses will appear here when you finish your first modules.")
+        return
     if topic_rows:
-        df = pd.DataFrame(topic_rows)
-        allocated_per_course = df.groupby("Course Link")["Allocated Credits"].transform("sum")
-        df["Allocated Credits"] *= df["Course Credits"] / allocated_per_course
-        topics = sorted(df["Topic"].unique())
-        selected = st.selectbox("Explore a topic", ["All topics"] + topics, key=f"portfolio_topic_{key_suffix}")
-        selected_df = df if selected == "All topics" else df[df["Topic"] == selected]
-        path = ["Topic", "Subtopic"] if selected == "All topics" else ["Subtopic", "Course"]
-        figure = px.treemap(selected_df, path=path, values="Allocated Credits", color="Topic" if selected == "All topics" else "Subtopic", color_discrete_sequence=px.colors.qualitative.Set3)
-        style_chart(figure, height=500)
-        figure.update_layout(margin=dict(l=0, r=0, t=8, b=8), uniformtext=dict(minsize=11, mode="hide"))
-        figure.update_traces(textinfo="label", textfont=dict(color="#202631"), marker=dict(line=dict(width=1, color="#ffffff")), root_color="rgba(0,0,0,0)", hovertemplate="<b>%{label}</b><br>%{value:.1f} allocated LP<extra></extra>")
-        for trace in figure.data:
-            trace.update(text=["<br>".join(html.escape(line) for line in textwrap.wrap(str(label), width=20)) for label in trace.labels], texttemplate="%{text}")
-        st.plotly_chart(figure, key=f"portfolio_map_{key_suffix}", width="stretch", config={"displayModeBar": False, "responsive": True})
-        st.caption("Tile size reflects completed credits, divided across each course’s topics. Select a topic to explore its courses.")
+        st.html(f"<span hidden></span><script>{Path('assets/treemap-labels.js').read_text()}</script>", unsafe_allow_javascript=True)
+        reset_key = f"portfolio_map_reset_{key_suffix}"
+        st.session_state.setdefault(reset_key, 0)
+        description, reset = st.columns([4, 1], vertical_alignment="center")
+        description.html('<h3 id="portfolio-focus" class="sm-portfolio-section">Academic focus</h3>')
+        if reset.button("All topics", icon=":material/zoom_out_map:", key=f"portfolio_reset_{key_suffix}", width="stretch"):
+            st.session_state[reset_key] += 1
+        st.plotly_chart(portfolio_topic_figure(topic_rows), key=f"portfolio_map_{key_suffix}_v3_{st.session_state[reset_key]}", width="stretch", theme=None, config={"displayModeBar": False, "responsive": True})
     else:
         st.caption("Add topic tags to completed modules to build this map.")
 
     if projects:
         st.html('<h3 id="portfolio-projects" class="sm-portfolio-section">Projects & practical work</h3>')
-        show_all_key = f"portfolio_all_work_{key_suffix}"
-        show_all = st.session_state.get(show_all_key, False)
-        visible_projects = projects if show_all else projects[:6]
-        if len(projects) > 6:
-            st.caption(f"{len(visible_projects)} of {len(projects)} projects, practical courses, and courses with linked work")
-        _course_cards(visible_projects, view)
-        if len(projects) > 6 and st.button("Show highlights" if show_all else f"Show all {len(projects)} projects & practical courses", key=f"portfolio_work_toggle_{key_suffix}"):
-            st.session_state[show_all_key] = not show_all
-            st.rerun()
+        _course_cards(projects, view)
 
     st.html('<h3 id="portfolio-courses" class="sm-portfolio-section">Completed coursework</h3>')
     search = st.text_input("Find a course or topic", key=f"portfolio_search_{key_suffix}", placeholder="Search completed work…")

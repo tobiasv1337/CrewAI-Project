@@ -438,3 +438,64 @@ def test_capture_tool_traces_can_be_disabled(tmp_path):
         assert recorder.run_dir is None
 
     assert list(tmp_path.iterdir()) == []
+
+
+def test_tool_status_distinguishes_response_failures_from_report_content():
+    from crew.tracing import status_for_tool_output
+
+    successful = [
+        "# Study plan snapshot\nAdditional Courses (missing, error): missing 6 LP",
+        "# Degree requirement details\n| missing | error | Seminar |",
+        "# Search result\nError correction: failed transmission detection",
+        "Error correction and failure detection course",
+        '{"status":"success", "data":[{"error":"failed exam"}]}',
+        '{"ok":true,"error":null,"results":[]}',
+    ]
+    failed = [
+        "Error executing tool: unknown coworker",
+        "Failed to retrieve ISIS grades overview: timeout",
+        "Invalid MOSES module search filters: unknown degree",
+        "MOSES module details lookup failed for `Machine learning`: timeout",
+        "ISIS tool formatting failed after reading course 123: missing data",
+        "Study-plan write refused: confirmation missing",
+        "Study-plan write failed while saving: disk full",
+        '{"status":"failed", "message":"timeout"}',
+        '{"ok":false,"error":"timeout"}',
+        '{"isError":true,"content":[]}',
+    ]
+    for output in successful:
+        assert status_for_tool_output("Get error reports", output) == "ok", output
+    for output in failed:
+        assert status_for_tool_output("Search modules", output) == "error", output
+    assert status_for_tool_output("ISIS", "# ISIS course access required: course 123") == "warning"
+    assert status_for_tool_output("ISIS", "# ISIS course assignments\n- Cleanup attempted: yes; succeeded: no") == "warning"
+
+
+def test_full_tool_output_drives_status_when_preview_omits_result():
+    from crew.tracing import status_for_tool_output
+
+    output = json.dumps({"data": "x" * 5000, "status": "failed"})
+    summary = tool_call_summary_from_event({"tool_name": "Lookup", "output": output, "output_preview": output[:30]})
+    assert status_for_tool_output("Lookup", output) == "error"
+    assert summary.status == "error"
+
+
+def test_legacy_labels_are_repaired_without_overriding_explicit_failures():
+    from crew.tracing import normalize_tool_call_status
+
+    legacy = {"status": "error", "output_preview": "# Study plan snapshot\nRule: error"}
+    assert normalize_tool_call_status(legacy)["status"] == "ok"
+    assert legacy["status"] == "error"  # Stored evidence remains intact.
+    for failure in [
+        {"status": "error"},
+        {"status": "error", "output": "Error executing tool: timeout"},
+        {**legacy, "status_source": "runtime"},
+        {**legacy, "error": "transport interrupted"},
+    ]:
+        assert normalize_tool_call_status(failure)["status"] == "error"
+
+
+def test_legacy_coworker_answer_containing_domain_error_is_successful():
+    from crew.tracing import normalize_tool_call_status
+    call = {"status": "error", "tool_name": "ask_question_to_coworker", "output": "Based on your study plan:\nThe Additional Courses rule has an error: exceeded limit."}
+    assert normalize_tool_call_status(call)["status"] == "ok"

@@ -42,7 +42,7 @@ from crew.runtime_observer import (
 )
 from crew.semester_context import semester_reference_context
 from crew.tools.proposal_tools import ProposalCourseInput, build_course_proposal
-from crew.tracing import TraceWorkbench, load_trace_workbench
+from crew.tracing import TraceWorkbench, load_trace_workbench, normalize_tool_call_status
 from main import MultiAgentStudyAssistantRunResult, run_study_assistant_query
 
 
@@ -140,8 +140,8 @@ def render_chat_page() -> None:
             <section class="chat-hero">
               <div class="chat-hero-main">
                 <div class="chat-hero-kicker"><span></span>Multi-agent study assistant</div>
-                <h1>Agent Coordination Workbench</h1>
-                <p>Plan your studies, verify degree requirements, explore grade scenarios, and check course information. Inspect the live agent trace whenever you want to see how an answer was produced.</p>
+                <h1>Study Chat</h1>
+                <p>Ask about courses, degree requirements, grades, or your study plan.</p>
               </div>
             </section>
             """
@@ -192,44 +192,45 @@ def render_chat_page() -> None:
         _set_profile_messages(slug, [])
         _clear_all_course_card_state(slug)
 
-    col_sel, col_new, col_runtime, col_del = st.columns([6, 1.15, 1.55, 1])
-    with col_sel:
-        selected_tid = st.selectbox(
-            "Session Selector",
-            options=list(thread_options.keys()),
-            format_func=lambda tid: thread_options[tid],
-            index=list(thread_options.keys()).index(active_tid),
-            key=f"chat_session_selector_{profile_slug}",
-            label_visibility="collapsed"
-        )
-        if selected_tid != active_tid:
-            st.session_state[f"active_thread_id_{profile_slug}"] = selected_tid
-            st.rerun()
+    with st.container(key="chat_toolbar"):
+        col_sel, col_new, col_runtime, col_del = st.columns([6, 1.15, 1.55, 1])
+        with col_sel:
+            selected_tid = st.selectbox(
+                "Session Selector",
+                options=list(thread_options.keys()),
+                format_func=lambda tid: thread_options[tid],
+                index=list(thread_options.keys()).index(active_tid),
+                key=f"chat_session_selector_{profile_slug}",
+                label_visibility="collapsed"
+            )
+            if selected_tid != active_tid:
+                st.session_state[f"active_thread_id_{profile_slug}"] = selected_tid
+                st.rerun()
             
-    with col_new:
-        st.button(
-            "New chat",
-            key=f"chat_new_btn_header_{profile_slug}",
-            use_container_width=True,
-            type="secondary",
-            on_click=on_new_chat,
-            args=(profile_slug,)
-        )
+        with col_new:
+            st.button(
+                "New chat",
+                key=f"chat_new_btn_header_{profile_slug}",
+                use_container_width=True,
+                type="secondary",
+                on_click=on_new_chat,
+                args=(profile_slug,)
+            )
 
-    with col_runtime:
-        settings = _render_chat_config_panel(profile_slug, active_tid=active_tid)
+        with col_runtime:
+            settings = _render_chat_config_panel(profile_slug, active_tid=active_tid)
             
-    with col_del:
-        is_default = (active_tid == "default")
-        btn_label = "Clear" if is_default else "Delete"
-        st.button(
-            btn_label,
-            key=f"chat_del_btn_header_{profile_slug}",
-            use_container_width=True,
-            type="secondary",
-            on_click=on_delete_chat,
-            args=(profile_slug, active_tid)
-        )
+        with col_del:
+            is_default = (active_tid == "default")
+            btn_label = "Clear" if is_default else "Delete"
+            st.button(
+                btn_label,
+                key=f"chat_del_btn_header_{profile_slug}",
+                use_container_width=True,
+                type="secondary",
+                on_click=on_delete_chat,
+                args=(profile_slug, active_tid)
+            )
             
     st.markdown("<div class='chat-toolbar-spacer'></div>", unsafe_allow_html=True)
 
@@ -274,7 +275,7 @@ def render_chat_page() -> None:
     if thread.active_proposals and not run_active and not clear_pass:
         _render_proposals_panel(profile_slug, thread.active_proposals)
 
-    prompt = st.chat_input("Ask the agent team, revise a proposal, or type 'apply selected'…")
+    prompt = st.chat_input("Ask about your studies…")
     if prompt:
         run_prompt = prompt.strip()
         if run_prompt:
@@ -299,7 +300,7 @@ def render_chat_page() -> None:
 def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") -> ChatRuntimeSettings:
     del active_tid
     with st.popover(
-        "Runtime settings",
+        "Chat settings",
         icon=":material/tune:",
         use_container_width=True,
         help="Models, tracing, agent behavior, and ISIS access.",
@@ -1858,7 +1859,7 @@ def extract_agent_interactions(events: list[dict[str, Any]]) -> list[dict[str, A
             interactions[call_id] = interaction
             order.append(call_id)
         elif event_name == "tool_finish":
-            call = dict(event.get("tool_call") or {})
+            call = normalize_tool_call_status(event.get("tool_call") or {})
             if not _is_coworker_tool(call.get("tool_name")):
                 continue
             call_id = str(_safe_int(call.get("call_id")) or f"finish-{index}")
@@ -2317,7 +2318,7 @@ def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False)
 
 
 def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool, live: bool = False) -> None:
-    title = "Agent Coordination Workbench & Trace" if not live else "Live Agent Coordination Workbench & Trace"
+    title = "Agent activity & trace" if not live else "Live Agent activity & trace"
     with st.expander(title, expanded=expanded):
         dashboard_tab, dialogue_tab, raw_tab = st.tabs(
             ["Orchestration & Topology", "Internal Agent Chat (A2A)", "Raw Trace & Tool I/O"]
@@ -2512,7 +2513,7 @@ def _agent_card_fallback_activity(label: str, group: dict[str, Any]) -> str:
 
 def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> str:
     phases = workbench.get("phases") or []
-    groups = {str(group.get("agent_label")): group for group in (workbench.get("groups") or [])}
+    groups = _groups_by_label(workbench)
     events = workbench.get("latest_events") or []
     total_calls = int(workbench.get("total_tool_calls") or 0)
     total_llm_calls = sum(int(group.get("llm_calls") or 0) for group in groups.values())
@@ -2659,7 +2660,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
         </div>
         """
 
-    title_label = "Live Agent Coordination Workbench" if live else "Agent Coordination Workbench & Trace"
+    title_label = "Live agent activity" if live else "Agent activity & trace"
     pulse_dot = '<span class="live-dot"></span>' if live else ""
 
     # Compile artifacts inside the workbench container if not live
@@ -2673,8 +2674,8 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
                 import os
                 artifact_dir = os.path.dirname(str(artifact_path))
                 artifacts_html = f"""
-                <div class="artifacts-container" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #cbd5e1; font-size: 0.85rem; color: #475569;">
-                  <strong>Trace Artifacts:</strong> <code style="font-size: 0.85rem; background: #f1f5f9; padding: 0.1rem 0.3rem; border-radius: 4px;">{html.escape(str(artifact_dir))}</code>
+                <div class="artifacts-container" style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid var(--border); font-size: 0.85rem; color: var(--muted);">
+                  <strong>Trace Artifacts:</strong> <code style="font-size: 0.85rem; background: var(--surface-2); padding: 0.1rem 0.3rem; border-radius: 4px;">{html.escape(str(artifact_dir))}</code>
                 </div>
                 """
 
@@ -2715,7 +2716,7 @@ def _compile_workbench_html(workbench: dict[str, Any], live: bool = False) -> st
         observer_detail = str(observer_report.get("detail") or "")
         observer_html = f"""
         <section class="observer-overview">
-          <span>Live coordination summary</span>
+          <span>{"Live coordination summary" if live else "Last coordination update"}</span>
           <strong>{html.escape(observer_headline)}</strong>
           <p>{html.escape(observer_detail)}</p>
         </section>
@@ -2820,7 +2821,7 @@ def live_workbench_from_events(events: list[dict[str, Any]], completed: bool = F
                 "output_truncated": False,
             }
         elif event.get("event") == "tool_finish":
-            call = dict(event.get("tool_call") or {})
+            call = normalize_tool_call_status(event.get("tool_call") or {})
             if call:
                 call_id = _safe_int(call.get("call_id"))
                 if call_id in calls_by_id:
@@ -3594,12 +3595,17 @@ def _isis_sessions() -> dict[str, dict[str, Any]]:
 
 
 def _groups_by_label(workbench: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {str(group.get("agent_label")): group for group in (workbench.get("groups") or [])}
+    return {
+        str(group.get("agent_label")): {
+            **group, "tool_calls": [normalize_tool_call_status(call) for call in group.get("tool_calls", [])]
+        }
+        for group in (workbench.get("groups") or [])
+    }
 
 
 def _all_tool_calls(workbench: dict[str, Any]) -> list[dict[str, Any]]:
     return [
-        call
+        normalize_tool_call_status(call)
         for group in (workbench.get("groups") or [])
         for call in (group.get("tool_calls") or [])
     ]
@@ -4495,12 +4501,12 @@ def inject_chat_css() -> None:
             padding: 0.25rem 0.4rem;
         }
         .tool-item.running {
-            border-color: #93c5fd;
-            background-color: #eff6ff;
+            border-color: color-mix(in srgb, var(--info) 40%, var(--border));
+            background-color: color-mix(in srgb, var(--info) 9%, var(--surface-2));
         }
         .tool-item.error {
-            border-color: #fca5a5;
-            background-color: #fef2f2;
+            border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+            background-color: color-mix(in srgb, var(--danger) 9%, var(--surface-2));
         }
         .tool-lbl {
             font-weight: 600;
@@ -4754,20 +4760,18 @@ def inject_chat_css() -> None:
             border-radius: 4px;
             text-transform: uppercase;
         }
-        .tool-log-status-badge.ok, .tool-log-status-badge.success {
-            background-color: #d1fae5;
-            color: #065f46;
-            border: 1px solid #a7f3d0;
+        .tool-log-status-badge.ok, .tool-log-status-badge.success { --trace-state: var(--success); }
+        .tool-log-status-badge.running { --trace-state: var(--info); }
+        .tool-log-status-badge.error, .tool-log-status-badge.failed { --trace-state: var(--danger); }
+        .tool-log-status-badge.warning { --trace-state: var(--warning); }
+        .tool-log-status-badge {
+            color: var(--trace-state, var(--muted));
+            background: color-mix(in srgb, var(--trace-state, var(--muted)) 10%, var(--surface));
+            border: 1px solid color-mix(in srgb, var(--trace-state, var(--muted)) 30%, var(--border));
         }
-        .tool-log-status-badge.running {
-            background-color: #dbeafe;
-            color: #1e40af;
-            border: 1px solid #bfdbfe;
-        }
-        .tool-log-status-badge.error, .tool-log-status-badge.failed {
-            background-color: #fee2e2;
-            color: #991b1b;
-            border: 1px solid #fca5a5;
+        .tool-item.warning {
+            border-color: color-mix(in srgb, var(--warning) 40%, var(--border));
+            background: color-mix(in srgb, var(--warning) 9%, var(--surface-2));
         }
         .tool-log-details {
             padding: 0.85rem 1rem;

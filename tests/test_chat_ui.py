@@ -1376,3 +1376,25 @@ def test_course_cards_collapse_same_course_across_proposals(monkeypatch, tmp_pat
 
     assert [action.kind for action in card["actions"]] == ["grade_manager_add", "isis_enroll"]
     assert "moses_41240" in key
+
+
+def test_trace_retry_keeps_failed_attempt_and_repairs_legacy_report_label():
+    failed = {"call_id": 1, "tool_name": "Get Study Plan", "agent_label": "Study Advisor", "status": "error", "output": "Error executing tool: timeout"}
+    succeeded = {"call_id": 2, "tool_name": "Get Study Plan", "agent_label": "Study Advisor", "status": "error", "output": "# Study plan snapshot\nRule status: error"}
+    events = [{"event": "tool_finish", "tool_call": call} for call in [failed, succeeded]]
+    workbench = chat.live_workbench_from_events(events, completed=True)
+    calls = chat._all_tool_calls(workbench)
+    assert [call["status"] for call in calls] == ["error", "ok"]
+    saved = {"groups": [{"agent_label": "Study Advisor", "tool_calls": [failed, succeeded]}]}
+    assert [call["status"] for call in chat._groups_by_label(saved)["Study Advisor"]["tool_calls"]] == ["error", "ok"]
+    assert succeeded["status"] == "error"
+
+
+def test_compiled_saved_trace_uses_corrected_labels():
+    workbench = {"groups": [{"agent_label": "Study Advisor", "status": "completed", "tool_calls": [
+        {"call_id": 1, "tool_name": "Get requirements", "status": "error", "output": "# Degree requirement details\n| missing | error | Seminar |", "duration_ms": 20},
+        {"call_id": 2, "tool_name": "Search", "status": "error", "output": "Error executing tool: timeout", "duration_ms": 10},
+    ]}]}
+    rendered = chat._compile_workbench_html(workbench)
+    assert rendered.count('class="tool-item ok"') == 1
+    assert rendered.count('class="tool-item error"') == 1

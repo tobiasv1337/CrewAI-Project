@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import UTC, datetime
 import json
+import re
 from pathlib import Path
 import threading
 from time import perf_counter
@@ -103,6 +104,7 @@ class ToolCallSummary:
     status: str = "ok"
     badges: list[str] = field(default_factory=list)
     output: str | None = None
+    status_source: str | None = None
 
 
 @dataclass
@@ -265,6 +267,8 @@ class ToolTraceRecorder:
             "tool_name": context.tool_name,
             "tool_input": pending.get("tool_input", safe_jsonable(context.tool_input)),
             "output": result_text,
+            "status": status_for_tool_output(context.tool_name, result_text),
+            "status_source": "tool_output_v2",
             "output_preview": output_preview,
             "output_chars": len(result_text),
             "output_truncated": output_truncated,
@@ -288,7 +292,8 @@ class ToolTraceRecorder:
             task_name=record.get("task_name"),
             duration_ms=record.get("duration_ms"),
             source_system=source_system_for_tool(str(record["tool_name"])),
-            status=status_for_tool_output(str(record["tool_name"]), output_preview),
+            status=record["status"],
+            status_source="tool_output_v2",
             badges=badges_for_tool_output(str(record["tool_name"]), output_preview),
             output=result_text,
         )
@@ -910,7 +915,8 @@ def tool_call_summary_from_event(event: dict[str, Any]) -> ToolCallSummary:
         task_name=event.get("task_name"),
         duration_ms=event.get("duration_ms"),
         source_system=source_system_for_tool(tool_name),
-        status=status_for_tool_output(tool_name, output_preview),
+        status=status_for_tool_output(tool_name, str(event.get("output") or output_preview)),
+        status_source="tool_output_v2",
         badges=badges_for_tool_output(tool_name, output_preview),
         output=event.get("output"),
     )
@@ -953,28 +959,57 @@ def source_system_for_tool(tool_name: str) -> str:
 
 
 def status_for_tool_output(tool_name: str, output_preview: str) -> str:
-    text = f"{tool_name}\n{output_preview}".casefold()
-    error_markers = (
-        "failed",
-        "error",
-        "could not",
-        "write refused",
-        "invalid",
-    )
-    warning_markers = (
-        "access required",
-        "requires enrollment key",
-        "ambiguous",
-        "not found",
-        "no modules",
-        "no matching",
-        "denied access",
-    )
-    if any(marker in text for marker in error_markers):
+    """Classify the tool's response envelope, never words in retrieved content.
+
+    The argument name is retained for callers; recording uses the complete output.
+    A degree-rule error, failed exam, or course about errors is valid result data.
+    """
+    text = output_preview.strip()
+    json_text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.I)
+    try:
+        payload = json.loads(json_text)
+    except (ValueError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        status = str(payload.get("status", "")).casefold()
+        if status in {"error", "failed", "failure"} or payload.get("success") is False or payload.get("ok") is False:
+            return "error"
+        if payload.get("error") or payload.get("isError") is True:
+            return "error"
+        if status in {"warning", "partial", "access_required"}:
+            return "warning"
+        # Nested records may legitimately contain errors and failure states.
+        return "ok"
+
+    first_line = next((line.strip().lstrip("#* ") for line in text.splitlines() if line.strip()), "")
+    if re.match(r"(?:error(?:\s+executing\b|\s*:)|failed\b|failure:|invalid\b|could not\b|unable to\b|traceback\b)", first_line, re.I):
         return "error"
-    if any(marker in text for marker in warning_markers):
+    if re.match(r"(?:MOSES|ISIS|Study[- ]plan|Tool)\b[^:\n]*\b(?:failed|write refused)\b", first_line, re.I):
+        return "error"
+    if re.search(r"access required|requires enrollment key|enrollment key required|denied access|ambiguous|not found|no (?:modules|matching|results)", first_line, re.I):
+        return "warning"
+    # Reading may succeed while cleanup still needs attention. Keep that visible.
+    if re.search(r"^\s*[-*]?\s*Cleanup (?:attempted: yes; succeeded: no|error:)", text, re.I | re.M):
         return "warning"
     return "ok"
+
+
+def normalize_tool_call_status(call: dict[str, Any]) -> dict[str, Any]:
+    """Repair derived labels in saved traces without rewriting the evidence.
+
+    Explicit runtime errors and unfinished calls take precedence. Legacy tool
+    summaries were all labeled by the old output-keyword classifier, including
+    coworker responses. Reclassify their available output, keeping raw events
+    intact. An absent output never counts as success.
+    """
+    result = dict(call)
+    if call.get("status") == "running" or call.get("error") or call.get("status_source") == "runtime":
+        return result
+    output = str(call.get("output") or call.get("output_preview") or "")
+    if output and call.get("status_source") in {None, "tool_output_v2"}:
+        result["status"] = status_for_tool_output(str(call.get("tool_name") or ""), output)
+        result["status_source"] = "tool_output_v2"
+    return result
 
 
 def badges_for_tool_output(tool_name: str, output_preview: str) -> list[str]:

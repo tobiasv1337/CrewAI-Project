@@ -404,72 +404,44 @@ def _render_course_section(title: str, text: str | None, *, key: str) -> None:
 def _render_degree_usage_section(moses: MosesModuleData, *, key: str) -> None:
     if not moses.degree_usages and not moses.normalized_catalogs_by_program:
         return
-    with st.container(border=True, key=key):
+    with st.container(key=key):
         st.subheader("Degree & catalog mappings")
         if moses.normalized_catalogs_by_program:
-            rows = [
-                {
-                    "Program": program_key,
-                    "Catalogs": ", ".join(catalogs) if catalogs else "—",
-                    "Source": (
-                        f"Fallback: MOSES {fallback.source_number} v{fallback.source_version}"
-                        if (fallback := moses.catalog_fallbacks_by_program.get(program_key))
-                        else "MOSES"
-                    ),
-                }
-                for program_key, catalogs in moses.normalized_catalogs_by_program.items()
-            ]
+            rows = []
+            for program_key, catalogs in moses.normalized_catalogs_by_program.items():
+                fallback = moses.catalog_fallbacks_by_program.get(program_key)
+                rows.append({
+                    "Degree": program_key,
+                    "Catalogs": ", ".join(catalogs) if catalogs else "Not retrieved",
+                    "Source": f"MOSES {fallback.source_number} · version {fallback.source_version} (inferred)" if fallback else "Selected MOSES version",
+                })
+            st.html(_course_table_html(rows))
+        for program_key, fallback in moses.catalog_fallbacks_by_program.items():
+            st.caption(f"{short_program_label(program_key)}: {fallback.reason or 'Catalogs inferred from another version of this module.'}")
+            if _valid_resource_url(fallback.source_url):
+                st.markdown(f"[View catalog source · version {fallback.source_version}]({fallback.source_url})")
 
-            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-        if moses.catalog_fallbacks_by_program:
-            fallback_rows = [
-                {
-                    "Program": program_key,
-                    "Fallback Version": f"{fallback.source_number} v{fallback.source_version}",
-                    "Catalogs": ", ".join(fallback.catalogs) if fallback.catalogs else "—",
-                    "Reason": fallback.reason or "",
-                }
-                for program_key, fallback in moses.catalog_fallbacks_by_program.items()
+        if moses.degree_usages:
+            st.markdown("##### Degree usage history")
+            st.html(_course_table_html([
+                {"Degree": usage.degree_name, "Regulations": usage.study_regulations_count,
+                 "Usages": usage.usage_count, "First used": usage.first_usage, "Last used": usage.last_usage}
+                for usage in moses.degree_usages
+            ]))
+            if any(not any(usage.semester_assignments.values()) for usage in moses.degree_usages):
+                st.caption("MOSES lists usage counts for these degrees, but some semester-level catalog details were not returned. Historical module versions can show current semester columns with no assignments. This does not mean the module has no degree mapping.")
+        for usage in moses.degree_usages:
+            rows = [
+                {"Semester": semester, "Scope": assignment.scope_label or "General",
+                 "Catalog": ", ".join(assignment.canonical_catalogs) or assignment.raw_catalog}
+                for semester, assignments in usage.semester_assignments.items()
+                for assignment in assignments
             ]
-            st.caption("Some catalogs were inferred from another version of the same MOSES module because the selected historical version had no catalog assignments.")
-            st.dataframe(pd.DataFrame(fallback_rows), hide_index=True, width="stretch")
-        for idx, usage in enumerate(moses.degree_usages):
-            with st.expander(usage.degree_name, expanded=idx == 0):
-                meta_bits = [
-                    bit
-                    for bit in [
-                        f"Matched program: {usage.matched_program_key}" if usage.matched_program_key else None,
-                        f"StuPOs: {usage.study_regulations_count}" if usage.study_regulations_count is not None else None,
-                        f"Usages: {usage.usage_count}" if usage.usage_count is not None else None,
-                        f"First usage: {usage.first_usage}" if usage.first_usage else None,
-                        f"Last usage: {usage.last_usage}" if usage.last_usage else None,
-                    ]
-                    if bit
-                ]
-                if meta_bits:
-                    st.caption(" | ".join(meta_bits))
-                if usage.degree_url:
-                    st.markdown(f"[Open degree page]({usage.degree_url})")
-                if not usage.semester_assignments:
-                    st.caption("No expanded semester assignments available.")
-                    continue
-                rows = []
-                for semester, assignments in usage.semester_assignments.items():
-                    for assignment in assignments:
-                        catalog_label = (
-                            ", ".join(assignment.canonical_catalogs)
-                            if assignment.canonical_catalogs
-                            else assignment.raw_catalog
-                        )
-                        rows.append(
-                            {
-                                "Semester": semester,
-                                "Scope": assignment.scope_label or "General",
-                                "Catalog": catalog_label,
-                            }
-                        )
-                if rows:
-                    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+            if rows:
+                st.markdown(f"##### {usage.degree_name}")
+                st.html(_course_table_html(rows))
+            if _valid_resource_url(usage.degree_url):
+                st.markdown(f"[{usage.degree_name} · degree page]({usage.degree_url})")
 
 
 def _valid_resource_url(value: str | None) -> bool:
@@ -663,8 +635,8 @@ def render_details_page() -> None:
     with st.container(key="module_detail_toolbar"):
         toolbar_left, toolbar_right = st.columns([3, 1], vertical_alignment="center")
         from_portfolio = st.query_params.get("return_to") == "portfolio"
-        back_url = f"?page=Dashboard&dashboard_tab=Portfolio&program_view={view_encoded}" if from_portfolio else f"?page=Study%20Plan&program_view={view_encoded}"
-        back_label = "Back to portfolio" if from_portfolio else "Back to Study Plan"
+        back_url = f"?page=Dashboard&dashboard_tab=Overview&program_view={view_encoded}" if from_portfolio else f"?page=Study%20Plan&program_view={view_encoded}"
+        back_label = "Back to overview" if from_portfolio else "Back to Study Plan"
         if st.query_params.get("return_to") == "modules":
             back_url = f"?page=Modules&program_view={view_encoded}"
             back_label = "Back to modules"

@@ -2195,7 +2195,7 @@ class TestMosesIntegration(unittest.TestCase):
         terms_by_label = {term["label"]: term for term in payload["terms"]}
         self.assertEqual(terms_by_label["WS 26/27"]["modules"][0]["moduleId"], "fasttube")
         self.assertEqual(terms_by_label["WS 26/27"]["modules"][0]["id"], "fasttube::segment::0")
-        self.assertEqual(terms_by_label["WS 26/27"]["modules"][0]["pills"][0]["label"], "6 Credits")
+        self.assertEqual(terms_by_label["WS 26/27"]["modules"][0]["pills"][0]["label"], "6 LP")
         self.assertTrue(terms_by_label["WS 26/27"]["modules"][0]["draggable"])
         self.assertFalse(terms_by_label["SS 27"]["modules"][0]["draggable"])
 

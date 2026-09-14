@@ -57,7 +57,7 @@
       }
 
       * { box-sizing: border-box; }
-      body { margin: 0; background: transparent; color: var(--ink); }
+      body { margin: 0; background: var(--surface-3); color: var(--ink); }
       button { font: inherit; }
 
       /* ── Main layout ───────────────────────────────── */
@@ -514,7 +514,7 @@
         position: fixed;
         z-index: 40;
         min-width: 220px;
-        max-width: min(300px, calc(100vw - 24px));
+        max-width: min(340px, calc(100vw - 24px));
         padding: 0.4rem;
         border-radius: var(--radius-card);
         border: 1px solid var(--border);
@@ -573,11 +573,85 @@
         .term-card { grid-template-columns: 1fr; }
         .term-dropzone { grid-template-columns: 1fr; }
       }
+
+      :root {--shadow-sm:none;--module-shadow-rest:none;--module-shadow-candidate:none;--term-shadow:none;--blue:#306bc4}
+      :root[data-theme="dark"] {--surface:#1d2129;--surface-2:#252a34;--surface-3:#14171d;--border:#343b47;--border-subtle:#343b47;--muted:#adb5c4;--muted-light:#adb5c4;--blue:#8cb7ff;--success:#72cfaa;--brand:#f09aab;--brand-soft:rgba(240,154,171,.1)}
+      .term-card {box-shadow:none!important;background:var(--surface-3)!important;background-image:none!important;border:1px solid var(--border)}
+      .board-wrapper,.board-layout,.lanes-area {background:var(--surface-3)!important;background-image:none!important}
+      .term-card.is-current {border-color:color-mix(in srgb,var(--brand) 60%,var(--border));box-shadow:0 0 0 1px color-mix(in srgb,var(--brand) 10%,transparent),0 0 12px color-mix(in srgb,var(--brand) 7%,transparent)!important}
+      .term-current-label {font-size:.75rem;font-weight:600;color:var(--brand)}
+      .module-card {box-shadow:none!important;padding:1rem;border-radius:12px;min-height:0}
+      .module-card:hover {transform:none}
+      .module-card.is-candidate, .module-card.is-candidate.is-selected {background:var(--surface);border-style:dashed}
+      .module-card.is-candidate .module-title {color:var(--ink)}
+      .module-accent-bar {height:3px;margin-bottom:.8rem;width:2rem}
+      .module-menu-hint {display:flex;align-items:center;justify-content:center;opacity:1;top:.4rem;right:.3rem;width:40px;height:40px;border:0;background:transparent;color:var(--muted);cursor:pointer;border-radius:8px;font-size:1.4rem}
+      .module-title {line-height:1.4;padding-right:1.5rem;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+      .module-full-name {line-height:1.45;padding:.5rem 0;color:var(--ink)}
+      .module-more {margin-top:.35rem;font-size:.8rem;color:var(--muted)}
+      .module-more summary {cursor:pointer;padding:.4rem 0;min-height:32px}
+      .module-more[open] .pill-row {margin-top:.4rem}
+      .pill {font-size:.75rem;padding:.2rem .45rem;border-radius:6px}
+      .pill-outline {color:var(--muted);border-color:var(--border);background:transparent}
+      .pill-solid {background:var(--surface-2);color:var(--ink);border-color:transparent}
+      .pill-state-completed {--pill-color:var(--success)!important}
+      .pill-state-in-progress {--pill-color:var(--blue)!important}
+      .pill-state-planned {--pill-color:var(--muted)!important}
+      .pill-program-bsc {color:var(--blue)!important;background:color-mix(in srgb,var(--blue) 10%,transparent)!important;border-color:color-mix(in srgb,var(--blue) 25%,transparent)!important}
+      .pill-program-msc {color:var(--brand)!important;background:var(--brand-soft)!important;border-color:color-mix(in srgb,var(--brand) 25%,transparent)!important}
+      .context-menu {max-width:calc(100vw - 24px);max-height:80vh;overflow:auto;border-color:var(--border)}
+      .context-menu select {margin:.4rem .6rem;width:calc(100% - 1.2rem);padding:.65rem;border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:8px;font:inherit}
+      .context-button {min-height:44px}
+      :focus-visible {outline:2px solid var(--blue);outline-offset:2px}
+      @media(max-width:600px) {.term-dropzone{grid-template-columns:minmax(0,1fr)!important;padding:.75rem}.term-sidebar{padding:1rem}.module-card{touch-action:pan-y}.module-more summary{min-height:40px}}
+      @media(prefers-reduced-motion:reduce) {*{transition:none!important;animation:none!important}}
+
+      /* Preserve meaningful course hierarchy from the original planner. */
+      .module-card {box-shadow:0 2px 5px rgba(15,23,42,.06)!important;transition:border-color .18s,box-shadow .18s,transform .18s}
+      .module-card:hover {box-shadow:0 8px 18px rgba(15,23,42,.1)!important;transform:translateY(-1px)}
+      .module-card.is-candidate,.module-card.is-candidate.is-selected {background:linear-gradient(160deg,var(--surface-2),var(--surface-3));border-style:solid;box-shadow:none!important}
+      .module-card.is-candidate .module-title,.module-card.is-candidate .module-subtitle {color:var(--muted)!important}
+      .module-card.is-candidate .module-program-bar,.module-card.is-candidate .module-accent-bar {background:#97a3af!important}
+      .module-card.state-completed .module-program-bar {background:var(--success)}
+      .module-card.state-in-progress .module-program-bar {background:var(--blue)}
+      .module-card.state-planned .module-program-bar {background:var(--ink-secondary)}
+      .module-accent-bar {width:calc(100% - 1.7rem);height:6px;margin-bottom:.85rem}
+      .module-title {display:block;-webkit-line-clamp:unset;overflow:visible;overflow-wrap:anywhere}
+      .pill {border-radius:999px;white-space:normal;overflow:visible;text-overflow:clip;font-size:.73rem;padding:.2rem .55rem;line-height:1.4}
+      .pill-solid {background:#202b3d!important;color:#fff!important;border-color:#202b3d!important;font-weight:650}
+      .pill-outline {color:var(--blue);border-color:color-mix(in srgb,var(--blue) 35%,transparent);background:color-mix(in srgb,var(--blue) 3%,transparent)}
+      .pill-candidate {color:var(--muted);background:color-mix(in srgb,var(--muted) 9%,transparent)}
+      .context-menu {width:330px;background:var(--surface);padding:.65rem;box-shadow:0 14px 45px rgba(0,0,0,.2);backdrop-filter:none}
+      .context-heading {display:flex;align-items:center;justify-content:space-between;padding:0 .35rem;font-size:.95rem}
+      .context-course-name {font-size:.78rem;line-height:1.4;color:var(--muted);margin:0 .35rem .5rem;max-height:3.4em;overflow:auto}
+      .context-close {background:transparent;border:0;color:var(--muted);font-size:1.4rem;width:36px;height:36px;border-radius:6px;cursor:pointer}
+      .context-close:hover {background:var(--surface-2)}
+      .context-title {display:block;font-size:.75rem;text-transform:none;letter-spacing:0;font-weight:550;padding:.6rem .4rem .2rem}
+      .context-status-grid {display:grid;grid-template-columns:1fr 1fr;gap:.3rem;padding:.1rem .3rem}
+      .context-status-grid .context-button {font-size:.77rem;background:var(--surface-2);border:1px solid var(--border);padding:.45rem .5rem;min-height:42px}
+      .context-status-grid .context-button.is-current {background:var(--brand-soft);border-color:var(--brand);color:var(--brand)}
+      .context-status-grid .context-secondary {display:none}
+      .context-open {color:var(--blue);font-weight:550}
+      .context-menu select {margin:.2rem .3rem;width:calc(100% - .6rem)}
+      .context-status-grid [data-value="Completed"].is-current {background:color-mix(in srgb,var(--success) 12%,var(--surface));border-color:var(--success);color:var(--success)}
+      .context-status-grid [data-value="In Progress"].is-current {background:color-mix(in srgb,var(--blue) 12%,var(--surface));border-color:var(--blue);color:var(--blue)}
+      .context-status-grid [data-value="Planned"].is-current,.context-status-grid [data-value="Possible Candidate"].is-current {background:var(--surface-2);border-color:var(--muted);color:var(--ink)}
+      .module-accent-bar {height:4px;background:color-mix(in srgb,var(--area-color) 74%,var(--muted));margin-bottom:.85rem}
+      .module-program-bar {width:3px;opacity:.78}
+      .module-card.is-candidate .module-program-bar,.module-card.is-candidate .module-accent-bar {opacity:.65}
+      .module-meta {gap:.5rem}
+      .pill-row {gap:.3rem}
+      .pill {font-weight:500;font-size:.72rem}
+      .pill-solid,.pill-status,.pill-candidate,.pill-grade,.pill-pass {font-weight:600}
+      .pill-source {color:var(--muted);background:transparent;border-color:var(--border)}
+      .pill-catalog {color:var(--ink-secondary);background:transparent;border-color:var(--border);border-radius:7px}
+      .pill-offering-both,.pill-offering-ws,.pill-offering-ss {color:var(--muted);background:var(--surface-2);border-color:var(--border)}
+      .pill-muted {border-color:transparent;background:var(--surface-2);color:var(--muted)}
     </style>
   </head>
   <body>
     <div id="root"></div>
-    <div id="context-menu" class="context-menu" hidden></div>
+    <div id="context-menu" class="context-menu" role="dialog" aria-label="Course actions" hidden></div>
 
     <script>
       const root = document.getElementById("root");
@@ -635,7 +709,7 @@
       // Parent theme observer
       try {
         const parentDoc = window.parent.document;
-        const observer = new MutationObserver(syncTheme);
+        const observer = new window.parent.MutationObserver(syncTheme);
         [
           parentDoc.documentElement,
           parentDoc.body,
@@ -671,13 +745,16 @@
         updateHeight();
       }
 
+      let lastSentHeight = 0;
       function updateHeight() {
-        const h = Math.max(
-          document.body.scrollHeight,
-          document.documentElement.scrollHeight,
-          root.scrollHeight + 16
-        );
-        sendMsg("streamlit:setFrameHeight", { height: h });
+        // Measure content, not the old iframe viewport, so collapsed terms and
+        // filtered plans can shrink without leaving a large empty tail.
+        const menuBottom = contextMenu && !contextMenu.hidden ? contextMenu.getBoundingClientRect().bottom : 0;
+        const h = Math.ceil(Math.max(root.getBoundingClientRect().bottom, menuBottom) + 16);
+        if (h !== lastSentHeight) {
+          lastSentHeight = h;
+          sendMsg("streamlit:setFrameHeight", { height: h });
+        }
       }
 
       function setComponentValue(v) {
@@ -721,7 +798,8 @@
 
       function pillCls(pill) {
         const v = pill.variant || "default";
-        return `pill pill-${v}`;
+        const state = v === 'status' ? ` pill-state-${String(pill.label || '').toLowerCase().replaceAll(' ', '-')}` : '';
+        return `pill pill-${v}${state}`;
       }
 
       function pillStyle(pill) {
@@ -732,32 +810,16 @@
       }
 
       function groupPillsForRows(pills) {
-        if (!pills || !pills.length) return [];
-        const rows = [];
-        let currentRow = [];
-        let currentWeight = 0;
-
-        function flushRow() {
-          if (!currentRow.length) return;
-          rows.push(currentRow);
-          currentRow = [];
-          currentWeight = 0;
+        const groups = [[], [], [], [], []];
+        for (const pill of pills || []) {
+          const variant = pill.variant || 'default';
+          const group = pill.group === 'topics' ? 4
+            : variant === 'catalog' ? 3
+            : variant.startsWith('program-') ? 1
+            : ['solid', 'status', 'candidate', 'grade', 'pass'].includes(variant) || variant.startsWith('offering-') || variant.startsWith('forecast-') ? 0 : 2;
+          groups[group].push(pill);
         }
-
-        for (const pill of pills) {
-          const label = String((pill && pill.label) || "");
-          const weight = Math.min(label.length, 24) + (label.includes(" ") ? 2 : 0);
-          const isFirstRow = rows.length === 0;
-          const maxWeight = isFirstRow ? 34 : 30;
-          const shouldBreak = currentRow.length > 0
-            && (currentRow.length >= 3 || currentWeight + weight > maxWeight);
-          if (shouldBreak) flushRow();
-          currentRow.push(pill);
-          currentWeight += weight;
-        }
-
-        flushRow();
-        return rows;
+        return groups.filter(group => group.length);
       }
 
       function renderPills(pills) {
@@ -775,25 +837,26 @@
           "module-card",
           mod.selected ? "is-selected" : "",
           mod.candidate ? "is-candidate" : "",
+          "state-" + (mod.state || "planned").toLowerCase().replaceAll(" ", "-"),
           mod.draggable === false ? "is-locked" : ""
         ].filter(Boolean).join(" ");
 
-        const programBar = mod.programColor
-          ? `<div class="module-program-bar" style="--program-color:${attr(mod.programColor)}"></div>`
+        const programBar = mod.statusColor
+          ? `<div class="module-program-bar" title="${attr(mod.state)}" style="--program-color:${attr(mod.statusColor)}"></div>`
           : "";
 
         return `
-          <button type="button" class="${cls}" draggable="${mod.draggable === false ? "false" : "true"}"
+          <article tabindex="0" aria-label="${attr(mod.name)}" class="${cls}" draggable="${mod.draggable === false ? "false" : "true"}"
             data-segment-id="${attr(mod.id)}"
             data-module-id="${attr(mod.moduleId || mod.id)}"
             style="--area-color:${attr(mod.accent || '#64748b')}">
             ${programBar}
             <div class="module-accent-bar"></div>
-            <div class="module-title">${esc(mod.name)}</div>
-            <div class="module-menu-hint">⋮</div>
+            <div class="module-title" title="${attr(mod.name)}">${esc(mod.name)}</div>
+            <button type="button" class="module-menu-hint" aria-label="Actions for ${attr(mod.name)}">⋮</button>
             <div class="module-subtitle">${esc(mod.area)}</div>
             <div class="module-meta">${renderPills(mod.pills)}</div>
-          </button>
+          </article>
         `;
       }
 
@@ -811,7 +874,7 @@
           return `<div class="${cls}">${esc(item.label)}</div>`;
         }).join("");
 
-        const actionsHtml = term.manageable ? `
+        const actionsHtml = term.manageable && boardData.planningMode ? `
           <div class="term-header-actions">
             <button type="button" class="term-action-btn" data-term-action="rename" data-term="${attr(term.label)}">Rename</button>
             <button type="button" class="term-action-btn" data-term-action="delete" data-term="${attr(term.label)}"${term.canDelete ? "" : " disabled"}>Delete</button>
@@ -819,10 +882,11 @@
         ` : "";
 
         return `
-          <section class="term-card">
+          <section class="term-card${term.label === boardData.currentTerm ? ' is-current' : ''}">
             <div class="term-sidebar">
               <div class="term-header">
                 <div class="term-label">${esc(term.label)}</div>
+                ${term.label === boardData.currentTerm ? '<span class="term-current-label">Current semester</span>' : ''}
                 ${actionsHtml}
               </div>
               ${metaHtml}
@@ -1119,8 +1183,22 @@
           border-color: currentColor;
           background: transparent;
         }
+        .tl-mod-actions summary {cursor:pointer;min-height:44px;padding:.6rem 0;color:var(--muted)}
+        .tl-mod-actions select {font:inherit;width:100%;min-height:44px;background:var(--surface-2);color:var(--ink);border:1px solid var(--border);border-radius:8px}
+        .tl-mod-card {box-shadow:none}
+        .tl-mod-open {min-height:40px;border:1px solid var(--border);background:var(--surface-2);color:var(--ink);border-radius:8px;cursor:pointer;margin:.4rem 0;font:inherit}
+        .tl-pill-program-bsc {color:var(--info)!important}
+        .tl-pill-program-msc {color:var(--degree-master)!important}
+        .tl-shelf-drawer .tl-mod-card.is-candidate .tl-mod-title {color:var(--muted)}
+        .tl-shelf-drawer .tl-mod-accent {height:4px;width:100%;opacity:.74}
+        .tl-shelf-drawer .tl-mod-program-bar {width:3px;background:#8d99a6!important;opacity:.78}
+        .tl-shelf-drawer .tl-pill {border-radius:7px;color:var(--muted);white-space:normal}
+        .tl-shelf-drawer .tl-pill-credits {background:#202b3d;color:#fff;border-color:transparent}
+        .tl-shelf-drawer .tl-mod-card:hover {transform:none;box-shadow:none}
         @media (max-width: 820px) {
-          .tl-shelf-drawer { width: calc(100vw - 20px); }
+          .tl-shelf-drawer { width:calc(100vw - 16px);max-width:420px;top:3.5rem;bottom:.5rem;height:auto;border-radius:14px }
+          .tl-shelf-toggle {top:auto;bottom:1rem;transform:none;width:auto;padding:.6rem .9rem;flex-direction:row;border-radius:12px 0 0 12px;min-height:44px}
+          .tl-shelf-toggle-text {writing-mode:horizontal-tb;transform:none;letter-spacing:0;text-transform:none}
         }
       `;
 
@@ -1175,7 +1253,7 @@
             let pcls = 'tl-pill';
             if (p.variant === 'solid') pcls += ' tl-pill-credits';
             if (p.variant === 'status') pcls += ' tl-pill-status';
-            if ((p.variant || '').startsWith('program-')) pcls += ' tl-pill-program';
+            if ((p.variant || '').startsWith('program-')) pcls += ' tl-pill-program tl-pill-' + p.variant;
             const pstyle = (p.variant === 'status' && p.color) ? ` style="color:${attr(p.color)}"` :
                            ((p.variant || '').startsWith('program-') && p.color) ? ` style="color:${attr(p.color)}"` : '';
             return `<span class="${pcls}"${pstyle}>${esc(p.label)}</span>`;
@@ -1183,10 +1261,11 @@
           return `<div class="tl-pill-row">${items}</div>`;
         }).join('');
         return `
-          <div class="${cls}" draggable="true" data-module-id="${attr(mod.moduleId || mod.id)}">
+          <div class="${cls}" tabindex="0" draggable="true" data-module-id="${attr(mod.moduleId || mod.id)}">
             ${programBar}
             <div class="tl-mod-accent" style="background:${accent}"></div>
-            <div class="tl-mod-title">${esc(mod.name)}</div>
+            <div class="tl-mod-title">${esc(mod.name)}</div><details class="tl-mod-actions"><summary>Actions</summary><button type="button" class="tl-mod-open" data-open-module="${attr(mod.moduleId || mod.id)}">Open module</button>
+            <select aria-label="Move ${attr(mod.name)} to semester" data-shelf-move="${attr(mod.moduleId || mod.id)}"><option value="">Move to semester…</option>${(boardData.terms || []).map(term => `<option value="${attr(term.label)}"${canPlace(mod,term.label) ? '' : ' disabled'}>${esc(term.label)}</option>`).join('')}</select></details>
             <div class="tl-mod-subtitle">${esc(mod.area)}</div>
             <div class="tl-mod-meta">${pillsHtml}</div>
           </div>
@@ -1194,6 +1273,7 @@
       }
 
       function renderShelfToParent() {
+        if (boardData.planningMode === false) { cleanupParentShelf(); shelfOpen = false; return; }
         if (!ensureParentShelf() || !parentShelfContainer) return;
 
         const allCount = (boardData.candidateShelf || []).length;
@@ -1211,10 +1291,10 @@
         }).join('');
 
         parentShelfContainer.innerHTML = `
-          <div class="tl-shelf-toggle" id="tl-shelf-toggle" style="${shelfOpen ? 'display:none' : ''}">
+          <button type="button" aria-label="Open candidate shelf" class="tl-shelf-toggle" id="tl-shelf-toggle" style="${shelfOpen ? 'display:none' : ''}">
             <span class="tl-shelf-toggle-count">${allCount}</span>
-            <span class="tl-shelf-toggle-text">Candidate Courses</span>
-          </div>
+            <span class="tl-shelf-toggle-text">Candidates</span>
+          </button>
           <div class="tl-shelf-backdrop${shelfOpen ? ' is-visible' : ''}" id="tl-shelf-backdrop"></div>
           <div class="tl-shelf-drawer${shelfOpen ? ' is-open' : ''}" id="tl-shelf-drawer">
             <div class="tl-shelf-header">
@@ -1243,6 +1323,15 @@
         if (!parentShelfContainer) return;
         const pdoc = window.parent.document;
 
+        pdoc.querySelectorAll('[data-open-module]').forEach(button => {
+          button.onclick = () => dispatchAction('open_details', {module_id:button.dataset.openModule});
+        });
+        pdoc.querySelectorAll('[data-shelf-move]').forEach(select => {
+          select.onchange = () => {
+            const mod = moduleIndex[select.dataset.shelfMove];
+            if (select.value && canPlace(mod, select.value)) dispatchAction('move_term', {module_id:mod.moduleId || mod.id,term:select.value});
+          };
+        });
         const toggle = pdoc.getElementById('tl-shelf-toggle');
         if (toggle) {
           toggle.onclick = () => { openShelf(); };
@@ -1307,7 +1396,7 @@
         pdoc.querySelectorAll('[data-tl-shelf-filter]').forEach(btn => {
           btn.onclick = () => {
             shelfFilter = btn.getAttribute('data-tl-shelf-filter');
-            renderBoard();
+            renderShelfToParent();
           };
         });
 
@@ -1368,6 +1457,7 @@
 
       /* ── Render: full board ────────────────────────── */
       function renderBoard() {
+        const expandedModules = new Set(Array.from(root.querySelectorAll('.module-card:has(details[open])')).map(card => card.dataset.segmentId));
         moduleIndex = {};
         (boardData.terms || []).forEach(t => {
           (t.modules || []).forEach(m => { moduleIndex[m.id] = m; });
@@ -1381,13 +1471,16 @@
                 ${(boardData.terms || []).map(renderTerm).join('')}
               </div>
             </div>
-            <div class="shelf-drop-edge" id="shelf-drop-edge">
+            ${boardData.planningMode ? `<div class="shelf-drop-edge" id="shelf-drop-edge">
               <span class="shelf-drop-edge-label">→ Shelf</span>
-            </div>
+            </div>` : ''}
           </div>
         `;
 
         renderShelfToParent();
+        root.querySelectorAll('.module-card').forEach(card => {
+          if (expandedModules.has(card.dataset.segmentId)) card.querySelector('details')?.setAttribute('open', '');
+        });
         bindInteractions();
         updateHeight();
       }
@@ -1396,6 +1489,7 @@
       function hideContextMenu() {
         contextMenu.hidden = true;
         contextMenu.innerHTML = "";
+        requestAnimationFrame(updateHeight);
       }
 
       function dispatchAction(kind, payload) {
@@ -1411,41 +1505,34 @@
 
         const stateButtons = (boardData.states || []).map(state => `
           <button type="button"
-            class="context-button${state === mod.state ? " is-current" : ""}"
-            data-kind="set_state" data-module-id="${attr(mod.id)}" data-value="${attr(state)}">
+            class="context-button${state === mod.state ? " is-current" : ""}" aria-pressed="${state === mod.state}"
+            data-kind="set_state" data-module-id="${attr(mod.moduleId || mod.id)}" data-value="${attr(state)}">
             <span>${esc(state)}</span>
             <span class="context-secondary">${state === mod.state ? "Current" : ""}</span>
           </button>
         `).join("");
 
-        const areaButtons = (mod.areaOptions || []).map(area => `
-          <button type="button"
-            class="context-button${area === mod.area ? " is-current" : ""}"
-            data-kind="set_area" data-module-id="${attr(mod.id)}" data-value="${attr(area)}">
-            <span>${esc(area)}</span>
-            <span class="context-secondary">${area === mod.area ? "Current" : ""}</span>
-          </button>
-        `).join("");
-
         contextMenu.innerHTML = `
-          <button type="button" class="context-button"
-            data-kind="open_details" data-module-id="${attr(mod.id)}">
-            <span>Open Details</span>
-            <span class="context-secondary">Module page</span>
-          </button>
-          <button type="button" class="context-button"
-            data-kind="move_to_candidate_pool" data-module-id="${attr(mod.id)}">
-            <span>Move to Candidate Shelf</span>
-          </button>
+          <div class="context-heading"><strong>Course actions</strong><button type="button" class="context-close" aria-label="Close course actions">×</button></div>
+          <div class="context-course-name">${esc(mod.name)}</div>
+          <button type="button" class="context-button context-open" data-kind="open_details" data-module-id="${attr(mod.moduleId || mod.id)}"><span>Open module details</span><span aria-hidden="true">↗</span></button>
           <div class="context-divider"></div>
-          <div class="context-title">Status</div>
-          ${stateButtons}
+          <div class="context-title">Status</div><div class="context-status-grid">${stateButtons}</div>
+          ${mod.draggable === false ? '' : `<label class="context-title" for="move-semester">Move to semester</label>
+          <select id="move-semester" aria-label="Move to semester"><option value="">Choose semester…</option>${(boardData.terms || []).map(term => `<option value="${attr(term.label)}"${canPlace(mod, term.label) ? '' : ' disabled'}>${esc(term.label)}</option>`).join('')}</select>`}
+          <label class="context-title" for="change-area">Area</label>
+          <select id="change-area" aria-label="Change area">${(mod.areaOptions || []).map(area => `<option value="${attr(area)}"${area === mod.area ? ' selected' : ''}>${esc(area)}</option>`).join('')}</select>
           <div class="context-divider"></div>
-          <div class="context-title">Area</div>
-          ${areaButtons}
+          <button type="button" class="context-button" data-kind="move_to_candidate_pool" data-module-id="${attr(mod.moduleId || mod.id)}"><span>Move to candidate shelf</span></button>
         `;
-
+        contextMenu.querySelector('.context-close').addEventListener('click', hideContextMenu);
+        contextMenu.querySelector('#change-area').addEventListener('change', e => {
+          dispatchAction('set_area', {module_id:mod.moduleId || mod.id, area:e.target.value});
+        });
         contextMenu.hidden = false;
+        contextMenu.querySelector('#move-semester')?.addEventListener('change', e => {
+          if (e.target.value && canPlace(mod, e.target.value)) dispatchAction('move_term', {module_id:mod.moduleId || mod.id, term:e.target.value});
+        });
 
         // Determine cursor position in iframe viewport coordinates.
         // If the event originates from the parent document (e.g. shelf cards),
@@ -1461,13 +1548,16 @@
           }
         } catch (e) { /* cross-origin */ }
 
+        contextMenu.style.maxHeight = `${Math.min(480, window.parent.innerHeight - 100)}px`;
         const mw = contextMenu.offsetWidth || 230;
         const mh = contextMenu.offsetHeight || 200;
         // Clamp to iframe content area
         const maxX = Math.max(document.documentElement.clientWidth, root.scrollWidth) - mw - 16;
-        const maxY = Math.max(document.documentElement.clientHeight, root.scrollHeight) - mh - 16;
+        const frameTop = window.frameElement?.getBoundingClientRect().top || 0;
+        const minY = Math.max(8, -frameTop + 64);
+        const maxY = Math.max(minY, window.parent.innerHeight - frameTop - mh - 16);
         contextMenu.style.left = `${Math.max(8, Math.min(cx, maxX))}px`;
-        contextMenu.style.top = `${Math.max(8, Math.min(cy, maxY))}px`;
+        contextMenu.style.top = `${Math.max(minY, Math.min(cy, maxY))}px`;
 
         contextMenu.querySelectorAll("[data-kind]").forEach(btn => {
           btn.addEventListener("click", e => {
@@ -1481,6 +1571,7 @@
           });
         });
 
+        contextMenu.querySelector('.context-open')?.focus();
         requestAnimationFrame(updateHeight);
       }
 
@@ -1516,6 +1607,18 @@
       }
 
       function bindDragForCard(card) {
+        card.querySelector('.module-menu-hint')?.addEventListener('click', e => {
+          openContextMenu(e, card.dataset.segmentId || card.dataset.moduleId);
+        });
+        card.addEventListener('keydown', e => {
+          if (e.target !== card) return;
+          if (e.key === 'Enter') dispatchAction('open_details', {module_id:card.dataset.moduleId});
+          if (e.key === ' ' || (e.shiftKey && e.key === 'F10')) {
+            const rect = card.getBoundingClientRect();
+            e.preventDefault();
+            openContextMenu({preventDefault(){},stopPropagation(){},target:card,clientX:rect.right-30,clientY:rect.top+30}, card.dataset.segmentId || card.dataset.moduleId);
+          }
+        });
         if (card.getAttribute("draggable") === "true") {
           card.addEventListener("dragstart", e => {
             draggedModuleId = card.dataset.segmentId || card.dataset.moduleId;
@@ -1626,15 +1729,18 @@
       /* ── Interaction bindings ──────────────────────── */
       function closeShelf() {
         shelfOpen = false;
-        renderBoard();
+        renderShelfToParent();
       }
 
       function openShelf() {
         shelfOpen = true;
-        renderBoard();
+        renderShelfToParent();
       }
 
       function bindInteractions() {
+        root.querySelectorAll('details').forEach(detail => detail.addEventListener('toggle', () => {
+          updateHeight();
+        }));
         root.querySelectorAll(".module-card").forEach(bindDragForCard);
         root.querySelectorAll(".term-dropzone").forEach(bindTermDropzone);
         root.querySelectorAll("[data-term-action]").forEach(btn => {
@@ -1664,19 +1770,28 @@
       window.addEventListener('beforeunload', cleanupParentShelf);
       window.addEventListener('unload', cleanupParentShelf);
 
+      let lastBoardSignature = '';
       window.addEventListener("message", event => {
         if (event.data.type !== "streamlit:render") return;
         syncTheme();
-        boardData = event.data.args.board || { terms: [], candidateShelf: [], states: [], summary: {} };
+        const incoming = event.data.args.board || { terms: [], candidateShelf: [], states: [], summary: {} };
+        const signature = JSON.stringify(incoming);
+        if (signature === lastBoardSignature) return;
+        lastBoardSignature = signature;
+        boardData = incoming;
         hideContextMenu();
         renderBoard();
       });
 
       window.addEventListener("resize", updateHeight);
       window.addEventListener("load", init);
-      document.addEventListener("click", hideContextMenu);
+      document.addEventListener("click", event => {
+        if (!contextMenu.contains(event.target)) hideContextMenu();
+      });
       // Also dismiss context menu on parent document clicks
-      try { window.parent.document.addEventListener("click", hideContextMenu); } catch(e) {}
+      try { window.parent.document.addEventListener("click", event => {
+        if (!contextMenu.contains(event.target)) hideContextMenu();
+      }); } catch(e) {}
       document.addEventListener("keydown", e => {
         if (e.key === "Escape") {
           hideContextMenu();

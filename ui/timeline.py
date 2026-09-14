@@ -28,6 +28,8 @@ from core.terms import (
     advance_term_label,
     build_term_label,
     canonical_term_label,
+    default_term_index,
+    format_term_label,
     next_term_label,
     offering_matches_term,
     ordered_terms,
@@ -36,6 +38,7 @@ from core.terms import (
 )
 from ui.manual_add import render_manual_add_dialog_button
 from ui.moses import render_moses_add_dialog_button
+from ui.course_style import course_area_color
 from ui.program_labels import program_degree_kind, short_program_label
 from ui.settings import selected_discard_variant_key
 from ui.study_plan_export_ui import (
@@ -136,15 +139,15 @@ _AREA_PALETTE = [
 ]
 
 _PROGRAM_COLORS = {
-    "msc": "#1e293b",
-    "bsc": "#94a3b8",
+    "msc": "#b95162",
+    "bsc": "#3978bf",
     "other": "#cbd5e1",
 }
 
 
 def _area_color_map(modules: List[Module]) -> Dict[str, str]:
     areas = sorted({m.area for m in modules})
-    return {area: _AREA_PALETTE[i % len(_AREA_PALETTE)] for i, area in enumerate(areas)}
+    return {area: course_area_color(area) for area in areas}
 
 
 def _program_color(program_key: str | None) -> str:
@@ -156,7 +159,7 @@ def _status_color(state: ModuleState) -> str:
     if state == ModuleState.COMPLETED:
         return "#16a34a"
     if state == ModuleState.IN_PROGRESS:
-        return "#f59e0b"
+        return "#3b82f6"
     if state == ModuleState.POSSIBLE_CANDIDATE:
         return "#94a3b8"
     return "#64748b"
@@ -187,7 +190,7 @@ def _set_query_params(**params: str | None) -> None:
 def _format_credit_pair(counted: float, total: float) -> str:
     if abs(total - counted) < 1e-9:
         return f"{counted:.0f} LP"
-    return f"{counted:.0f} LP ({total:.0f} LP)"
+    return f"{counted:.0f}\u00a0LP ({total:.0f}\u00a0LP)"
 
 
 def _format_credit_value(value: float) -> str:
@@ -503,7 +506,7 @@ def _module_payload(
     is_candidate = is_possible_course(module)
     credits = module.cp if display_cp is None else display_cp
     pills: list[dict[str, str]] = [
-        {"label": f"{_format_credit_value(credits)} Credits", "variant": "solid"},
+        {"label": f"{_format_credit_value(credits)} LP", "variant": "solid"},
     ]
     if segment_count > 1:
         pills.append({"label": f"{segment_index + 1}/{segment_count}", "variant": "muted"})
@@ -529,9 +532,10 @@ def _module_payload(
     # Extra-registration degree badges.
     for extra_pill in _extra_registration_pills(module, show_program_pill=show_program_pill):
         pills.append(extra_pill)
-    if module.module_types:
-        pills.append({"label": module.module_types[0], "variant": "default"})
-    pills.append({"label": module.source.value, "variant": "outline"})
+    for module_type in module.module_types:
+        pills.append({"label": module_type, "variant": "default"})
+    if module.source != ModuleSource.MOSES:
+        pills.append({"label": module.source.value, "variant": "source"})
     if module.institution and module.institution != "TU Berlin":
         pills.append({"label": module.institution, "variant": "muted"})
     effective_catalogs = effective_catalogs_for_program(
@@ -539,14 +543,10 @@ def _module_payload(
         module.program_key,
         registration_for_program(module, module.program_key),
     )
-    for catalog in effective_catalogs[:_MAX_CATALOG_PILLS]:
-        pills.append({"label": catalog, "variant": "outline"})
-    if len(effective_catalogs) > _MAX_CATALOG_PILLS:
-        pills.append({"label": f"+{len(effective_catalogs) - _MAX_CATALOG_PILLS}", "variant": "outline"})
-    for tag in module.tags[:_MAX_TAG_PILLS]:
-        pills.append(_tag_pill(tag))
-    if len(module.tags) > _MAX_TAG_PILLS:
-        pills.append({"label": f"+{len(module.tags) - _MAX_TAG_PILLS}", "variant": "muted"})
+    for catalog in effective_catalogs:
+        pills.append({"label": catalog, "variant": "catalog"})
+    for tag in module.tags:
+        pills.append({**_tag_pill(tag), "group": "topics"})
 
     return {
         "id": segment_id or module.id,
@@ -561,6 +561,7 @@ def _module_payload(
         "selected": module.id == selected_id,
         "accent": color_map.get(module.area, "#475569"),
         "programColor": _program_color(module.program_key),
+        "statusColor": _status_color(module.state),
         "pills": pills,
         "offering": module.offered_in.value,
         "areaOptions": _area_options_for_module(module),
@@ -612,13 +613,13 @@ def _build_board_payload(
 
         meta = [
             {"label": _format_credit_pair(sem_cp, sem_cp + sem_additional_cp), "tone": "default"},
-            {"label": f"{len(sem_counted)} Counted Modules", "tone": "default"},
+            {"label": f"{len(sem_counted)} counted module" + ("s" if len(sem_counted) != 1 else ""), "tone": "default"},
         ]
         if sem_candidates:
             meta.append({"label": f"{sem_candidate_cp:.0f} Candidate Credits", "tone": "candidate"})
             meta.append({"label": f"{len(sem_candidates)} Candidate Modules", "tone": "candidate"})
         if sem_additional:
-            meta.append({"label": f"{len(sem_additional)} Additional Modules", "tone": "additional"})
+            meta.append({"label": f"{len(sem_additional)} additional module" + ("s" if len(sem_additional) != 1 else ""), "tone": "additional"})
         if term_label in session_only_terms and profile_term_counts.get(term_label, 0) == 0:
             meta.append({"label": "Empty this session", "tone": "candidate"})
 
@@ -822,7 +823,6 @@ def _render_semester_toolbar(
     selectable_programs: list[str],
     default_program: str | None,
     on_upsert: Callable[[Module], None] | None,
-    export_renderer: Callable[[], None] | None = None,
 ) -> None:
     profile_slug = str(st.session_state.get("active_profile") or "")
     existing_terms = _all_profile_terms(all_profile_modules, newest_first=True)
@@ -876,44 +876,68 @@ def _render_semester_toolbar(
         if row[2].button("Cancel", key="timeline_add_term_cancel", width="stretch"):
             st.rerun()
 
-    action_col, moses_col, manual_col, export_col, spacer_col = st.columns([1, 1.35, 1.35, 1, 2.4], vertical_alignment="center")
-    if action_col.button("＋ Semester", key="timeline_open_add_semester", type="primary", width="stretch"):
-        _dialog_add_semester()
-    with moses_col:
-        render_moses_add_dialog_button(
-            key_prefix="timeline_page",
-            title="Add Candidate From MOSES",
-            caption="Search the TU Berlin MOSES catalog and add a module to the candidate shelf with a canonical program area.",
-            selectable_programs=selectable_programs,
-            default_program=default_program,
-            create_state=ModuleState.POSSIBLE_CANDIDATE,
-            add_button_label="Add to candidate shelf",
-            trigger_label="＋ Candidate (MOSES)",
-            on_upsert=on_upsert,
-        )
-    with manual_col:
-        render_manual_add_dialog_button(
-            key_prefix="timeline_page",
-            title="Add Manual Candidate",
-            caption="Add an external or manually maintained course to the candidate shelf.",
-            selectable_programs=selectable_programs,
-            default_program=default_program,
-            create_state=ModuleState.POSSIBLE_CANDIDATE,
-            add_button_label="Add to candidate shelf",
-            trigger_label="＋ Candidate (Manual)",
-            default_source=ModuleSource.EXTERNAL,
-            on_upsert=on_upsert,
-        )
-    if export_renderer is not None:
-        with export_col:
-            export_renderer()
-    with spacer_col:
-        st.empty()
+    with st.container(key="plan_toolbar"):
+        action_col, moses_col, manual_col = st.columns([1, 1.35, 1.35], vertical_alignment="center")
+        if action_col.button("Semester", icon=":material/add:", key="timeline_open_add_semester", width="stretch"):
+            _dialog_add_semester()
+        with moses_col:
+            render_moses_add_dialog_button(
+                key_prefix="timeline_page",
+                title="Add Candidate From MOSES",
+                caption="Search the TU Berlin MOSES catalog and add a module to the candidate shelf with a canonical program area.",
+                selectable_programs=selectable_programs,
+                default_program=default_program,
+                create_state=ModuleState.POSSIBLE_CANDIDATE,
+                add_button_label="Add to candidate shelf",
+                trigger_label="＋ Candidate (MOSES)",
+                button_type="primary",
+                on_upsert=on_upsert,
+            )
+        with manual_col:
+            render_manual_add_dialog_button(
+                key_prefix="timeline_page",
+                title="Add Manual Candidate",
+                caption="Add an external or manually maintained course to the candidate shelf.",
+                selectable_programs=selectable_programs,
+                default_program=default_program,
+                create_state=ModuleState.POSSIBLE_CANDIDATE,
+                add_button_label="Add to candidate shelf",
+                trigger_label="＋ Candidate (Manual)",
+                default_source=ModuleSource.EXTERNAL,
+                on_upsert=on_upsert,
+            )
+
+
+def _sync_planning_mode() -> None:
+    candidate = ModuleState.POSSIBLE_CANDIDATE.value
+    selected = list(st.session_state.get("plan_filter_status") or [state.value for state in ModuleState])
+    if st.session_state.get("plan_planning_mode"):
+        selected = list(dict.fromkeys(selected + [candidate]))
+    else:
+        selected = [state for state in selected if state != candidate]
+        if not selected:
+            selected = [state.value for state in ModuleState if state != ModuleState.POSSIBLE_CANDIDATE]
+    st.session_state["plan_filter_status"] = selected
+
+
+def _sync_planning_status() -> None:
+    selected = st.session_state.get("plan_filter_status") or [state.value for state in ModuleState]
+    st.session_state["plan_planning_mode"] = ModuleState.POSSIBLE_CANDIDATE.value in selected
+
+
+def _toggle_planning_mode() -> None:
+    st.session_state["plan_planning_mode"] = not st.session_state.get("plan_planning_mode", False)
+    _sync_planning_mode()
+
+
+def _reset_plan_filters() -> None:
+    for key in list(st.session_state):
+        if key.startswith("plan_filter_"):
+            del st.session_state[key]
+    _sync_planning_mode()
 
 
 def render_timeline_page() -> None:
-    st.title("Study Plan")
-    st.caption("Drag modules between semesters. Right-click for status & area. Candidate shelf on the right.")
 
     all_profile_modules = list(st.session_state.get("modules") or [])
     programs = list(st.session_state.get("relevant_programs") or [])
@@ -947,6 +971,26 @@ def render_timeline_page() -> None:
     if any(is_possible_course(m) and not m.term for m in modules):
         term_filters.append(_CANDIDATE_SHELF_LABEL)
 
+    if "plan_planning_mode" not in st.session_state:
+        st.session_state["plan_planning_mode"] = False
+    if "plan_filter_status" not in st.session_state:
+        _sync_planning_mode()
+    planning_mode = st.session_state["plan_planning_mode"]
+    st.title("Study Plan")
+    stats_container = st.container(key="plan_summary")
+    add_tools_container = st.container()
+    with st.container(key="plan_filters_bar"):
+        filters_col, export_col, mode_col = st.columns([1, 1, 1.5], vertical_alignment="center")
+        mode_col.button(
+            "Done planning" if planning_mode else "Edit plan",
+            icon=":material/check:" if planning_mode else ":material/edit:",
+            type="primary", width="stretch", key="plan_edit_mode",
+            on_click=_toggle_planning_mode,
+            help="Return to your study plan." if planning_mode else "Explore candidates, add courses and semesters, and arrange your plan.",
+        )
+        with export_col:
+            export_container = st.container()
+
     filtered_modules = list(modules)
     filter_term = list(term_filters)
     if modules:
@@ -977,19 +1021,21 @@ def render_timeline_page() -> None:
         type_options = type_pool + (["No Type"] if has_missing_types else [])
         catalog_options = catalog_pool + (["No Catalog"] if has_missing_catalogs else [])
 
-        stats_container = st.container()
-        with st.expander("Filters", expanded=False):
-            row1 = st.columns(5)
-            filter_program = row1[0].multiselect("Program", program_pool, default=program_pool)
-            filter_area = row1[1].multiselect("Area", areas, default=areas)
-            filter_state = row1[2].multiselect("Status", states, default=states)
-            filter_source = row1[3].multiselect("Source", source_values, default=source_values)
-            filter_term = row1[4].multiselect("Placement", term_filters, default=term_filters)
+        with filters_col.popover("Filters", icon=":material/tune:", width="stretch"):
+            with st.container(key="plan_filter_fields"):
+                row1 = st.columns(3)
+                filter_program = row1[0].multiselect("Degree", program_pool, format_func=short_program_label, key="plan_filter_program", placeholder="All degrees") or program_pool
+                filter_area = row1[1].multiselect("Area", areas, key="plan_filter_area", placeholder="All areas") or areas
+                filter_state = row1[2].multiselect("Status", states, key="plan_filter_status", on_change=_sync_planning_status, placeholder="All statuses") or states
+                row2 = st.columns(3)
+                filter_source = row2[0].multiselect("Source", source_values, key="plan_filter_source", placeholder="All sources") or source_values
+                filter_term = row2[1].multiselect("Semester / shelf", term_filters, key="plan_filter_term", placeholder="All placements") or term_filters
+                row2[2].button("Reset filters", on_click=_reset_plan_filters, width="stretch")
 
-            row2 = st.columns(3)
-            filter_types = row2[0].multiselect("Module Types", type_options, default=type_options)
-            filter_catalogs = row2[1].multiselect("Catalogs", catalog_options, default=catalog_options)
-            filter_tags = row2[2].multiselect("Tags", tag_options, default=tag_options, placeholder="No tags")
+                row2 = st.columns(3)
+                filter_types = row2[0].multiselect("Module types", type_options, key="plan_filter_types", placeholder="All types") or type_options
+                filter_catalogs = row2[1].multiselect("Catalogs", catalog_options, key="plan_filter_catalogs", placeholder="All catalogs") or catalog_options
+                filter_tags = row2[2].multiselect("Tags", tag_options, key="plan_filter_tags", placeholder="All tags") or tag_options
 
         filtered_modules = [
             module
@@ -1036,10 +1082,10 @@ def render_timeline_page() -> None:
             )
         ]
     else:
-        stats_container = st.container()
+        filters_col.button("Filters", icon=":material/tune:", disabled=True, width="stretch")
 
     if modules and not filtered_modules:
-        st.info("No modules match the current filters. Semester lanes remain visible for planning.")
+        st.info("No modules match the current filters.")
 
     modules = filtered_modules
     selected_terms = set(filter_term)
@@ -1108,41 +1154,37 @@ def render_timeline_page() -> None:
             next_idx += 1
         if candidate_modules:
             metrics[next_idx].metric(
-                "Candidates",
+                "Candidate LP",
                 f"{candidate_cp:.0f}",
                 help="All Possible Candidates, whether placed in a semester or still in the shelf",
             )
             next_idx += 1
         if candidate_pool_modules:
             metrics[next_idx].metric(
-                "Shelf",
+                "Shelf LP",
                 f"{candidate_pool_cp:.0f}",
                 help="Possible Candidates without a fixed semester",
             )
 
-    st.markdown("---")
     program_view_label = (
         "All Programs"
         if view == "All"
         else (short_program_label(str(view or "")) or str(view or "All Programs"))
     )
-    _render_semester_toolbar(
-        all_profile_modules,
-        selectable_programs=selectable_programs or visible_programs,
-        default_program=default_program,
-        on_upsert=_select_module,
-        export_renderer=lambda: render_study_plan_export_button(
-            modules,
-            counted_ids=counted_ids,
-            visible_terms=visible_term_lanes,
-            profile_name=active_profile_display_name(),
-            program_view_label=program_view_label,
-            key_prefix="timeline_study_plan_export",
-            button_label="Export",
-        ),
-    )
+    with export_container:
+        render_study_plan_export_button(
+            modules, counted_ids=counted_ids, visible_terms=visible_term_lanes,
+            profile_name=active_profile_display_name(), program_view_label=program_view_label,
+            key_prefix="timeline_study_plan_export", button_label="Export",
+        )
+    if planning_mode:
+        with add_tools_container:
+            _render_semester_toolbar(
+                all_profile_modules, selectable_programs=selectable_programs or visible_programs,
+                default_program=default_program, on_upsert=_select_module,
+            )
     if not modules and not all_term_lanes:
-        st.info("No modules or semesters yet. Add a semester or add a candidate from MOSES to start planning.")
+        st.info("Choose Edit plan to add your first semester or course.")
 
     payload = _build_board_payload(
         modules,
@@ -1155,9 +1197,14 @@ def render_timeline_page() -> None:
         session_only_terms=session_terms,
     )
 
+    payload["planningMode"] = planning_mode
+    payload["currentTerm"] = format_term_label(default_term_index())
+    if not planning_mode:
+        payload["terms"] = [term for term in payload["terms"] if term["modules"] or term["label"] in session_terms]
+
     action = _TIMELINE_BOARD(
         board=payload,
-        key=f"timeline_board_{st.session_state.get('program_view', 'All')}",
+        key=f"timeline_board_{st.session_state.get('active_profile', 'primary')}_{st.session_state.get('program_view', 'All')}",
         default=None,
     )
     if isinstance(action, dict):

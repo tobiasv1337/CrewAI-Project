@@ -453,6 +453,8 @@ def test_tool_status_distinguishes_response_failures_from_report_content():
     ]
     failed = [
         "Error executing tool: unknown coworker",
+        "I encountered an error while trying to use the tool. This was the error: timeout.",
+        "I encountered an error: malformed arguments",
         "Failed to retrieve ISIS grades overview: timeout",
         "Invalid MOSES module search filters: unknown degree",
         "MOSES module details lookup failed for `Machine learning`: timeout",

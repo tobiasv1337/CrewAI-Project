@@ -982,7 +982,7 @@ def status_for_tool_output(tool_name: str, output_preview: str) -> str:
         return "ok"
 
     first_line = next((line.strip().lstrip("#* ") for line in text.splitlines() if line.strip()), "")
-    if re.match(r"(?:error(?:\s+executing\b|\s*:)|failed\b|failure:|invalid\b|could not\b|unable to\b|traceback\b)", first_line, re.I):
+    if re.match(r"(?:I encountered an error\b|error(?:\s+executing\b|\s*:)|failed\b|failure:|invalid\b|could not\b|unable to\b|traceback\b)", first_line, re.I):
         return "error"
     if re.match(r"(?:MOSES|ISIS|Study[- ]plan|Tool)\b[^:\n]*\b(?:failed|write refused)\b", first_line, re.I):
         return "error"

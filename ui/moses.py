@@ -324,6 +324,7 @@ def _install_debounced_search_commit(*, input_label: str, hook_key: str, debounc
     st.html(
         f"""
         <script>
+        (() => {{
         const inputLabel = {json.dumps(input_label)};
         const hookKey = {json.dumps(hook_key)};
         const debounceMs = {int(debounce_ms)};
@@ -408,6 +409,7 @@ def _install_debounced_search_commit(*, input_label: str, hook_key: str, debounc
         bind();
         const observer = new MutationObserver(bind);
         observer.observe(window.parent.document.body, {{ childList: true, subtree: true }});
+        }})();
         </script>
         """,
         unsafe_allow_javascript=True,

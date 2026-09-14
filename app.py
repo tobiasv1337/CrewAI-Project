@@ -150,7 +150,7 @@ def _switch_profile(slug: str) -> None:
 
 st.set_page_config(
     page_title="Study Manager",
-    page_icon="TU",
+    page_icon="assets/tu-berlin-logo.svg",
     layout="wide",
     initial_sidebar_state="expanded",
 )

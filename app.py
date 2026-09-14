@@ -98,37 +98,20 @@ def _sidebar_summary_for_program(
 
 
 def _sidebar_summary_html(items: list[dict[str, str]]) -> str:
-    if not items:
-        cards = "<div class='nm-sidebar-summary-empty'>No degree-specific summary available yet.</div>"
-    else:
-        cards = "".join(
+    cards = []
+    for item in items:
+        percent = max(0.0, min(float(item["progress_value"].rstrip("%")), 100.0))
+        cards.append(
             "<section class='nm-sidebar-summary-card'>"
             f"<div class='nm-sidebar-summary-title'>{html.escape(item['program'])}</div>"
             "<div class='nm-sidebar-summary-grid'>"
-            "<div class='nm-sidebar-summary-metric'>"
-            f"<span>{html.escape(item['grade_label'])}</span>"
-            f"<strong>{html.escape(item['grade_value'])}</strong>"
+            f"<div class='nm-sidebar-summary-metric'><span>{html.escape(item['grade_label'])}</span><strong>{html.escape(item['grade_value'])}</strong></div>"
+            f"<div class='nm-sidebar-summary-metric'><span>Completed LP</span><strong>{html.escape(item['credits_value'])}</strong></div>"
             "</div>"
-            "<div class='nm-sidebar-summary-metric'>"
-            "<span>Credits</span>"
-            f"<strong>{html.escape(item['credits_value'])}</strong>"
-            "</div>"
-            "</div>"
-            + (
-                f"<div class='nm-sidebar-summary-note'>{html.escape(item['candidate_note'])}</div>"
-                if item.get("candidate_note")
-                else ""
-            )
-            + "</section>"
-            for item in items
+            f"<div class='sm-sidebar-progress' role='progressbar' aria-label='{html.escape(item['program'])} degree progress' aria-valuenow='{percent:.0f}' aria-valuemin='0' aria-valuemax='100'><span style='width:{percent:.0f}%'></span></div>"
+            f"<div class='sm-sidebar-progress-label'>{percent:.0f}% completed</div></section>"
         )
-
-    return (
-        "<div class='nm-sidebar-summary-inner'>"
-        "<div class='nm-sidebar-summary-heading'>Study summary</div>"
-        f"{cards}"
-        "</div>"
-    )
+    return "<div class='nm-sidebar-summary-inner'><div class='nm-sidebar-summary-heading'>Study summary</div>" + "".join(cards) + "</div>"
 
 
 def _get_query_params() -> dict:
@@ -166,7 +149,7 @@ def _switch_profile(slug: str) -> None:
 
 
 st.set_page_config(
-    page_title="TU Grade Manager",
+    page_title="Study Manager",
     page_icon="TU",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -174,347 +157,33 @@ st.set_page_config(
 
 
 def load_css() -> None:
-    with open("assets/style.css", "r") as f:
-        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    from pathlib import Path
+
+    for filename in ("style.css", "design.css"):
+        st.html(f"<style>{Path('assets', filename).read_text()}</style>")
 
 
 def inject_theme_detector() -> None:
-    """Bridge Streamlit/browser theme changes into stable data-theme attributes."""
-    st.iframe(
-        """
-        <script>
-        (function() {
-            try {
-                const pw = window.parent;
-                const pd = pw.document;
+    from pathlib import Path
 
-                if (typeof pw.__tuThemeBridgeCleanup === 'function') {
-                    pw.__tuThemeBridgeCleanup();
-                }
-
-                const media = pw.matchMedia
-                    ? pw.matchMedia('(prefers-color-scheme: dark)')
-                    : window.matchMedia('(prefers-color-scheme: dark)');
-                const observers = [];
-                let lastTheme = null;
-                let scheduled = 0;
-
-                function normalizeTheme(value) {
-                    const text = String(value || '').toLowerCase();
-                    if (text.includes('dark')) return 'dark';
-                    if (text.includes('light')) return 'light';
-                    return null;
-                }
-
-                function themeFromColor(value) {
-                    const color = String(value || '').trim();
-                    const hex = color.match(/^#([0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
-                    let r, g, b;
-                    if (hex) {
-                        const raw = hex[1];
-                        if (raw.length === 3) {
-                            r = parseInt(raw[0] + raw[0], 16);
-                            g = parseInt(raw[1] + raw[1], 16);
-                            b = parseInt(raw[2] + raw[2], 16);
-                        } else {
-                            r = parseInt(raw.slice(0, 2), 16);
-                            g = parseInt(raw.slice(2, 4), 16);
-                            b = parseInt(raw.slice(4, 6), 16);
-                        }
-                    } else {
-                        const parts = color.match(/[0-9.]+/g);
-                        if (!parts || parts.length < 3) return null;
-                        r = Number(parts[0]);
-                        g = Number(parts[1]);
-                        b = Number(parts[2]);
-                    }
-                    if ([r, g, b].some(Number.isNaN)) return null;
-                    const brightness = (r * 299 + g * 587 + b * 114) / 1000;
-                    return brightness < 128 ? 'dark' : 'light';
-                }
-
-                function themeFromStreamlitVariables(stApp) {
-                    const candidates = [stApp, pd.documentElement, pd.body].filter(Boolean);
-                    for (const element of candidates) {
-                        const styles = pw.getComputedStyle(element);
-                        const colors = [
-                            styles.getPropertyValue('--background-color'),
-                            styles.getPropertyValue('--secondary-background-color'),
-                            styles.getPropertyValue('--theme-background-color')
-                        ];
-                        for (const color of colors) {
-                            const theme = themeFromColor(color);
-                            if (theme) return theme;
-                        }
-                    }
-                    return null;
-                }
-
-                function themeFromAppBackground(stApp) {
-                    if (!stApp) return null;
-                    return themeFromColor(pw.getComputedStyle(stApp).backgroundColor);
-                }
-
-                function resolveTheme() {
-                    const stApp = pd.querySelector('.stApp');
-                    return (
-                        themeFromStreamlitVariables(stApp)
-                        || (media && (media.matches ? 'dark' : 'light'))
-                        || themeFromAppBackground(stApp)
-                        || 'light'
-                    );
-                }
-
-                function applyTheme(theme) {
-                    if (theme !== 'dark' && theme !== 'light') return;
-                    const stApp = pd.querySelector('.stApp');
-                    [pd.documentElement, pd.body, stApp].filter(Boolean).forEach(function(element) {
-                        if (element.getAttribute('data-theme') !== theme) {
-                            element.setAttribute('data-theme', theme);
-                        }
-                    });
-                    if (lastTheme !== theme) {
-                        lastTheme = theme;
-                        pw.dispatchEvent(new CustomEvent('tu-theme-change', { detail: { theme } }));
-                    }
-                }
-
-                function syncTheme() {
-                    scheduled = 0;
-                    applyTheme(resolveTheme());
-                }
-
-                function scheduleSync() {
-                    if (scheduled) return;
-                    scheduled = pw.requestAnimationFrame(syncTheme);
-                }
-
-                function observe(element, options) {
-                    if (!element) return;
-                    const observer = new MutationObserver(scheduleSync);
-                    observer.observe(element, options);
-                    observers.push(observer);
-                }
-
-                syncTheme();
-                pw.requestAnimationFrame(syncTheme);
-
-                observe(pd.documentElement, {
-                    attributes: true,
-                    attributeFilter: ['class', 'style', 'data-theme']
-                });
-                observe(pd.body, {
-                    attributes: true,
-                    attributeFilter: ['class', 'style', 'data-theme']
-                });
-                observe(pd.querySelector('.stApp'), {
-                    attributes: true,
-                    attributeFilter: ['class', 'style', 'data-theme']
-                });
-                observe(pd.head, {
-                    childList: true,
-                    subtree: true,
-                    characterData: true
-                });
-
-                const mediaHandler = scheduleSync;
-                if (media && typeof media.addEventListener === 'function') {
-                    media.addEventListener('change', mediaHandler);
-                } else if (media && typeof media.addListener === 'function') {
-                    media.addListener(mediaHandler);
-                }
-                pw.addEventListener('pageshow', scheduleSync);
-                pd.addEventListener('visibilitychange', scheduleSync);
-
-                pw.__tuThemeBridgeCleanup = function() {
-                    observers.forEach(function(observer) { observer.disconnect(); });
-                    if (scheduled) pw.cancelAnimationFrame(scheduled);
-                    if (media && typeof media.removeEventListener === 'function') {
-                        media.removeEventListener('change', mediaHandler);
-                    } else if (media && typeof media.removeListener === 'function') {
-                        media.removeListener(mediaHandler);
-                    }
-                    pw.removeEventListener('pageshow', scheduleSync);
-                    pd.removeEventListener('visibilitychange', scheduleSync);
-                };
-
-            } catch(e) {
-                // Ignore cross-origin issues or exceptions
-            }
-        })();
-        </script>
-        """,
-        height=1,
-    )
-
+    st.html(f"<span hidden></span><script>{Path('assets/app-shell.js').read_text()}</script>", unsafe_allow_javascript=True)
 
 
 def inject_streamlit_chrome_css(hide: bool) -> None:
-    if not hide:
-        return
-    st.markdown(
-        """
-        <style>
-        div[data-testid="stToolbar"],
-        div[data-testid="stDecoration"],
-        #MainMenu,
-        footer {
-            display: none !important;
-        }
-
-        header[data-testid="stHeader"] {
-            display: none !important;
-        }
-
-        /* Desktop: padding so content isn't under where the header was */
-        [data-testid="stMainBlockContainer"] {
-            padding-top: 1.25rem !important;
-        }
-
-        /* Mobile: room for our custom hamburger bar */
-        @media (max-width: 900px) {
-            [data-testid="stMainBlockContainer"] {
-                padding-top: 4.25rem !important;
-            }
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    actions_width = "3.5rem" if hide else "10rem"
+    st.html(f"<style>:root {{ --sm-header-actions-width:{actions_width}; }}</style>")
+    if hide:
+        # Keep the native appearance menu available; only remove deployment chrome.
+        st.html("""<style>
+            [data-testid="stToolbarActions"], [data-testid="stHeader"] [data-testid="stBaseButton-header"], [data-testid="stDecoration"], footer {display:none!important}
+            [data-testid="stHeader"] {pointer-events:none}
+            [data-testid="stMainMenuButton"] {pointer-events:auto}
+        </style>""")
 
 
 def inject_mobile_hamburger() -> None:
-    """Inject a custom hamburger button into the parent document on mobile.
-
-    st.components.v1.html() renders an iframe that CAN run scripts.
-    The script reaches into window.parent.document (the Streamlit root frame)
-    and inserts a persistent top-bar with a hamburger button that toggles
-    the sidebar by clicking Streamlit's native toggle element.
-    """
-    st.iframe(
-        """
-        <script>
-        (function() {
-            try {
-                const pd = window.parent.document;
-
-                // Already injected this run — skip.
-                if (pd.getElementById('nm-hamburger-bar')) return;
-
-                // ── Inject global styles ───────────────────────────────────
-                const styleId = 'nm-hamburger-style';
-                if (!pd.getElementById(styleId)) {
-                    const style = pd.createElement('style');
-                    style.id = styleId;
-                    style.textContent = `
-                        #nm-hamburger-bar {
-                            display: none;
-                            position: fixed;
-                            top: 0;
-                            left: 0;
-                            right: 0;
-                            height: 3.25rem;
-                            background: rgba(248, 250, 252, 0.96);
-                            border-bottom: 1px solid rgba(213, 219, 228, 0.85);
-                            backdrop-filter: blur(12px);
-                            -webkit-backdrop-filter: blur(12px);
-                            z-index: 9999999;
-                            align-items: center;
-                            padding: 0 0.75rem;
-                            gap: 0.75rem;
-                            box-sizing: border-box;
-                        }
-                        #nm-hamburger-btn {
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            width: 2.25rem;
-                            height: 2.25rem;
-                            border: 1px solid rgba(219, 226, 234, 0.95);
-                            border-radius: 8px;
-                            background: #ffffff;
-                            box-shadow: 0 1px 3px rgba(16, 24, 40, 0.1);
-                            cursor: pointer;
-                            flex-shrink: 0;
-                            padding: 0;
-                        }
-                        #nm-hamburger-btn:hover {
-                            background: #f1f5f9;
-                            border-color: rgba(29, 78, 216, 0.3);
-                        }
-                        #nm-hamburger-btn svg { display: block; }
-                        #nm-hamburger-title {
-                            font-family: 'Source Sans 3', 'Source Sans Pro', sans-serif;
-                            font-weight: 760;
-                            font-size: 1rem;
-                            color: #151922;
-                            letter-spacing: -0.01em;
-                            flex: 1;
-                            min-width: 0;
-                            overflow: hidden;
-                            text-overflow: ellipsis;
-                            white-space: nowrap;
-                        }
-                        @media (min-width: 901px) {
-                            #nm-hamburger-bar { display: none !important; }
-                        }
-                        @media (max-width: 900px) {
-                            #nm-hamburger-bar { display: flex !important; }
-                        }
-                    `;
-                    pd.head.appendChild(style);
-                }
-
-                // ── Build the bar ─────────────────────────────────────────
-                const bar = pd.createElement('div');
-                bar.id = 'nm-hamburger-bar';
-
-                const btn = pd.createElement('button');
-                btn.id = 'nm-hamburger-btn';
-                btn.setAttribute('aria-label', 'Open navigation menu');
-                btn.innerHTML = `<svg width="18" height="18" viewBox="0 0 18 18" fill="none"
-                    xmlns="http://www.w3.org/2000/svg">
-                    <rect x="2" y="4" width="14" height="2" rx="1" fill="#344054"/>
-                    <rect x="2" y="8" width="14" height="2" rx="1" fill="#344054"/>
-                    <rect x="2" y="12" width="14" height="2" rx="1" fill="#344054"/>
-                </svg>`;
-
-                const title = pd.createElement('span');
-                title.id = 'nm-hamburger-title';
-                title.textContent = 'TU Grade Manager';
-
-                bar.appendChild(btn);
-                bar.appendChild(title);
-                pd.body.appendChild(bar);
-
-                // ── Toggle sidebar on click ────────────────────────────────
-                btn.addEventListener('click', function() {
-                    const sidebar = pd.querySelector('[data-testid="stSidebar"]');
-                    if (!sidebar) return;
-
-                    const isExpanded = sidebar.getAttribute('aria-expanded') === 'true';
-
-                    if (!isExpanded) {
-                        const openBtn = pd.querySelector('[data-testid="collapsedControl"] button');
-                        if (openBtn) { openBtn.click(); return; }
-                    } else {
-                        // Click the close/X button inside the sidebar
-                        const closeBtn = sidebar.querySelector(
-                            'button[aria-label*="lose"], button[aria-label*="ollapse"], button[aria-label*="Hide"]'
-                        );
-                        if (closeBtn) { closeBtn.click(); return; }
-                    }
-
-                    // Last resort: flip aria-expanded directly
-                    sidebar.setAttribute('aria-expanded', isExpanded ? 'false' : 'true');
-                });
-
-            } catch(e) { /* ignore cross-origin or other errors */ }
-        })();
-        </script>
-        """,
-        height=1,
-    )
+    # Mobile navigation is installed once by the shared shell, without an iframe.
+    pass
 
 
 def clear_timeline_shelf_overlay() -> None:
@@ -666,20 +335,20 @@ with st.sidebar:
             f"""
             <div class="sidebar-brand">
                 <img src="data:image/svg+xml;base64,{logo_b64}" alt="TU Berlin Logo"/>
-                <div class="sidebar-title">Grade Manager</div>
+                <div class="sidebar-title">Study Manager</div>
             </div>
             """,
             unsafe_allow_html=True,
         )
     except FileNotFoundError:
-        st.title("Grade Manager")
+        st.title("Study Manager")
 
     # ── Profile selector ───────────────────────────────────────────────────
     profile_display_names = [p.display_name for p in profiles]
     active_profile_obj = next((p for p in profiles if p.slug == active_slug), profiles[0] if profiles else None)
     active_display = active_profile_obj.display_name if active_profile_obj else active_slug
 
-    profile_col, add_col = st.columns([3, 1])
+    profile_col, add_col = st.columns([4, 1], vertical_alignment="bottom")
     with profile_col:
         selected_display = st.selectbox(
             "Active profile",
@@ -699,14 +368,15 @@ with st.sidebar:
 
     # ── Program view selector ──────────────────────────────────────────────
     view_options = [PROGRAM_VIEW_ALL] + relevant_programs if relevant_programs else [PROGRAM_VIEW_ALL]
-    degree_col, enroll_col = st.columns([3, 1])
+    degree_col, enroll_col = st.columns([4, 1], vertical_alignment="bottom")
     with degree_col:
         if relevant_programs:
             selected_view = st.selectbox(
-                "Program view",
+                "Degree",
                 view_options,
+                format_func=lambda value: "All degrees" if value == PROGRAM_VIEW_ALL else short_program_label(value),
                 index=view_options.index(st.session_state["program_view"]),
-                help="Controls which degree's modules are shown in Modules/Study Plan.",
+                help="Applies to the dashboard, modules, study plan, and exports.",
             )
             if selected_view != st.session_state["program_view"]:
                 st.session_state["program_view"] = selected_view
@@ -725,7 +395,6 @@ with st.sidebar:
 
     # ── Navigation ─────────────────────────────────────────────────────────
     st.markdown("---")
-    st.markdown("### Navigation")
 
     query_page = _get_query_param("page")
     query_module_id = _get_query_param("module_id")
@@ -782,8 +451,7 @@ with st.sidebar:
         mgr = st.session_state["managers"][key]
         summary_items.append(_sidebar_summary_for_program(key, mgr, mods))
 
-    with st.container(key="sidebar_grade_footer"):
-        st.markdown(_sidebar_summary_html(summary_items), unsafe_allow_html=True)
+    st.html(_sidebar_summary_html(summary_items))
 
 # Sync URL page param
 current_page = st.session_state.get("page", page)

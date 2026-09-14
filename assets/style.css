@@ -300,7 +300,7 @@ div.stPlotlyChart {
     background-color: var(--surface-2) !important;
     box-shadow: none !important;
     border-radius: var(--radius-inset) !important;
-    border-color: rgba(226, 232, 240, 0.85) !important;
+    border-color: var(--border) !important;
 }
 
 /* Data + visuals: keep white so it doesn't look "greyed out" inside cards */
@@ -309,7 +309,7 @@ div.stPlotlyChart {
     background-color: var(--surface) !important;
     box-shadow: none !important;
     border-radius: var(--radius-inset) !important;
-    border-color: rgba(226, 232, 240, 0.85) !important;
+    border-color: var(--border) !important;
 }
 
 [data-testid="stVerticalBlock"][class*="st-key-nm_card_"] [data-testid="stDataFrameResizable"],

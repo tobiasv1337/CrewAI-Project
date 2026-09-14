@@ -44,6 +44,12 @@ def _apply_context_propagation_patches() -> None:
     import contextvars
     from concurrent.futures import ThreadPoolExecutor
 
+    # Streamlit invalidates imported modules during a source reload. Keep the
+    # guard on Thread itself so re-importing this module cannot wrap run twice
+    # and attempt to enter the same Context recursively.
+    if getattr(threading.Thread, "_tu_context_propagation_installed", False):
+        return
+
     original_init = threading.Thread.__init__
     original_run = threading.Thread.run
 
@@ -69,6 +75,7 @@ def _apply_context_propagation_patches() -> None:
         return original_submit(self, wrapper, *args, **kwargs)
 
     ThreadPoolExecutor.submit = patched_submit
+    threading.Thread._tu_context_propagation_installed = True
 
 
 _apply_context_propagation_patches()

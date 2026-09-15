@@ -84,12 +84,16 @@ def test_profile_selector_distinguishes_duplicate_names(isolated_profiles):
     app.radio(key="page_select").set_value("Modules").run()
     app.text_input(key="module_search").set_value(first.slug + " course").run()
     app.session_state["details_editing"] = first.slug
+    app.session_state["catalog_selected"] = ("40441", 8, "")
+    app.session_state["catalog_widget_values"] = {"catalog_query": "previous profile search"}
     app.selectbox(key="sidebar_profile_select").set_value(second.slug).run()
     assert not app.exception
     assert app.session_state["active_profile"] == second.slug
     assert app.session_state["modules"][0].id == second.slug
     assert app.text_input(key="module_search").value == ""
     assert "details_editing" not in app.session_state
+    assert "catalog_selected" not in app.session_state
+    assert "catalog_widget_values" not in app.session_state
     assert first.slug + " course" not in " ".join(m.value for m in app.markdown)
 
 

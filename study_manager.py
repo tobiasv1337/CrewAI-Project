@@ -38,12 +38,13 @@ from ui.dashboard import render_dashboard_page
 from ui.details import render_details_page
 from ui.chat import render_chat_page
 from ui.modules import render_modules_page
+from ui.course_search import render_course_search_page
 from ui.settings import render_settings_page, selected_discard_variant_key
 from ui.timeline import render_timeline_page
 from ui.program_labels import short_program_label
 
 
-PAGES = ["Dashboard", "Modules", "Study Plan", "Study Chat", "Module Details", "Settings"]
+PAGES = ["Dashboard", "Modules", "Course Search", "Study Plan", "Study Chat", "Module Details", "Settings"]
 DEFAULT_HIDE_STREAMLIT_CHROME = True
 PROGRAM_VIEW_ALL = "All"
 
@@ -150,7 +151,7 @@ def _switch_profile(slug: str) -> None:
     st.session_state.pop("sidebar_profile_select", None)
     # Filters and edit drafts belong to the records that were just unloaded.
     for key in list(st.session_state):
-        if key.startswith(("modules_filter_", "plan_filter_", "details_", "edit_")) or key in {
+        if key.startswith(("modules_filter_", "plan_filter_", "details_", "edit_", "catalog_")) or key in {
             "module_search", "modules_topic_focus", "selected_module_id", "plan_planning_mode",
         }:
             st.session_state.pop(key, None)
@@ -475,7 +476,8 @@ if (
     or _get_query_param("module_id") != current_module_id
     or _get_query_param("program_view") != current_program_view
 ):
-    _set_query_params(page=current_page, module_id=current_module_id, program_view=current_program_view)
+    catalog_params = {key: _get_query_param(key) for key in ("catalog_number", "catalog_version", "catalog_term")} if current_page == "Course Search" else {}
+    _set_query_params(page=current_page, module_id=current_module_id, program_view=current_program_view, **catalog_params)
 
 
 # ── Routing ───────────────────────────────────────────────────────────────────
@@ -486,6 +488,9 @@ if page == "Dashboard":
 elif page == "Modules":
     clear_timeline_shelf_overlay()
     render_modules_page()
+elif page == "Course Search":
+    clear_timeline_shelf_overlay()
+    render_course_search_page()
 elif page == "Module Details":
     clear_timeline_shelf_overlay()
     render_details_page()

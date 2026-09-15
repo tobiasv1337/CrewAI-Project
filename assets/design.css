@@ -529,3 +529,43 @@ html[data-theme] [role="dialog"]:has(.st-key-study_export_dialog) {max-width:760
  .sm-export-facts span {font-size:.72rem}
  .st-key-study_export_dialog [data-testid="stButtonGroup"] {flex-wrap:wrap}
 }
+/* Catalog discovery shares the course-reading surfaces with Module Details. */
+html[data-theme] [data-testid="stPopoverBody"]:has(.st-key-catalog_filter_fields),
+html[data-theme] [data-testid="stPopoverBody"]:has(.st-key-catalog_degree_search) {width:720px!important;max-width:calc(100vw - 24px)!important;padding:1.25rem!important}
+html[data-theme] .stApp [class*="st-key-catalog_result_"] {padding:1.05rem 1.2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px;gap:.55rem!important;box-shadow:0 2px 6px rgba(0,0,0,.035)}
+html[data-theme] .stApp [class*="st-key-catalog_result_"]:hover {border-color:var(--muted)}
+html[data-theme] .stApp [class*="st-key-catalog_result_"] button[data-testid="stBaseButton-tertiary"] {justify-content:flex-start!important;text-align:left!important;padding:0!important;min-height:2.5rem;background:transparent!important;color:var(--ink)!important;box-shadow:none!important;border:0!important;border-radius:4px!important;transform:none!important}
+html[data-theme] .stApp [class*="st-key-catalog_result_"] button[data-testid="stBaseButton-tertiary"] p {font-size:1.07rem!important;font-weight:650!important;line-height:1.4!important;text-align:left!important}
+html[data-theme] .stApp [class*="st-key-catalog_result_"] button[data-testid="stBaseButton-tertiary"] > div {justify-content:flex-start!important}
+html[data-theme] .stApp [class*="st-key-catalog_result_"] button[data-testid="stBaseButton-tertiary"]:hover {color:var(--primary)!important}
+.sm-catalog-status {display:inline-flex;align-items:center;gap:.4rem;font-size:.73rem;font-weight:650;color:var(--muted)}
+.sm-catalog-status::before {content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+.sm-catalog-status--completed {color:var(--success)}
+.sm-catalog-status--progress {color:var(--info)}
+html[data-theme] .stApp [class*="st-key-catalog_result_"]:has(.sm-catalog-status--completed) {border-left:3px solid var(--success)}
+html[data-theme] .stApp [class*="st-key-catalog_result_"]:has(.sm-catalog-status--progress) {border-left:3px solid var(--info)}
+html[data-theme] .stApp [class*="st-key-catalog_result_"]:has(.sm-catalog-status--candidate) {background:var(--surface-2)}
+.st-key-catalog_sections {margin-top:.4rem}
+.st-key-catalog_sections button {min-height:54px!important;white-space:normal!important}
+.st-key-catalog_breadcrumbs {gap:.25rem!important;align-items:center!important;flex-direction:row!important;flex-wrap:wrap!important}
+.st-key-catalog_breadcrumbs > [data-testid="stElementContainer"] {width:fit-content!important;max-width:100%!important;flex:0 1 auto!important}
+html[data-theme] .stApp .st-key-catalog_breadcrumbs button {padding:.25rem .35rem!important;min-height:36px!important;white-space:normal!important;border:0!important;background:transparent!important;box-shadow:none!important;color:var(--info)!important}
+html[data-theme] .stApp .st-key-catalog_breadcrumbs button p {color:inherit!important}
+html[data-theme] .stApp .st-key-catalog_breadcrumbs button:hover p,
+html[data-theme] .stApp .st-key-catalog_breadcrumbs button:focus-visible p {text-decoration:underline;text-underline-offset:3px}
+.sm-catalog-current-area {color:var(--ink);font-size:.86rem;line-height:1.6;font-weight:600}
+.sm-catalog-excerpt {color:var(--muted);font-size:.86rem;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin:.2rem 0!important}
+html[data-theme] .stApp .st-key-catalog_breadcrumbs button > div {justify-content:flex-start!important;text-align:left!important}
+.sm-catalog-pills {display:flex;flex-wrap:wrap;gap:.4rem}
+.sm-catalog-pills span {font-size:.76rem;line-height:1.4;padding:.22rem .5rem;border-radius:6px;background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}
+.sm-catalog-pills span:first-child {color:var(--ink);font-weight:650}
+.sm-catalog-empty {padding:3rem 0;border-top:1px solid var(--border);margin-top:1rem}
+.sm-catalog-empty h3 {font-size:1.2rem!important}
+.sm-catalog-empty p {color:var(--muted);font-size:.95rem}
+@media(max-width:700px) {
+  .st-key-catalog_my_degrees > [data-testid="stHorizontalBlock"] {flex-direction:row!important}
+  .st-key-catalog_my_degrees [data-testid="stColumn"] {min-width:0!important;flex:1 1 0!important}
+  .st-key-catalog_results > [data-testid="stHorizontalBlock"] {flex-direction:column!important}
+  .st-key-catalog_results [data-testid="stColumn"] {width:100%!important;flex:1 1 100%!important}
+  html[data-theme] .st-key-catalog_filter_fields [data-testid="stHorizontalBlock"] {flex-direction:column!important}
+}

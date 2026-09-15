@@ -86,6 +86,18 @@ def catalog_sections(areas: list[dict]) -> list[dict]:
     return roots
 
 
+def catalog_area_path(areas: list[dict], selected_key: str | None) -> list[dict]:
+    by_key = {area["area_key"]: area for area in areas}
+    path = []
+    seen = set()
+    while selected_key in by_key and selected_key not in seen:
+        seen.add(selected_key)
+        area = by_key[selected_key]
+        path.append(area)
+        selected_key = area.get("parent_key")
+    return list(reversed(path))
+
+
 def refine_catalog_results(rows: list[dict], *, text: str = "", departments: list[str] | None = None,
                            plan_filter: str = "All courses", modules: Sequence[Module] = (),
                            sort: str = "Relevance") -> list[dict]:

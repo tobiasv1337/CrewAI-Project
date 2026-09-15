@@ -644,7 +644,15 @@ def render_details_page() -> None:
             back_url = f"?page=Course%20Search&program_view={view_encoded}"
             back_label = "Back to course search"
         with toolbar_left:
-            st.html(f'<a class="back-link" href="{back_url}" target="_self">← {back_label}</a>')
+            if st.query_params.get("return_to") == "search":
+                def back_to_search():
+                    st.session_state["_pending_page_nav"] = "Course Search"
+                    st.session_state.pop("catalog_selected", None)
+                    st.query_params.clear()
+                    st.query_params.update(page="Course Search", program_view=str(view_param))
+                st.button(back_label, icon=":material/arrow_back:", type="tertiary", on_click=back_to_search)
+            else:
+                st.html(f'<a class="back-link" href="{back_url}" target="_self">← {back_label}</a>')
         with toolbar_right:
             with st.popover("Switch module", icon=":material/swap_horiz:", width="stretch"):
                 selected_id = st.selectbox("Select module", module_ids, format_func=label_map.get, index=None, key="details_module_picker")

@@ -73,7 +73,7 @@ def test_profile_selector_distinguishes_duplicate_names(isolated_profiles):
     for profile in (first, second):
         persistence.save_modules([Module(id=profile.slug, name=profile.slug + " course", cp=6,
             program_key=list_programs()[0], area="Elective")], profile.slug)
-    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "app.py"), default_timeout=30).run()
+    app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / "study_manager.py"), default_timeout=30).run()
     selector = app.selectbox(key="sidebar_profile_select")
     # Distinct IDs must be selectable even when people have the same display name.
     assert len(set(selector.options)) == len(selector.options)

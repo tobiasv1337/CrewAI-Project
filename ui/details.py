@@ -91,7 +91,7 @@ def _set_detail_query_params(*, module_id: str, program_view: str) -> None:
         "program_view": program_view or "All",
     }
     if hasattr(st, "query_params"):
-        if st.query_params.get("return_to") in {"portfolio", "modules"}:
+        if st.query_params.get("return_to") in {"portfolio", "modules", "search"}:
             desired["return_to"] = st.query_params["return_to"]
         if st.query_params.get("detail_tab") == "Files & links":
             desired["detail_tab"] = "Files & links"
@@ -640,6 +640,9 @@ def render_details_page() -> None:
         if st.query_params.get("return_to") == "modules":
             back_url = f"?page=Modules&program_view={view_encoded}"
             back_label = "Back to modules"
+        if st.query_params.get("return_to") == "search":
+            back_url = f"?page=Course%20Search&program_view={view_encoded}"
+            back_label = "Back to course search"
         with toolbar_left:
             st.html(f'<a class="back-link" href="{back_url}" target="_self">← {back_label}</a>')
         with toolbar_right:
@@ -671,6 +674,30 @@ def render_details_page() -> None:
     )
 
     moses = selected_module.moses
+    editing = st.session_state.get("details_editing") == selected_id
+    with st.container(key="module_detail_title"):
+        title_col, edit_col = st.columns([4.8, 1], vertical_alignment="top")
+        with title_col:
+            _render_module_hero(display_module, editing=editing)
+        with edit_col:
+            if not editing:
+                st.button("Edit module", icon=":material/edit:", type="primary", key="details_open_edit", width="stretch", on_click=_set_editor_mode, args=(selected_id, True))
+    if st.session_state.pop("details_saved", False):
+        st.toast("Changes saved.", icon=":material/check:")
+    if editing:
+        _render_module_editor(selected_module, display_module, moses, detail_program_key, editing_secondary_registration, view_param)
+        return
+
+    render_module_information(selected_module, display_module=display_module, modules=modules)
+
+
+def render_module_information(selected_module: Module, *, display_module: Module | None = None,
+                              modules: list[Module] | None = None, catalog_preview: bool = False) -> None:
+    """Shared full course content for saved modules and read-only catalog previews."""
+    display_module = display_module or selected_module
+    modules = modules or []
+    detail_program_key = display_module.program_key
+    moses = selected_module.moses
     detail_catalogs = effective_catalogs_for_program(
         display_module,
         detail_program_key,
@@ -693,31 +720,17 @@ def render_details_page() -> None:
         ("Contact website", "Course website", moses.contact_website if moses else None),
     ]
 
-    editing = st.session_state.get("details_editing") == selected_id
-    with st.container(key="module_detail_title"):
-        title_col, edit_col = st.columns([4.8, 1], vertical_alignment="top")
-        with title_col:
-            _render_module_hero(display_module, editing=editing)
-        with edit_col:
-            if not editing:
-                st.button("Edit module", icon=":material/edit:", type="primary", key="details_open_edit", width="stretch", on_click=_set_editor_mode, args=(selected_id, True))
-    if st.session_state.pop("details_saved", False):
-        st.toast("Changes saved.", icon=":material/check:")
-    if editing:
-        _render_module_editor(selected_module, display_module, moses, detail_program_key, editing_secondary_registration, view_param)
-        return
-
     # Course facts describe the catalog; the header above is the student's record.
     course_facts = [
         ("Course format", ", ".join({"PR": "Practical course (PR)", "VL": "Lecture (VL)", "UE": "Exercise (UE)", "IV": "Integrated course (IV)", "PJ": "Project (PJ)", "SEM": "Seminar (SEM)"}.get(kind, kind) for kind in selected_module.module_types)),
         ("Language", ", ".join(moses.teaching_languages) if moses else None),
         ("Offered", display_module.offered_in.value),
-        ("Duration", f"{display_module.semester_span} semester" + ("s" if display_module.semester_span != 1 else "")),
+        ("Duration", moses.semester_count if catalog_preview and moses else f"{display_module.semester_span} semester" + ("s" if display_module.semester_span != 1 else "")),
         ("Assessment", moses.exam_type if moses else ("Graded" if display_module.is_graded else "Pass / fail")),
         ("Workload", moses.workload_total if moses else None),
     ]
     st.html(_course_facts_html(course_facts, class_name="sm-course-facts sm-course-facts-strip"))
-    tab_labels = ["Overview", "Teaching & assessment", "Files & links", "Catalog record"]
+    tab_labels = ["Overview", "Teaching & assessment", "Links & contacts" if catalog_preview else "Files & links", "Catalog record"]
     requested_tab = st.query_params.get("detail_tab")
     overview_tab, teaching_tab, files_tab, record_tab = st.tabs(tab_labels, default=requested_tab if requested_tab in tab_labels else "Overview")
 
@@ -731,16 +744,17 @@ def render_details_page() -> None:
                 contents = moses.contents if moses else (None if manual_description else selected_module.description)
                 _render_course_section("Course content", contents, key="detail_contents")
                 if not contents and not manual_description and not (moses and moses.learning_outcomes):
-                    st.caption("Add a description using Edit module.")
+                    st.caption("No course description was provided." if catalog_preview else "Add a description using Edit module.")
                 _render_course_section("My notes", selected_module.notes, key="detail_notes")
             with context:
                 with st.container(key="course_context"):
                     if selected_module.tags:
                         st.subheader("Topics")
                         st.html("<div class='sm-course-topics'>" + "".join(_pill(tag) for tag in selected_module.tags) + "</div>")
-                    st.subheader("In your degrees")
-                    registrations = [(display_module.program_key, display_module.area)] + [(reg.program_key, reg.area) for reg in display_module.extra_registrations]
-                    st.html("<div class='sm-course-registrations'>" + "".join(f"<div>{_program_pill(program)}<span>{html.escape(area)}</span></div>" for program, area in registrations) + "</div>")
+                    if not catalog_preview:
+                        st.subheader("In your degrees")
+                        registrations = [(display_module.program_key, display_module.area)] + [(reg.program_key, reg.area) for reg in display_module.extra_registrations]
+                        st.html("<div class='sm-course-registrations'>" + "".join(f"<div>{_program_pill(program)}<span>{html.escape(area)}</span></div>" for program, area in registrations) + "</div>")
                     if detail_catalogs:
                         st.subheader("Study areas")
                         st.html("<ul class='sm-course-catalogs'>" + "".join(f"<li>{html.escape(catalog)}</li>" for catalog in detail_catalogs) + "</ul>")
@@ -785,11 +799,15 @@ def render_details_page() -> None:
         with st.container(key="course_files_reading"):
             evidence_left, evidence_right = st.columns([1.3, 1], gap="large")
             with evidence_left:
-                _render_attachment_inventory(selected_module, modules, key_prefix="evidence", title="Course files", manage=True, show_uploader=True, empty_text="No files uploaded yet.")
-                if any(record["exists"] and record["kind"] in {"pdf", "image"} for record in attachment_records):
-                    _render_attachment_preview(attachment_records, key="nm_card_details_evidence_preview", title="Preview")
+                if catalog_preview:
+                    _render_links_panel("Course links", resource_links, key="catalog_resource_links")
+                else:
+                    _render_attachment_inventory(selected_module, modules, key_prefix="evidence", title="Course files", manage=True, show_uploader=True, empty_text="No files uploaded yet.")
+                    if any(record["exists"] and record["kind"] in {"pdf", "image"} for record in attachment_records):
+                        _render_attachment_preview(attachment_records, key="nm_card_details_evidence_preview", title="Preview")
             with evidence_right:
-                _render_links_panel("Links", resource_links, key="detail_resource_links", empty_text="Add a course website or code repository using Edit module.")
+                if not catalog_preview:
+                    _render_links_panel("Links", resource_links, key="detail_resource_links", empty_text="Add a course website or code repository using Edit module.")
                 if moses:
                     st.subheader("Contact details")
                     st.html(_course_facts_html([("Institution", display_module.institution), ("Office", moses.office), ("Contact person", moses.contact_person), ("Email", moses.contact_email), ("Website", moses.contact_website)]))
@@ -802,8 +820,9 @@ def render_details_page() -> None:
                 st.subheader("Academic responsibility")
                 st.html(_course_facts_html([("Responsible person", moses.responsible_person), ("Faculty", moses.faculty), ("Institute", moses.institute), ("Department", moses.department), ("Examination board", moses.examination_board)]))
                 _render_degree_usage_section(moses, key="detail_degree_mappings")
-            st.subheader("Your record")
-            st.html(_course_facts_html([("Source", selected_module.source.value), ("Created", _format_timestamp(selected_module.created_at)), ("Last MOSES sync", _format_timestamp(selected_module.moses_last_synced_at)), ("Stored under", selected_module.program_key), ("Course types", ", ".join(selected_module.module_types)), ("Start date", selected_module.start_date), ("End date", selected_module.end_date)]))
+            if not catalog_preview:
+                st.subheader("Your record")
+                st.html(_course_facts_html([("Source", selected_module.source.value), ("Created", _format_timestamp(selected_module.created_at)), ("Last MOSES sync", _format_timestamp(selected_module.moses_last_synced_at)), ("Stored under", selected_module.program_key), ("Course types", ", ".join(selected_module.module_types)), ("Start date", selected_module.start_date), ("End date", selected_module.end_date)]))
 
 
 

@@ -18,6 +18,7 @@ dependencies = [
     "requests",
     "python-dotenv",
     "markdown-it-py>=4.2.0",
+    "reportlab>=4.4,<5",
 ]
 
 [tool.pytest.ini_options]

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import datetime
 import html
 
 import streamlit as st
@@ -12,15 +11,12 @@ from core.interfaces import Scenario
 from core.models import Module, ModuleState
 from core.module_filters import exclude_non_degree_modules, is_possible_course
 from core.projections import add_completion_projection, remaining_degree_credits
-from core.registry import modules_for_program
+from core.registry import modules_for_program, modules_for_program_view
 from core.terms import ordered_terms
 from ui.program_labels import short_program_label
 from ui.settings import discard_option_by_key, selected_discard_variant_key
-from ui.study_plan_insights import build_study_plan_insights
 from ui.study_plan_export import (
     UNKNOWN_TERM_LABEL,
-    build_study_plan_markdown,
-    build_study_plan_pdf,
     exportable_modules,
     study_plan_export_filename,
 )
@@ -181,11 +177,13 @@ def _build_degree_export_summaries(
     modules: list[Module],
     *,
     include_possible_candidates: bool,
+    program_keys: list[str] | None = None,
+    include_optimizer: bool = True,
 ) -> list[dict[str, object]]:
     managers = st.session_state.get("managers", {})
     all_profile_modules = list(st.session_state.get("modules") or [])
     view = st.session_state.get("program_view")
-    programs = [view] if view and view != "All" else list(st.session_state.get("relevant_programs") or [])
+    programs = program_keys if program_keys is not None else ([view] if view and view != "All" else list(st.session_state.get("relevant_programs") or []))
     visible_ids = {
         module.id
         for module in exportable_modules(
@@ -246,6 +244,7 @@ def _build_degree_export_summaries(
         summaries.append(
             {
                 "program": manager.strategy.name(),
+                "program_key": program_key,
                 "label": short_program_label(str(program_key)) or manager.strategy.name(),
                 "current_grade": _format_export_grade(results["current"].final_grade),
                 "forecast_grade": _format_export_grade(results["forecast"].final_grade),
@@ -267,45 +266,12 @@ def _build_degree_export_summaries(
                     degree_modules,
                     calculate_fn=calculate_with_selected_discard,
                     missing_degree_cp=missing_degree_cp,
-                ),
+                ) if include_optimizer else {},
             }
         )
 
     return summaries
 
-
-def _plural(count: int, singular: str, plural: str | None = None) -> str:
-    return singular if count == 1 else (plural or f"{singular}s")
-
-
-def _export_scope_html(
-    *,
-    scoped_count: int,
-    term_count: int,
-    degree_count: int,
-    candidate_count: int,
-    include_candidates: bool,
-) -> str:
-    candidate_text = (
-        f"{candidate_count} included"
-        if include_candidates and candidate_count
-        else (f"{candidate_count} available" if candidate_count else "None")
-    )
-    cards = [
-        ("Courses", f"{scoped_count}", _plural(scoped_count, "course")),
-        ("Semester Lanes", f"{term_count}", _plural(term_count, "lane")),
-        ("Degree Outlooks", f"{degree_count}", _plural(degree_count, "degree")),
-        ("Candidates", candidate_text, "optional shelf courses"),
-    ]
-    card_html = "".join(
-        "<div class='nm-export-scope-card'>"
-        f"<span>{html.escape(label)}</span>"
-        f"<strong>{html.escape(value)}</strong>"
-        f"<small>{html.escape(note)}</small>"
-        "</div>"
-        for label, value, note in cards
-    )
-    return f"<div class='nm-export-scope-grid'>{card_html}</div>"
 
 
 def render_study_plan_export_button(
@@ -318,142 +284,69 @@ def render_study_plan_export_button(
     key_prefix: str,
     button_label: str = "Export",
 ) -> None:
-    @st.dialog("Export Study Plan", width="large")
-    def _dialog_export_study_plan() -> None:
-        st.caption(
-            "Uses the Study Plan scope currently visible in the app. Adjust sections below before downloading."
-        )
-        visible_candidate_count = sum(1 for module in modules if is_possible_course(module))
-        st.markdown("##### Include")
-        left, right = st.columns(2)
-        include_candidates = left.toggle(
-            "Candidate courses",
-            value=visible_candidate_count > 0,
-            disabled=visible_candidate_count == 0,
-            help="Adds Possible Candidates that are visible in the current Study Plan scope.",
-            key=f"{key_prefix}_include_candidates",
-        )
-        include_degree_details = left.toggle(
-            "Degree details and optimizer",
-            value=False,
-            help="Adds requirement checks, detailed degree metrics, and target-grade suggestions. Leave off for a concise report.",
-            key=f"{key_prefix}_include_degree_details",
-        )
-        include_topic_map = left.toggle(
-            "Topic map",
-            value=True,
-            help="Adds topic clusters and tag summaries derived from course metadata.",
-            key=f"{key_prefix}_include_topics",
-        )
-        include_unofficial_analytics = left.toggle(
-            "Unofficial scope averages",
-            value=False,
-            help="Adds visible-scope averages that ignore degree-specific rules and official discard choices. Useful as a sanity check, not as degree grades.",
-            key=f"{key_prefix}_include_unofficial",
-        )
-        include_risk_notes = right.toggle(
-            "Scope notes",
-            value=False,
-            help="Adds notes about overloaded terms, candidate volume, missing estimates, and degree-check issues.",
-            key=f"{key_prefix}_include_risk",
-        )
-        include_details = right.toggle(
-            "Course detail appendix",
-            value=False,
-            help="Adds descriptions, MOSES metadata, links, notes, topics, and keywords below the overview.",
-            key=f"{key_prefix}_include_details",
-        )
-        include_llm_appendix = right.toggle(
-            "Analysis data table",
-            value=False,
-            help="Adds a structured one-row-per-course table for downstream model analysis.",
-            key=f"{key_prefix}_include_llm",
-        )
+    from ui.study_report import REPORT_TYPES, build_report, render_markdown, render_pdf
 
-        scoped_modules = exportable_modules(
-            modules,
-            include_possible_candidates=include_candidates,
-        )
-        degree_summaries = _build_degree_export_summaries(
-            modules,
-            include_possible_candidates=include_candidates,
-        )
-        insights = build_study_plan_insights(scoped_modules, degree_summaries=degree_summaries)
-        generated_at = datetime.now().astimezone()
-        st.markdown(
-            _export_scope_html(
-                scoped_count=len(scoped_modules),
-                term_count=len(visible_terms),
-                degree_count=len(degree_summaries),
-                candidate_count=visible_candidate_count,
-                include_candidates=include_candidates,
-            ),
-            unsafe_allow_html=True,
-        )
-
-        markdown = build_study_plan_markdown(
-            modules,
-            profile_name=profile_name,
-            program_view=program_view_label,
-            counted_ids=counted_ids,
-            visible_terms=visible_terms,
-            degree_summaries=degree_summaries,
-            insights=insights,
-            include_topic_map=include_topic_map,
-            include_unofficial_analytics=include_unofficial_analytics,
-            include_risk_notes=include_risk_notes,
-            include_llm_appendix=include_llm_appendix,
-            include_degree_details=include_degree_details,
-            include_possible_candidates=include_candidates,
-            include_details=include_details,
-            generated_at=generated_at,
-        )
-
-        with st.spinner("Preparing export files..."):
-            try:
-                pdf_data = build_study_plan_pdf(
-                    modules,
-                    profile_name=profile_name,
-                    program_view=program_view_label,
-                    counted_ids=counted_ids,
-                    visible_terms=visible_terms,
-                    degree_summaries=degree_summaries,
-                    insights=insights,
-                    include_topic_map=include_topic_map,
-                    include_unofficial_analytics=include_unofficial_analytics,
-                    include_risk_notes=include_risk_notes,
-                    include_llm_appendix=include_llm_appendix,
-                    include_degree_details=include_degree_details,
-                    include_possible_candidates=include_candidates,
-                    include_details=include_details,
-                    generated_at=generated_at,
-                )
-                pdf_error = None
-            except RuntimeError as exc:
-                pdf_data = b""
-                pdf_error = str(exc)
-
-        col_md, col_pdf = st.columns(2)
-        col_md.download_button(
-            "Download Markdown",
-            data=markdown.encode("utf-8"),
-            file_name=study_plan_export_filename(profile_name, program_view_label, "md"),
-            mime="text/markdown",
-            type="primary",
-            width="stretch",
-            key=f"{key_prefix}_markdown_download",
-        )
-        if pdf_error:
-            col_pdf.error(pdf_error)
-        else:
-            col_pdf.download_button(
-                "Download PDF",
-                data=pdf_data,
-                file_name=study_plan_export_filename(profile_name, program_view_label, "pdf"),
-                mime="application/pdf",
-                width="stretch",
-                key=f"{key_prefix}_pdf_download",
+    @st.dialog("Export", width="large")
+    def export_dialog() -> None:
+        with st.container(key="study_export_dialog"):
+            kind = st.segmented_control("Document", options=list(REPORT_TYPES),
+                format_func=lambda value: REPORT_TYPES[value][0], default="plan",
+                selection_mode="single", key=f"{key_prefix}_document") or "plan"
+            st.caption(REPORT_TYPES[kind][1])
+            all_modules = list(st.session_state.get("modules") or modules)
+            programs = list(st.session_state.get("relevant_programs") or [])
+            current_view = st.session_state.get("program_view") or "All"
+            options = ["All"] + programs
+            current_modules = modules_for_program_view(current_view, programs, all_modules)
+            if {m.id for m in modules} != {m.id for m in current_modules}:
+                options.append("visible")
+            def scope_label(value):
+                if value == "All":
+                    return "All degrees"
+                if value == "visible":
+                    return "Current Study Plan filters"
+                return value
+            scope = st.selectbox("Degree / scope", options,
+                index=options.index(current_view) if current_view in options else 0,
+                format_func=scope_label, key=f"{key_prefix}_scope")
+            degree_scope = current_view if scope == "visible" else scope
+            chosen_programs = programs if degree_scope == "All" else [degree_scope]
+            full_scope = modules_for_program_view(degree_scope, programs, all_modules)
+            source = modules if scope == "visible" else full_scope
+            degrees = _build_degree_export_summaries(full_scope, include_possible_candidates=False,
+                program_keys=chosen_programs, include_optimizer=kind == "record")
+            report = build_report(source, kind=kind, profile_name=profile_name,
+                scope=scope_label(scope), degrees=degrees, filtered=scope == "visible")
+            course_count = len(report.modules)
+            completed_cp = sum(m.cp for m in report.completed)
+            preview = st.empty()
+            if not course_count:
+                st.info("No courses match this document. Choose another document type or degree.")
+            with st.spinner("Preparing document…"):
+                try:
+                    pdf = render_pdf(report)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("Could not build study report")
+                    pdf = None
+            pages = f" · {report.page_count} {'page' if report.page_count == 1 else 'pages'}" if pdf else ""
+            preview.html(
+                '<div class="sm-export-preview">'
+                f'<div class="sm-export-document"><span>PDF · A4{pages}</span><h3>{html.escape(report.title)}</h3><p>{html.escape(profile_name)}</p></div>'
+                f'<div class="sm-export-facts"><div><strong>{course_count}</strong><span>courses</span></div>'
+                f'<div><strong>{completed_cp:g} LP</strong><span>completed</span></div>'
+                f'<div><strong>{len(degrees)}</strong><span>{"degree summary" if len(degrees) == 1 else "degree summaries"}</span></div></div></div>'
             )
+            filename = study_plan_export_filename(profile_name, scope_label(scope), "pdf").replace("study_plan_", f"{kind}_", 1)
+            left, right = st.columns([1.6, 1])
+            if pdf is not None:
+                left.download_button("Download PDF", data=pdf, mime="application/pdf", file_name=filename,
+                    icon=":material/download:", type="primary", width="stretch", on_click="ignore", key=f"{key_prefix}_pdf_download")
+            else:
+                left.error("The PDF could not be prepared. Markdown is still available.")
+            right.download_button("Download Markdown", data=render_markdown(report).encode("utf-8"),
+                mime="text/markdown", file_name=filename.removesuffix(".pdf") + ".md",
+                width="stretch", on_click="ignore", key=f"{key_prefix}_markdown_download")
 
     if st.button(button_label, key=f"{key_prefix}_open_dialog", width="stretch"):
-        _dialog_export_study_plan()
+        export_dialog()

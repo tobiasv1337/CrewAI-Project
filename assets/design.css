@@ -508,3 +508,24 @@ html[data-theme] .sm-portfolio-degree-progress {height:8px;margin:1.25rem 0 .7re
 /* Dashboard sections share one hierarchy; only individual plots have a surface. */
 html[data-theme] body .stApp [data-testid="stMainBlockContainer"]:has(h1#dashboard) [class*="st-key-nm_card_dash_"] {background:transparent!important;border:0!important;box-shadow:none!important;border-radius:0!important;padding:1rem 0!important}
 html[data-theme] body .stApp [data-testid="stMainBlockContainer"]:has(h1#dashboard) [data-testid="stPlotlyChart"] {background:var(--surface)!important;border:1px solid var(--border);border-radius:12px;overflow:visible}
+/* Export: document choice and scope, followed by a compact document preview. */
+html[data-theme] [role="dialog"]:has(.st-key-study_export_dialog) {max-width:760px!important;background:var(--bg)!important}
+.st-key-study_export_dialog [data-testid="stButtonGroup"] button {min-height:44px}
+.sm-export-preview {margin:1rem 0 1.4rem;border:1px solid var(--border);border-radius:14px;overflow:hidden;background:var(--surface)}
+.sm-export-document {padding:1.4rem 1.5rem;border-top:4px solid var(--primary);border-bottom:1px solid var(--border)}
+.sm-export-document span {font-size:.7rem;letter-spacing:.1em;color:var(--muted)}
+.sm-export-document h3 {margin:.35rem 0!important;padding:0!important;font-size:1.4rem!important;color:var(--ink)}
+.sm-export-document p {margin:0!important;color:var(--muted)}
+.sm-export-facts {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));padding:1.2rem 1.5rem;gap:1rem}
+.sm-export-facts strong,.sm-export-facts span {display:block}
+.sm-export-facts strong {font-size:1.15rem;color:var(--ink)}
+.sm-export-facts span {font-size:.8rem;color:var(--muted);margin-top:.2rem}
+@media(max-width:600px) {
+ .st-key-study_export_dialog [data-baseweb="button-group"] {display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr));width:100%}
+ .st-key-study_export_dialog [data-baseweb="button-group"] button {min-width:0;min-height:56px;padding:.4rem!important}
+ .st-key-study_export_dialog [data-baseweb="button-group"] button p {white-space:normal!important;font-size:.8rem!important;line-height:1.35}
+ .sm-export-facts {padding:1rem;gap:.6rem}
+ .sm-export-facts strong {font-size:1rem}
+ .sm-export-facts span {font-size:.72rem}
+ .st-key-study_export_dialog [data-testid="stButtonGroup"] {flex-wrap:wrap}
+}

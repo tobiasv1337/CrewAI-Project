@@ -31,3 +31,7 @@ logs/
 
 # Project-specific local data
 data/
+
+# Local export previews and document QA
+tmp/pdfs/
+output/pdf/

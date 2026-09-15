@@ -4,6 +4,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from core.course_catalog import COURSE_STATUS_LABELS, catalog_area_path, catalog_sections, existing_catalog_course, prepare_catalog_addition, refine_catalog_results
+from core.catalog_descriptions import CatalogDescriptions
 from core.models import ModuleState, MosesModuleData, MosesModuleElement, MosesWorkloadItem
 from core.providers.tu_berlin.moses import create_module_from_moses_data
 from core.registry import create_program, list_programs
@@ -80,16 +81,12 @@ def test_result_refinements_use_identity_and_put_unknown_credits_last(course):
     assert len(refine_catalog_results(rows, departments=["Engineering"])) == 1
 
 
-def test_course_cards_use_public_learning_outcomes_and_readable_facts(course):
+def test_course_cards_use_consistent_search_fields_and_readable_facts(course):
     row = dict(number=course.number, version=course.version, title=course.title, credits=6,
         languages=["en"], grading_mode="Unbenotet", department="34355100 FG Computer Security", cycle="WiSe")
-    facts, summary, people = page._catalog_card_content(row, course)
-    assert {"6 LP", "English", "Pass / fail", "Winter", "Practical course"}.issubset(facts)
-    assert summary == "Analyse embedded systems"
+    facts, people = page._catalog_card_content(row)
+    assert facts == ["6 LP", "English", "Pass / fail", "Winter"]
     assert people == "Computer Security"
-    assert page._catalog_card_content(row, None)[1] == ""
-    long = course.model_copy(update={"learning_outcomes":"Explore secure systems. " * 40})
-    assert len(page._catalog_card_content(row, long)[1]) <= 240
 
 
 @pytest.mark.parametrize("state", list(ModuleState))
@@ -121,7 +118,10 @@ def search_app(monkeypatch, course):
     details = Mock(return_value=course.model_dump(mode="json"))
     save = Mock()
     monkeypatch.setattr(page, "cached_catalog_search", search)
-    monkeypatch.setattr(page, "_cached_course_details", details)
+    descriptions = CatalogDescriptions(lambda number, version, term: page.CatalogDescription(
+        learning_outcomes=course.learning_outcomes, contents=course.contents))
+    monkeypatch.setattr(page, "_description_store", lambda: descriptions)
+    monkeypatch.setattr(page, "cached_catalog_details", details)
     monkeypatch.setattr(page, "save_modules", save)
     script = '''
 import streamlit as st
@@ -134,7 +134,8 @@ render_course_search_page()
 '''
     app = AppTest.from_string(script, default_timeout=30).run()
     assert not app.exception
-    return app, search, details, save
+    yield app, search, details, save
+    descriptions.close()
 
 
 def click(app, label):
@@ -159,7 +160,9 @@ def test_search_filters_preview_and_back_never_save(search_app):
     assert search.call_args.args[1]["language"] == "en"
     assert search.call_args.args[1]["term"] == "WS 26/27"
     assert search.call_args.args[1]["min_credits"] == 3
+    details.assert_not_called()
     click(app, "Embedded Systems Security Lab")
+    details.assert_called_once_with("40441", 8, "WS 26/27")
     assert app.session_state["modules"] == []
     save.assert_not_called()
     assert {tab.label for tab in app.tabs} == {"Overview", "Teaching & assessment", "Links & contacts", "Catalog record"}
@@ -286,7 +289,7 @@ def test_catalog_tree_drills_to_any_depth_and_breadcrumbs_go_back(search_app, mo
     click(app, "Studiengebiete")
     fetch.assert_not_called()
     click(app, "New specialization")
-    fetch.assert_called_once_with("new-degree", "0_1_0_0", "")
+    fetch.assert_called_with("new-degree", "0_1_0_0", "")
     assert any(b.label == course.title for b in app.button)
     click(app, "Wahlpflicht")
     assert any(b.label == "Studiengebiete" for b in app.button)

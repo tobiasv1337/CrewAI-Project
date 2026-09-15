@@ -10,13 +10,13 @@ import textwrap
 import streamlit as st
 
 from core.course_catalog import COURSE_STATUS_LABELS, catalog_area_path, catalog_sections, existing_catalog_course, prepare_catalog_addition, refine_catalog_results
+from core.catalog_descriptions import CatalogDescription, CatalogDescriptions, DescriptionResult, fetch_catalog_description
 from core.models import ModuleState, MosesModuleData
 from core.persistence import save_modules
 from core.providers.tu_berlin import moses as provider
 from core.registry import create_program, list_relevant_programs, list_selectable_programs, module_counts_for_program
 from core.terms import canonical_term_label, default_term_index, format_term_label
 from ui.details import _course_facts_html, render_module_information
-from ui.moses import _cached_course_details
 from ui.program_labels import short_program_label
 from ui.term_controls import profile_term_options, render_guided_term_input
 
@@ -26,6 +26,24 @@ SEARCH_LIMIT = 200
 SORT_OPTIONS = ["Relevance", "Course name", "Credits: low to high", "Credits: high to low"]
 _BROWSER_WIDGETS = {"catalog_query", "catalog_mode", "catalog_degree_query", "catalog_degree_term",
                     "catalog_degree_choice", "catalog_refine", "catalog_in_plan", "catalog_sort", "catalog_departments"}
+
+
+@st.cache_resource(show_spinner=False)
+def _description_store() -> CatalogDescriptions:
+    return CatalogDescriptions(fetch_catalog_description)
+
+
+@st.cache_data(ttl=3600, max_entries=128, show_spinner=False)
+def cached_catalog_details(number: str, version: int, term: str) -> dict:
+    # Only the full preview needs catalog expansion, fallbacks and ISIS resolution.
+    return provider.fetch_course_details(number, version=version,
+        preferred_term=term or None).model_dump(mode="json")
+
+
+def _description_polling(pending: bool) -> None:
+    if st.session_state.get("catalog_descriptions_pending", True) != pending:
+        st.session_state["catalog_descriptions_pending"] = pending
+        st.rerun()
 
 
 def _remember_widgets() -> None:
@@ -80,12 +98,12 @@ def _reset_filters() -> None:
 
 
 def _search_form() -> None:
-    with st.form("catalog_search_form", border=False):
+    with st.container(key="catalog_search_surface"), st.form("catalog_search_form", border=False):
         query_col, filter_col, submit_col = st.columns([5, 1.2, 1.3], vertical_alignment="bottom")
+        # Register submission before mounting the form's input widgets.
+        submitted = submit_col.form_submit_button("Search", type="primary", icon=":material/search:", width="stretch")
         query = query_col.text_input("Course name or MOSES number", key="catalog_query",
             placeholder="e.g. Robotics, Data Science, Embedded Systems…")
-        # The first submit button is also the action for Enter in the query field.
-        submitted = submit_col.form_submit_button("Search", type="primary", icon=":material/search:", width="stretch")
         with filter_col.popover("Filters", icon=":material/tune:", width="stretch"):
             with st.container(key="catalog_filter_fields"):
                 st.markdown("#### Search filters")
@@ -212,12 +230,12 @@ def _browse_form() -> tuple[list[dict] | None, dict]:
                         st.error(str(exc))
                     except Exception:
                         _search_error("open this degree catalog")
-    degree_search = st.popover("Find another degree", icon=":material/search:") if st.session_state.get("catalog_degree_results") else st.container()
-    with degree_search, st.form("catalog_degree_search", border=False):
+    degree_search = st.popover("Find a degree", icon=":material/search:")
+    with degree_search, st.container(key="catalog_degree_fields"), st.form("catalog_degree_search", border=False):
         search_col, term_col, button_col = st.columns([3, 1.4, 1], vertical_alignment="bottom")
+        submitted = button_col.form_submit_button("Find degrees", type="primary", width="stretch")
         query = search_col.text_input("Degree name", key="catalog_degree_query", placeholder="e.g. Computer Science or Elektrotechnik")
         term = term_col.text_input("Catalog semester", key="catalog_degree_term", placeholder="Current catalog")
-        submitted = button_col.form_submit_button("Find degrees", type="primary", width="stretch")
     if submitted:
         st.session_state.pop("catalog_degree_results", None)
         st.session_state.pop("catalog_degree_choice", None)
@@ -367,13 +385,12 @@ def _course_preview(number: str, version: int, term: str) -> None:
     st.button("Back to results", icon=":material/arrow_back:", type="tertiary", on_click=_back_to_results)
     try:
         with st.spinner("Loading the full course description…"):
-            data = MosesModuleData.model_validate(_cached_course_details(number, version, term))
+            data = MosesModuleData.model_validate(cached_catalog_details(number, version, term))
     except Exception:
         _search_error("load this course description")
         return
     if notice := st.session_state.pop("catalog_notice", None):
         st.toast(notice, icon=":material/check:")
-    st.session_state.setdefault("catalog_preview_data", {})[(data.number, data.version)] = data
     existing = existing_catalog_course(st.session_state["modules"], data.number, data.version)
     title, action = st.columns([4, 1.4], vertical_alignment="top")
     with title:
@@ -392,38 +409,49 @@ def _course_preview(number: str, version: int, term: str) -> None:
     render_module_information(preview, catalog_preview=True)
 
 
-def _catalog_card_content(row: dict, known: MosesModuleData | None) -> tuple[list[str], str, str]:
-    """Use public catalog data already available; never fetch a description per card."""
+def _catalog_card_content(row: dict) -> tuple[list[str], str]:
+    """Use the same search-result fields for every card, independent of history."""
     facts = [f"{row['credits']:g} LP" if row.get("credits") is not None else "Credits not specified"]
-    languages = row.get("languages") or (known.teaching_languages if known else [])
+    languages = row.get("languages") or []
     facts += [{"en":"English", "de":"German"}.get(value.casefold(), value) for value in languages]
-    if known:
-        facts += [{"PR":"Practical course", "VL":"Lecture", "UE":"Exercise", "IV":"Integrated course", "PJ":"Project", "SEM":"Seminar"}.get(kind, kind)
-            for kind in provider.infer_module_types_from_moses(known)]
-    grading = row.get("grading_mode") or (known.grading_mode if known else None)
+    grading = row.get("grading_mode")
     if grading:
         facts.append({"benotet":"Graded", "unbenotet":"Pass / fail"}.get(grading.casefold(), grading))
-    exam = row.get("exam_type") or (known.exam_type if known else None)
+    exam = row.get("exam_type")
     if exam:
         facts.append({"Portfolioprüfung":"Portfolio assessment", "Schriftliche Prüfung":"Written exam", "Mündliche Prüfung":"Oral exam"}.get(exam, exam))
-    cycle = row.get("cycle") or (known.offered_in.value if known else None)
+    cycle = row.get("cycle")
     if cycle and cycle.casefold() not in {"k.a.", "keine angabe"}:
         facts.append({"SoSe":"Summer", "WiSe":"Winter", "WiSe/SoSe":"Winter & summer", "WS & SS":"Winter & summer", "WS only":"Winter", "SS only":"Summer"}.get(cycle, cycle))
-    summary = ""
-    if known:
-        summary = (known.learning_outcomes or known.contents or "").strip()
-        if summary.casefold() in {"keine angabe", "keine angabe.", "k.a.", "-"}:
-            summary = ""
-        summary = textwrap.shorten(re.sub(r"\s+", " ", summary.replace("*", "").replace("•", " ")), width=240, placeholder="…")
-    responsible = row.get("responsible_person") or (known.responsible_person if known else None)
-    department = row.get("department") or (known.department if known else None)
+    responsible = row.get("responsible_person")
+    department = row.get("department")
     if department:
         department = re.sub(r"^\d{6,}\s+(?:FG\s+)?", "", department)
     people = " · ".join(value for value in [responsible, department] if value)
-    return list(dict.fromkeys(facts)), summary, people
+    return list(dict.fromkeys(facts)), people
+
+
+def _description_excerpt(data: CatalogDescription) -> tuple[str, str]:
+    for label, value in [("Learning outcomes", data.learning_outcomes), ("Course content", data.contents)]:
+        text = (value or "").strip()
+        if text.casefold() not in {"", "keine angabe", "keine angabe.", "k.a.", "-"}:
+            text = re.sub(r"\s+", " ", text.replace("•", " · "))
+            return label, textwrap.shorten(text, width=360, placeholder="…")
+    return "Course description", "No course description provided by MOSES."
+
+
+def _render_description(result: DescriptionResult) -> None:
+    if result.state in {"queued", "loading"}:
+        st.html('<div class="sm-catalog-description sm-catalog-description-loading" role="status" aria-label="Loading course description"><span></span><span></span><span></span></div>')
+    else:
+        label, excerpt = _description_excerpt(result.data) if result.data else ("Course description", "Description could not be loaded.")
+        st.html(f'<div class="sm-catalog-description"><span class="sm-catalog-description-label">{label}</span><p>{html.escape(excerpt)}</p></div>')
 
 
 def _render_results(rows: list[dict], context: dict) -> None:
+    # Clicking a card in this fragment must navigate the whole page.
+    if st.session_state.get("catalog_selected"):
+        st.rerun()
     st.subheader(context.get("label") or "Courses")
     if context.get("term") or context.get("degree"):
         st.caption(" · ".join(v for v in [context.get("degree"), context.get("term")] if v))
@@ -431,6 +459,7 @@ def _render_results(rows: list[dict], context: dict) -> None:
         st.caption(f"Showing the first {SEARCH_LIMIT} MOSES matches. Refine your search for more specific results.")
     if not rows:
         st.info("No courses matched. Try fewer filters or another course name.")
+        _description_polling(False)
         return
     text_col, plan_col, sort_col = st.columns([2, 1, 1])
     text = text_col.text_input("Refine results", placeholder="Title, lecturer, department or number", key="catalog_refine")
@@ -446,34 +475,37 @@ def _render_results(rows: list[dict], context: dict) -> None:
     st.caption(f"{len(matches)} {'course' if len(matches) == 1 else 'courses'}")
     if not matches:
         st.info("No courses match these result filters.")
+        _description_polling(False)
         return
     visible = st.session_state.get("catalog_visible_count", 24)
+    keys = [(row["number"], row["version"], context.get("term", "")) for row in matches[:visible]]
+    descriptions = _description_store().request(keys)
     with st.container(key="catalog_results"):
         for index, row in enumerate(matches[:visible]):
             if index % 2 == 0:
                 columns = st.columns(2, gap="medium")
             with columns[index % 2], st.container(key=f"catalog_result_{row['number']}_{row['version']}"):
                 existing = existing_catalog_course(st.session_state["modules"], row["number"], row["version"])
-                known = st.session_state.get("catalog_preview_data", {}).get((row["number"], row["version"]))
-                if not known and existing and existing.moses and existing.moses.number == row["number"] and existing.moses.version == row["version"]:
-                    known = existing.moses
-                facts, summary, people = _catalog_card_content(row, known)
+                facts, people = _catalog_card_content(row)
+                st.button(row["title"], key=f"catalog_open_{row['number']}_{row['version']}", type="tertiary",
+                    width="stretch", on_click=_select_course, args=(row, context.get("term", "")),
+                    help=f"{row['title']} · MOSES {row['number']} · Version {row['version']}")
+                st.html('<div class="sm-catalog-pills">'+"".join(f'<span>{html.escape(str(bit))}</span>' for bit in facts)+'</div>')
+                _render_description(descriptions[(row["number"], row["version"], context.get("term", ""))])
+                area = (row.get("area_label") or row.get("area_path")) if row.get("area_path") != context.get("path") else None
+                byline = " · ".join(value for value in [people, area] if value)
+                st.html(f'<p class="sm-catalog-byline" title="{html.escape(byline, quote=True)}">{html.escape(byline)}</p>')
+                status = ""
                 if existing:
                     status_class = {ModuleState.COMPLETED:"completed", ModuleState.IN_PROGRESS:"progress",
                         ModuleState.PLANNED:"planned", ModuleState.POSSIBLE_CANDIDATE:"candidate"}[existing.state]
-                    st.html(f'<span class="sm-catalog-status sm-catalog-status--{status_class}">{COURSE_STATUS_LABELS[existing.state]}</span>')
-                st.button(row["title"], key=f"catalog_open_{row['number']}_{row['version']}", type="tertiary",
-                    width="stretch", on_click=_select_course, args=(row, context.get("term", "")),
-                    help=f"View full course details · MOSES {row['number']} · Version {row['version']}")
-                st.html('<div class="sm-catalog-pills">'+"".join(f'<span>{html.escape(str(bit))}</span>' for bit in facts)+'</div>')
-                if summary:
-                    st.html(f'<p class="sm-catalog-excerpt">{html.escape(summary)}</p>')
-                area = (row.get("area_label") or row.get("area_path")) if row.get("area_path") != context.get("path") else None
-                if people or area:
-                    st.caption(" · ".join(value for value in [people, area] if value))
+                    credit_note = f" · {existing.cp:g} LP in your plan" if row.get("credits") is not None and row["credits"] != existing.cp else ""
+                    status = f'<span class="sm-catalog-status sm-catalog-status--{status_class}">{COURSE_STATUS_LABELS[existing.state]}{credit_note}</span>'
+                st.html(f'<div class="sm-catalog-status-row">{status}</div>')
     if visible < len(matches) and st.button(f"Show more courses ({len(matches)-visible} remaining)", width="stretch"):
         st.session_state["catalog_visible_count"] = visible + 24
         st.rerun()
+    _description_polling(any(result.state in {"queued", "loading"} for result in descriptions.values()))
 
 
 def render_course_search_page() -> None:
@@ -518,4 +550,5 @@ def _render_course_search_page() -> None:
         if rows is None:
             st.html('<div class="sm-catalog-empty"><h3>Find your next course</h3><p>Search by course name or module number, or browse a degree catalog.</p></div>')
     if rows is not None:
-        _render_results(rows, context)
+        interval = 2 if st.session_state.get("catalog_descriptions_pending", True) else None
+        st.fragment(run_every=interval)(_render_results)(rows, context)

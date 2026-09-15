@@ -530,8 +530,13 @@ html[data-theme] [role="dialog"]:has(.st-key-study_export_dialog) {max-width:760
  .st-key-study_export_dialog [data-testid="stButtonGroup"] {flex-wrap:wrap}
 }
 /* Catalog discovery shares the course-reading surfaces with Module Details. */
+/* Streamlit validates forms before child submit buttons finish registering.
+   Suppress only the short mount flash; persistent form errors remain visible. */
+.st-key-catalog_search_surface [data-testid="stAlert"],
+.st-key-catalog_degree_fields [data-testid="stAlert"] {animation:catalog-form-validation .4s step-end both}
+@keyframes catalog-form-validation {from {visibility:hidden} to {visibility:visible}}
 html[data-theme] [data-testid="stPopoverBody"]:has(.st-key-catalog_filter_fields),
-html[data-theme] [data-testid="stPopoverBody"]:has(.st-key-catalog_degree_search) {width:720px!important;max-width:calc(100vw - 24px)!important;padding:1.25rem!important}
+html[data-theme] [data-testid="stPopoverBody"]:has(.st-key-catalog_degree_fields) {width:720px!important;max-width:calc(100vw - 24px)!important;padding:1.25rem!important}
 html[data-theme] .stApp [class*="st-key-catalog_result_"] {padding:1.05rem 1.2rem;background:var(--surface);border:1px solid var(--border);border-radius:12px;gap:.55rem!important;box-shadow:0 2px 6px rgba(0,0,0,.035)}
 html[data-theme] .stApp [class*="st-key-catalog_result_"]:hover {border-color:var(--muted)}
 html[data-theme] .stApp [class*="st-key-catalog_result_"] button[data-testid="stBaseButton-tertiary"] {justify-content:flex-start!important;text-align:left!important;padding:0!important;min-height:2.5rem;background:transparent!important;color:var(--ink)!important;box-shadow:none!important;border:0!important;border-radius:4px!important;transform:none!important}
@@ -554,7 +559,19 @@ html[data-theme] .stApp .st-key-catalog_breadcrumbs button p {color:inherit!impo
 html[data-theme] .stApp .st-key-catalog_breadcrumbs button:hover p,
 html[data-theme] .stApp .st-key-catalog_breadcrumbs button:focus-visible p {text-decoration:underline;text-underline-offset:3px}
 .sm-catalog-current-area {color:var(--ink);font-size:.86rem;line-height:1.6;font-weight:600}
-.sm-catalog-excerpt {color:var(--muted);font-size:.86rem;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin:.2rem 0!important}
+.sm-catalog-byline {color:var(--muted);font-size:.83rem;line-height:1.6;height:2.66rem;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin:0!important}
+.sm-catalog-status-row {height:1.6rem;display:flex;align-items:center}
+.sm-catalog-description {height:5.3rem;overflow:hidden;padding:.2rem 0}
+.sm-catalog-description-label {display:block;color:var(--muted);font-size:.72rem;font-weight:600;margin-bottom:.35rem}
+.sm-catalog-description p {color:var(--ink);font-size:.86rem;line-height:1.55;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin:0!important}
+.sm-catalog-description-loading {padding-top:1.6rem}
+.sm-catalog-description-loading span {display:block;height:.65rem;background:var(--border);border-radius:4px;margin-bottom:.7rem;opacity:.45;animation:catalog-loading 1.4s ease-in-out infinite alternate}
+.sm-catalog-description-loading span:last-child {width:72%}
+@keyframes catalog-loading {to {opacity:.8}}
+@media(prefers-reduced-motion:reduce) {.sm-catalog-description-loading span {animation:none}}
+html[data-theme] .stApp [class*="st-key-catalog_result_"] button[data-testid="stBaseButton-tertiary"] {height:3rem!important;min-height:3rem!important;align-items:flex-start!important}
+html[data-theme] .stApp [class*="st-key-catalog_result_"] button[data-testid="stBaseButton-tertiary"] p {display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+html[data-theme] .stApp .sm-catalog-pills {min-height:3.6rem;align-content:flex-start}
 html[data-theme] .stApp .st-key-catalog_breadcrumbs button > div {justify-content:flex-start!important;text-align:left!important}
 .sm-catalog-pills {display:flex;flex-wrap:wrap;gap:.4rem}
 .sm-catalog-pills span {font-size:.76rem;line-height:1.4;padding:.22rem .5rem;border-radius:6px;background:var(--surface-2);color:var(--muted);border:1px solid var(--border)}

@@ -180,12 +180,26 @@ def test_saved_agent_interactions_prefer_live_event_journal(tmp_path):
     assert "30 LP Masterarbeit" in interactions[0]["response"]
 
 
-def test_current_settings_includes_agent_chat_toggle():
-    st.session_state["chat_show_agent_chat_alice"] = True
+def test_current_settings_preserves_zero_temperature():
+    st.session_state["chat_temperature_alice"] = 0.0
 
     settings = chat._current_settings_from_state("alice")
 
-    assert settings.show_agent_chat is True
+    assert settings.temperature == 0.0
+
+
+
+def test_trace_settings_keep_recording_independent_from_report_verbosity():
+    st.session_state["chat_trace_mode_alice"] = "Full"
+    legacy = chat._current_settings_from_state("alice")
+    assert legacy.trace_enabled and legacy.trace_full
+
+    st.session_state["chat_trace_full_report_alice"] = False
+    compact_report = chat._current_settings_from_state("alice")
+    assert compact_report.trace_enabled and not compact_report.trace_full
+
+    st.session_state["chat_trace_enabled_alice"] = False
+    assert not chat._current_settings_from_state("alice").trace_enabled
 
 
 def test_current_settings_leaves_model_selection_to_env_by_default():

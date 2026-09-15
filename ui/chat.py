@@ -4,6 +4,7 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 import html
+from hashlib import sha256
 import json
 from math import ceil
 import os
@@ -12,6 +13,7 @@ from queue import Empty, Queue
 import re
 import time
 from typing import Any
+from uuid import uuid4
 
 import streamlit as st
 from markdown_it import MarkdownIt
@@ -24,7 +26,6 @@ from crew.chat_models import ActionDecision, ChatMessage, CourseProposal
 from crew.chat_persistence import (
     clear_chat_thread,
     load_chat_thread,
-    reset_chat_thread,
     save_chat_thread,
     list_chat_threads,
 )
@@ -93,7 +94,6 @@ class ChatRuntimeSettings:
     cache: bool
     allow_temp_enrollment: bool
     planning_enabled: bool = False
-    show_agent_chat: bool = False
     observer_model: str | None = None
     observer_enabled: bool = True
     observer_min_interval_seconds: float = 15.0
@@ -102,8 +102,33 @@ class ChatRuntimeSettings:
 def _get_active_thread_id(profile_slug: str) -> str:
     key = f"active_thread_id_{profile_slug}"
     if key not in st.session_state:
-        st.session_state[key] = "default"
+        # A fresh session starts with an unsaved draft. The first turn persists it.
+        st.session_state[key] = f"thread-{uuid4().hex[:10]}"
     return st.session_state[key]
+
+
+def _start_new_chat(profile_slug: str) -> None:
+    thread_id = f"thread-{uuid4().hex[:10]}"
+    st.session_state[f"active_thread_id_{profile_slug}"] = thread_id
+    st.session_state.pop(f"chat_session_selector_{profile_slug}", None)
+    _set_profile_messages(profile_slug, [])
+    _clear_all_course_card_state(profile_slug)
+
+
+def _delete_chat_and_start_new(profile_slug: str, thread_id: str) -> None:
+    clear_chat_thread(profile_slug, thread_id=thread_id)
+    _start_new_chat(profile_slug)
+
+
+@st.dialog("Delete conversation")
+def _confirm_chat_deletion(profile_slug: str, thread_id: str) -> None:
+    st.write("Delete this conversation and its messages? Saved trace files will be kept.")
+    cancel_col, delete_col = st.columns(2)
+    if cancel_col.button("Cancel", use_container_width=True):
+        st.rerun()
+    if delete_col.button("Delete conversation", type="primary", use_container_width=True,
+                         on_click=_delete_chat_and_start_new, args=(profile_slug, thread_id)):
+        st.rerun()
 
 
 def render_chat_page() -> None:
@@ -134,148 +159,100 @@ def render_chat_page() -> None:
 
     messages = get_profile_messages(profile_slug, thread_id=active_tid)
 
-    st.markdown(
-        _clean_html(
-            f"""
-            <section class="chat-hero">
-              <div class="chat-hero-main">
-                <div class="chat-hero-kicker"><span></span>Multi-agent study assistant</div>
-                <h1>Study Chat</h1>
-                <p>Ask about courses, degree requirements, grades, or your study plan.</p>
-              </div>
-            </section>
-            """
-        ),
-        unsafe_allow_html=True,
-    )
-
     # ── Session Selector & Actions ───────────────────────────────────────────
     threads = list_chat_threads(profile_slug)
-    if not threads:
-        threads = [load_chat_thread(profile_slug, thread_id="default")]
     
     def thread_label(t) -> str:
-        if t.thread_id == "default":
-            first_user = next((m.content for m in t.messages if m.role == "user"), None)
-            if first_user:
-                return f"Default: {first_user[:30]}" + ("..." if len(first_user) > 30 else "")
-            return "Default Chat"
         first_user = next((m.content for m in t.messages if m.role == "user"), None)
         if first_user:
-            return first_user[:35] + ("..." if len(first_user) > 35 else "")
+            title = " ".join(first_user.split())
+            return title[:90] + ("…" if len(title) > 90 else "")
+        if not t.messages:
+            return "New conversation" if t.thread_id == active_tid else "Empty conversation"
         try:
             dt = datetime.fromisoformat(t.updated_at)
             return f"Chat on {dt.strftime('%b %d, %H:%M')}"
-        except Exception:
+        except (TypeError, ValueError):
             return f"Chat: {t.thread_id[:8]}"
-            
+
     thread_options = {t.thread_id: thread_label(t) for t in threads}
     if active_tid not in thread_options:
         t_active = load_chat_thread(profile_slug, thread_id=active_tid)
         threads.insert(0, t_active)
-        thread_options[active_tid] = thread_label(t_active)
+        thread_options = {active_tid: thread_label(t_active), **thread_options}
         
-    def on_new_chat(slug: str):
-        new_t = reset_chat_thread(slug)
-        st.session_state[f"active_thread_id_{slug}"] = new_t.thread_id
-        st.session_state[f"chat_session_selector_{slug}"] = new_t.thread_id
-        _set_profile_messages(slug, [])
-        _clear_all_course_card_state(slug)
-
-    def on_delete_chat(slug: str, tid: str):
-        if tid == "default":
-            clear_chat_thread(slug, thread_id="default")
-        else:
-            clear_chat_thread(slug, thread_id=tid)
-            st.session_state[f"active_thread_id_{slug}"] = "default"
-            st.session_state[f"chat_session_selector_{slug}"] = "default"
-        _set_profile_messages(slug, [])
-        _clear_all_course_card_state(slug)
-
-    with st.container(key="chat_toolbar"):
-        col_sel, col_new, col_runtime, col_del = st.columns([6, 1.15, 1.55, 1])
-        with col_sel:
-            selected_tid = st.selectbox(
-                "Session Selector",
-                options=list(thread_options.keys()),
-                format_func=lambda tid: thread_options[tid],
-                index=list(thread_options.keys()).index(active_tid),
-                key=f"chat_session_selector_{profile_slug}",
-                label_visibility="collapsed"
-            )
-            if selected_tid != active_tid:
-                st.session_state[f"active_thread_id_{profile_slug}"] = selected_tid
-                st.rerun()
-            
-        with col_new:
-            st.button(
-                "New chat",
-                key=f"chat_new_btn_header_{profile_slug}",
-                use_container_width=True,
-                type="secondary",
-                on_click=on_new_chat,
-                args=(profile_slug,)
-            )
-
+    with st.container(key="chat_header"):
+        col_title, col_runtime, col_new = st.columns([5, 1.65, 1.3], vertical_alignment="center")
+        with col_title:
+            st.markdown('<section class="chat-hero"><h1>Study Chat</h1></section>', unsafe_allow_html=True)
         with col_runtime:
             settings = _render_chat_config_panel(profile_slug, active_tid=active_tid)
-            
-        with col_del:
-            is_default = (active_tid == "default")
-            btn_label = "Clear" if is_default else "Delete"
-            st.button(
-                btn_label,
-                key=f"chat_del_btn_header_{profile_slug}",
-                use_container_width=True,
-                type="secondary",
-                on_click=on_delete_chat,
-                args=(profile_slug, active_tid)
+        with col_new:
+            st.button("New chat", key=f"chat_new_btn_header_{profile_slug}", icon=":material/add:",
+                      use_container_width=True, type="primary", on_click=_start_new_chat, args=(profile_slug,))
+
+    with st.container(key="chat_toolbar"):
+        col_sel, col_del = st.columns([10, 1.5], vertical_alignment="bottom")
+        with col_sel:
+            selector_key = f"chat_session_selector_{profile_slug}"
+            if st.session_state.get(selector_key) not in thread_options:
+                st.session_state.pop(selector_key, None)
+            selected_tid = st.selectbox(
+                "Conversation", options=list(thread_options.keys()),
+                format_func=lambda tid: thread_options[tid],
+                index=list(thread_options).index(active_tid), key=selector_key, label_visibility="collapsed",
             )
-            
+            if selected_tid is not None and selected_tid != active_tid:
+                st.session_state[f"active_thread_id_{profile_slug}"] = selected_tid
+                st.rerun()
+        with col_del:
+            if st.button("Delete chat", key=f"chat_del_btn_header_{profile_slug}",
+                         icon=":material/delete_outline:", use_container_width=True, disabled=not messages):
+                _confirm_chat_deletion(profile_slug, active_tid)
+
     st.markdown("<div class='chat-toolbar-spacer'></div>", unsafe_allow_html=True)
 
-    if not messages:
-        _render_empty_state(profile_slug)
+    with st.container(key="chat_conversation"):
+        if not messages:
+            _render_empty_state(profile_slug)
 
-    clear_pass = st.session_state.get("nm_clear_proposals_flag", False)
-    run_active = (PENDING_PROMPT_KEY in st.session_state)
+        clear_pass = st.session_state.get("nm_clear_proposals_flag", False)
+        run_active = (PENDING_PROMPT_KEY in st.session_state)
 
-    last_assistant_idx = -1
-    for idx, msg in enumerate(messages):
-        if msg.get("role") == "assistant":
-            last_assistant_idx = idx
+        last_assistant_idx = -1
+        for idx, msg in enumerate(messages):
+            if msg.get("role") == "assistant":
+                last_assistant_idx = idx
 
-    for idx, message in enumerate(messages):
-        is_latest_assistant = (idx == last_assistant_idx)
-        if message.get("role") == "assistant" and settings.show_agent_chat:
-            _render_agent_interactions_inline(get_interactions_for_message(message), live=False)
-        _render_chat_message(message, is_latest_assistant=is_latest_assistant, run_active=run_active)
+        for idx, message in enumerate(messages):
+            is_latest_assistant = (idx == last_assistant_idx)
+            _render_chat_message(message, is_latest_assistant=is_latest_assistant, run_active=run_active)
 
-    if messages and _message_error_detail(messages[-1]) and not run_active:
-        _render_empty_state(profile_slug, recovery=True)
+        if messages and _message_error_detail(messages[-1]) and not run_active:
+            _render_empty_state(profile_slug, recovery=True)
 
-    pending_prompt = st.session_state.get(PENDING_PROMPT_KEY)
-    if isinstance(pending_prompt, dict) and pending_prompt.get("profile_slug") == profile_slug and not clear_pass:
-        st.session_state.pop(PENDING_PROMPT_KEY)
-        prompt_text = str(pending_prompt.get("prompt") or "").strip()
-        if prompt_text:
-            proposal_decisions = pending_prompt.get("proposal_decisions") or []
-            ui_decisions = [ActionDecision.model_validate(d) for d in (pending_prompt.get("ui_decisions") or [])]
-            _run_and_render_assistant_turn(
-                profile_slug,
-                prompt_text,
-                settings,
-                display_prompt=str(pending_prompt.get("display_prompt") or prompt_text),
-                proposal_decisions=proposal_decisions,
-                ui_decisions=ui_decisions,
-                approved_actions=pending_prompt.get("approved_actions") or [],
-                thread_id=active_tid,
-            )
+        pending_prompt = st.session_state.get(PENDING_PROMPT_KEY)
+        if isinstance(pending_prompt, dict) and pending_prompt.get("profile_slug") == profile_slug and not clear_pass:
+            st.session_state.pop(PENDING_PROMPT_KEY)
+            prompt_text = str(pending_prompt.get("prompt") or "").strip()
+            if prompt_text:
+                proposal_decisions = pending_prompt.get("proposal_decisions") or []
+                ui_decisions = [ActionDecision.model_validate(d) for d in (pending_prompt.get("ui_decisions") or [])]
+                _run_and_render_assistant_turn(
+                    profile_slug,
+                    prompt_text,
+                    settings,
+                    display_prompt=str(pending_prompt.get("display_prompt") or prompt_text),
+                    proposal_decisions=proposal_decisions,
+                    ui_decisions=ui_decisions,
+                    approved_actions=pending_prompt.get("approved_actions") or [],
+                    thread_id=active_tid,
+                )
 
-    if thread.active_proposals and not run_active and not clear_pass:
-        _render_proposals_panel(profile_slug, thread.active_proposals)
+        if thread.active_proposals and not run_active and not clear_pass:
+            _render_proposals_panel(profile_slug, thread.active_proposals)
 
-    prompt = st.chat_input("Ask about your studies…")
+    prompt = st.chat_input("Message Study Assistant…", key=f"study_chat_composer_{active_tid}")
     if prompt:
         run_prompt = prompt.strip()
         if run_prompt:
@@ -305,8 +282,8 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
         use_container_width=True,
         help="Models, tracing, agent behavior, and ISIS access.",
     ):
-        st.caption("Advanced controls for the current profile")
-        tab_models, tab_execution, tab_isis = st.tabs(["Models", "Execution", "ISIS"])
+        st.markdown('<span class="chat-settings-marker" aria-hidden="true"></span>', unsafe_allow_html=True)
+        tab_chat, tab_models, tab_isis = st.tabs(["Chat & tracing", "Models", "ISIS"])
 
         with tab_models:
             st.markdown("**Model roles**")
@@ -319,7 +296,7 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 specialist_model=configured_model,
             )
             specialist_model = st.text_input(
-                "Specialist model override",
+                "Specialist agents",
                 value="",
                 placeholder=f".env default: {configured_model}",
                 help=(
@@ -329,7 +306,7 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 key=f"chat_specialist_model_{profile_slug}",
             ).strip()
             manager_model = st.text_input(
-                "Manager model override",
+                "Orchestrator",
                 value="",
                 placeholder=f".env default: {configured_manager_model}",
                 help=(
@@ -340,7 +317,7 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 key=f"chat_manager_model_{profile_slug}",
             ).strip()
             observer_model = st.text_input(
-                "Progress summary model override",
+                "Progress summaries",
                 value="",
                 placeholder=f".env default: {configured_observer_model}",
                 help=(
@@ -350,95 +327,80 @@ def _render_chat_config_panel(profile_slug: str, active_tid: str = "default") ->
                 key=f"chat_observer_model_{profile_slug}",
             ).strip()
 
-            col_temp, col_topp = st.columns(2)
-            with col_temp:
-                temperature = st.slider(
-                    "Temperature",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=DEFAULT_TEMPERATURE,
-                    step=0.05,
-                    key=f"chat_temperature_{profile_slug}",
-                )
-            with col_topp:
-                top_p_enabled = st.toggle("Set top_p", value=False, key=f"chat_top_p_enabled_{profile_slug}")
-                top_p = (
-                    st.slider("top_p", min_value=0.1, max_value=1.0, value=0.9, step=0.05, key=f"chat_top_p_{profile_slug}")
-                    if top_p_enabled
-                    else None
-                )
+            with st.expander("Generation settings"):
+                col_temp, col_topp = st.columns(2)
+                with col_temp:
+                    temperature = st.slider(
+                        "Temperature",
+                        min_value=0.0,
+                        max_value=1.0,
+                        value=DEFAULT_TEMPERATURE,
+                        step=0.05,
+                        help="Temperature for specialist agents, the orchestrator, and extra planning. Routing and proposal decisions use 0.0; live summaries use 0.1.",
+                        key=f"chat_temperature_{profile_slug}",
+                    )
+                with col_topp:
+                    top_p_enabled = st.toggle("Set top_p", value=False, help="Optional sampling limit for main agents, routing, and proposal decisions. Live progress summaries use their model default.", key=f"chat_top_p_enabled_{profile_slug}")
+                    top_p = (
+                        st.slider("top_p", min_value=0.1, max_value=1.0, value=0.9, step=0.05, key=f"chat_top_p_{profile_slug}")
+                        if top_p_enabled
+                        else None
+                    )
 
-        with tab_execution:
-            st.markdown("**Trace and execution**")
-            trace_mode = st.segmented_control(
-                "Tracing level",
-                ["Preview", "Full", "Disabled"],
-                default="Preview",
-                key=f"chat_trace_mode_{profile_slug}",
-            )
-
-            allow_temp_enrollment = st.toggle(
-                "Temporary ISIS enrollment",
-                value=True,
-                help="Read-only ISIS tools may enroll briefly, inspect course information, then unenroll.",
-                key=f"chat_temp_enrollment_{profile_slug}",
+        with tab_chat:
+            legacy_trace_mode = st.session_state.get(f"chat_trace_mode_{profile_slug}", "Preview")
+            trace_enabled = st.toggle(
+                "Record agent traces", value=legacy_trace_mode != "Disabled",
+                help="Keep agent activity, tool inputs and outputs, and trace files for each run.",
+                key=f"chat_trace_enabled_{profile_slug}",
             )
             observer_enabled = st.toggle(
-                "LLM progress summaries",
-                value=True,
-                help=(
-                    "Use the lightweight observer model to turn A2A delegation and tool lifecycle events "
-                    "into cumulative overall and per-agent progress reports. The first update runs when post-intent "
-                    "agent activity appears; later updates are throttled to the configured interval and require new evidence. "
-                    "Immediate trace-derived summaries remain visible while the background LLM is pending."
-                ),
+                "Live progress summaries", value=True,
+                help="Use the progress-summary model to explain what the agents are doing. Adds model calls while a run is active.",
                 key=f"chat_observer_enabled_{profile_slug}",
             )
             env_default_interval = float(os.getenv("OBSERVER_MIN_INTERVAL_SECONDS", "15.0"))
             observer_min_interval_seconds = env_default_interval
-            if observer_enabled:
-                observer_min_interval_seconds = st.slider(
-                    "LLM summary interval (seconds)",
-                    min_value=5.0,
-                    max_value=120.0,
-                    value=env_default_interval,
-                    step=5.0,
-                    help="Minimum seconds to wait between updates to the live progress summary.",
-                    key=f"chat_observer_min_interval_seconds_{profile_slug}",
+            with st.expander("Advanced execution"):
+                trace_full = st.toggle(
+                    "Full outputs in Markdown report", value=legacy_trace_mode == "Full",
+                    disabled=not trace_enabled,
+                    help="Expand tool results in the saved Markdown report. Raw traces retain complete tool outputs either way.",
+                    key=f"chat_trace_full_report_{profile_slug}",
                 )
-            show_agent_chat = st.toggle(
-                "Show internal agent chat",
-                value=False,
-                help="Render observable Orchestrator-to-specialist delegation above the final answer.",
-                key=f"chat_show_agent_chat_{profile_slug}",
-            )
-            planning_enabled = st.toggle(
-                "CrewAI planning",
-                value=False,
-                help=(
-                    "Add CrewAI's separate planning pass before the hierarchical manager starts. "
-                    "The orchestrator already plans and delegates without this optional extra call."
-                ),
-                key=f"chat_planning_{profile_slug}",
-            )
-            cache = st.toggle("CrewAI cache", value=True, key=f"chat_cache_{profile_slug}")
-            verbose = st.toggle("Verbose lifecycle logs", value=False, key=f"chat_verbose_{profile_slug}")
+                if observer_enabled:
+                    observer_min_interval_seconds = st.slider(
+                        "Progress update interval (seconds)", min_value=5.0, max_value=120.0,
+                        value=env_default_interval, step=5.0,
+                        key=f"chat_observer_min_interval_seconds_{profile_slug}",
+                    )
+                planning_enabled = st.toggle(
+                    "Extra planning pass", value=False,
+                    help="Add a planning-model call before multi-agent queries. Simple queries skip this pass. The orchestrator still plans and delegates when this is off.",
+                    key=f"chat_planning_{profile_slug}",
+                )
+                cache = st.toggle("Tool cache", value=True, help="Reuse results when the same tool receives identical arguments during a run. Faster, but repeated reads may not reflect changes made during that run.", key=f"chat_cache_{profile_slug}")
+                verbose = st.toggle("Detailed console logs", value=False, help="Print CrewAI execution details to the server console. Trace capture is controlled separately.", key=f"chat_verbose_{profile_slug}")
 
         with tab_isis:
             _render_isis_account_panel(profile_slug)
-    trace_mode = str(st.session_state.get(f"chat_trace_mode_{profile_slug}") or "Preview")
+            st.divider()
+            allow_temp_enrollment = st.toggle(
+                "Temporary course enrollment", value=True,
+                help="Allow ISIS tools to self-enroll to read a course, then attempt to unenroll. Existing enrollments stay intact. Cleanup failures are reported; this is separate from permanent enrollment approval.",
+                key=f"chat_temp_enrollment_{profile_slug}",
+            )
     return ChatRuntimeSettings(
         specialist_model=specialist_model or None,
         manager_model=manager_model or None,
         temperature=temperature,
         top_p=top_p,
-        trace_enabled=trace_mode != "Disabled",
-        trace_full=trace_mode == "Full",
+        trace_enabled=trace_enabled,
+        trace_full=trace_full,
         verbose=verbose,
         cache=cache,
         allow_temp_enrollment=allow_temp_enrollment,
         planning_enabled=planning_enabled,
-        show_agent_chat=show_agent_chat,
         observer_model=observer_model or None,
         observer_enabled=observer_enabled,
         observer_min_interval_seconds=observer_min_interval_seconds,
@@ -452,21 +414,26 @@ def _render_isis_account_panel(profile_slug: str) -> None:
     created_at = session.get("created_at")
 
     st.markdown("**ISIS connection**")
-    if mode == "session" and session.get("client") is not None:
-        st.success(f"Session login active. Age: {_age_label(created_at)}")
+    has_session = mode == "session" and session.get("client") is not None
+    if has_session:
+        st.success(f"Account connected · {_age_label(created_at)}")
     else:
-        st.info("Using environment fallback for ISIS credentials.")
+        st.caption("Using server connection")
 
     username_key = f"chat_isis_username_{profile_slug}"
     password_key = f"chat_isis_password_{profile_slug}"
+    if st.session_state.pop(f"chat_isis_clear_password_{profile_slug}", False):
+        st.session_state[password_key] = ""
     col_u, col_p = st.columns(2)
     with col_u:
         username = st.text_input("TUB account", key=username_key, placeholder="e.g. ab123")
     with col_p:
         password = st.text_input("Password", type="password", key=password_key, placeholder="••••••••")
 
-    col_login, col_env, col_clear = st.columns(3)
-    if col_login.button("Login", key=f"chat_isis_login_{profile_slug}", use_container_width=True):
+    col_login, col_env = st.columns(2)
+    if col_login.button("Log in to ISIS", key=f"chat_isis_login_{profile_slug}", type="primary",
+                        help="Sign in through TU Berlin Shibboleth. The resulting connection stays in this browser session for the current profile; credentials are not written to the profile or .env.",
+                        use_container_width=True):
         if not username.strip() or not password:
             st.warning("Enter both account and password.")
         else:
@@ -481,22 +448,19 @@ def _render_isis_account_panel(profile_slug: str) -> None:
                         "created_at": _now_iso(),
                     }
                     st.session_state[ISIS_SESSIONS_KEY] = sessions
-                    st.session_state[password_key] = ""
+                    # Clear the widget on the next rerun, before it is instantiated.
+                    st.session_state[f"chat_isis_clear_password_{profile_slug}"] = True
                     st.success("ISIS login active.")
                     st.rerun()
                 except Exception as exc:
                     st.error(f"ISIS login failed: {exc}")
 
-    if col_env.button("Use env", key=f"chat_isis_env_{profile_slug}", use_container_width=True):
-        sessions[profile_slug] = {"mode": "env", "client": None, "created_at": _now_iso()}
-        st.session_state[ISIS_SESSIONS_KEY] = sessions
-        st.toast("ISIS env fallback enabled.")
-        st.rerun()
-
-    if col_clear.button("Clear session", key=f"chat_isis_clear_{profile_slug}", use_container_width=True):
+    if col_env.button("Use server connection", key=f"chat_isis_env_{profile_slug}",
+                      disabled=not has_session, use_container_width=True,
+                      help="Forget this profile's session connection and use server credentials for subsequent ISIS calls. This does not revoke the ISIS token or sign out of the ISIS website."):
         sessions.pop(profile_slug, None)
         st.session_state[ISIS_SESSIONS_KEY] = sessions
-        st.toast("ISIS session cleared.")
+        st.session_state[f"chat_isis_clear_password_{profile_slug}"] = True
         st.rerun()
 
 
@@ -516,18 +480,12 @@ def _render_empty_state(profile_slug: str, *, recovery: bool = False) -> None:
         ),
     ]
     heading = "Try another question" if recovery else "What would you like to work on?"
-    subtitle = (
-        "The previous run is preserved above. Start a fresh request or use one of these examples."
-        if recovery
-        else "Ask in your own words, or start with an example."
-    )
     with st.container(key="chat_prompt_starters"):
         st.markdown(
             _clean_html(
                 f"""
                 <section class="prompt-starters-heading">
                   <h2>{heading}</h2>
-                  <p>{subtitle}</p>
                 </section>
                 """
             ),
@@ -601,6 +559,23 @@ def _message_error_detail(message: dict[str, Any]) -> str | None:
     return None
 
 
+def _render_message_header(role: str, created_at: str | None = None) -> None:
+    label = "You" if role == "user" else "Study Assistant"
+    timestamp = ""
+    if created_at:
+        try:
+            dt = datetime.fromisoformat(created_at)
+            if dt.tzinfo is not None:
+                dt = dt.astimezone()
+            timestamp = f'<time datetime="{html.escape(created_at, quote=True)}" title="{html.escape(str(dt))}">{dt.strftime("%d %b · %H:%M")}</time>'
+        except (TypeError, ValueError):
+            pass
+    st.markdown(
+        f'<div class="chat-message-header" data-role="{html.escape(role, quote=True)}"><strong>{label}</strong>{timestamp}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = False, run_active: bool = False) -> None:
     del is_latest_assistant, run_active
     error_detail = _message_error_detail(message)
@@ -612,7 +587,9 @@ def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = Fa
         elif message.get("trace_dir"):
             st.caption(f"📊 Trace artifacts: `{message.get('trace_dir')}`")
 
-    with st.chat_message(message.get("role", "assistant")):
+    role = str(message.get("role") or "assistant")
+    with st.chat_message(role, avatar=":material/person:" if role == "user" else ":material/school:"):
+        _render_message_header(role, message.get("created_at"))
         if error_detail:
             st.markdown(
                 _clean_html(
@@ -620,8 +597,8 @@ def _render_chat_message(message: dict[str, Any], is_latest_assistant: bool = Fa
                     <div class="run-error-card">
                       <span class="run-error-mark">!</span>
                       <div>
-                        <strong>Run interrupted before answer synthesis</strong>
-                        <p>The trace above preserves the completed lifecycle events. Retry the prompt after inspecting the technical detail.</p>
+                        <strong>Unable to finish this response</strong>
+                        <p>Completed activity is saved in the trace above.</p>
                       </div>
                     </div>
                     """
@@ -963,17 +940,14 @@ def _run_and_render_assistant_turn(
         student_context = f"{student_context}\n\n{proposal_context}"
     isis_client = get_profile_isis_client(profile_slug)
 
-    with st.chat_message("user"):
+    with st.chat_message("user", avatar=":material/person:"):
+        _render_message_header("user")
         st.markdown(display_prompt or prompt)
-
-    dialogue_placeholder = st.empty() if settings.show_agent_chat else None
-    if dialogue_placeholder is not None:
-        with dialogue_placeholder.container():
-            _render_agent_interactions_inline(extract_agent_interactions(events), live=True)
 
     trace_placeholder = st.empty() if settings.trace_enabled else None
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar=":material/school:"):
+        _render_message_header("assistant")
         answer_placeholder = st.empty()
         streamed_answer = _render_live_answer_status(answer_placeholder, events)
 
@@ -1058,9 +1032,6 @@ def _run_and_render_assistant_turn(
                         last_heartbeat = now
                     if updated or now - last_render >= 1.0:
                         streamed_answer = _render_live_answer_status(answer_placeholder, events)
-                        if dialogue_placeholder is not None:
-                            with dialogue_placeholder.container():
-                                _render_agent_interactions_inline(extract_agent_interactions(events), live=True)
                         if trace_placeholder is not None:
                             with trace_placeholder.container():
                                 _render_live_trace(events)
@@ -1069,9 +1040,6 @@ def _run_and_render_assistant_turn(
                 _drain_trace_queue(event_queue, events)
                 if observer_future is not None and _append_observer_result(events, observer_future):
                     observer_future = None
-                if dialogue_placeholder is not None:
-                    with dialogue_placeholder.container():
-                        _render_agent_interactions_inline(extract_agent_interactions(events), live=False)
                 if trace_placeholder is not None:
                     with trace_placeholder.container():
                         _render_live_trace(events, completed=True)
@@ -1823,15 +1791,14 @@ def _current_settings_from_state(profile_slug: str) -> ChatRuntimeSettings:
     return ChatRuntimeSettings(
         specialist_model=str(st.session_state.get(f"chat_specialist_model_{profile_slug}") or "").strip() or None,
         manager_model=str(st.session_state.get(f"chat_manager_model_{profile_slug}") or "").strip() or None,
-        temperature=float(st.session_state.get(f"chat_temperature_{profile_slug}") or DEFAULT_TEMPERATURE),
+        temperature=float(st.session_state.get(f"chat_temperature_{profile_slug}", DEFAULT_TEMPERATURE)),
         top_p=float(st.session_state[f"chat_top_p_{profile_slug}"]) if st.session_state.get(f"chat_top_p_enabled_{profile_slug}") else None,
-        trace_enabled=trace_mode != "Disabled",
-        trace_full=trace_mode == "Full",
+        trace_enabled=bool(st.session_state.get(f"chat_trace_enabled_{profile_slug}", trace_mode != "Disabled")),
+        trace_full=bool(st.session_state.get(f"chat_trace_full_report_{profile_slug}", trace_mode == "Full")),
         verbose=bool(st.session_state.get(f"chat_verbose_{profile_slug}", False)),
         cache=bool(st.session_state.get(f"chat_cache_{profile_slug}", True)),
         allow_temp_enrollment=bool(st.session_state.get(f"chat_temp_enrollment_{profile_slug}", True)),
         planning_enabled=bool(st.session_state.get(f"chat_planning_{profile_slug}", False)),
-        show_agent_chat=bool(st.session_state.get(f"chat_show_agent_chat_{profile_slug}", False)),
         observer_model=str(st.session_state.get(f"chat_observer_model_{profile_slug}") or "").strip() or None,
         observer_enabled=bool(st.session_state.get(f"chat_observer_enabled_{profile_slug}", True)),
         observer_min_interval_seconds=float(st.session_state.get(f"chat_observer_min_interval_seconds_{profile_slug}", env_default_interval)),
@@ -2136,77 +2103,39 @@ def _optional_int(value: Any) -> int | None:
     return _safe_int(value)
 
 
-def _render_agent_interactions_inline(interactions: list[dict[str, Any]], *, live: bool = False) -> None:
-    if not interactions:
-        if live:
-            with st.container(border=True):
-                st.markdown("**Agent Team Collaboration**")
-                st.caption("Waiting for the orchestrator to delegate work to a specialist agent.")
-        return
-
-    with st.container(border=True):
-        title_suffix = " · live" if live else ""
-        st.markdown(f"**Agent Team Collaboration{title_suffix}**")
-        for interaction in interactions:
-            item = _normalize_interaction_status(interaction)
-            sender = str(item.get("sender") or "Orchestrator")
-            receiver = str(item.get("receiver") or "Specialist Agent")
-            duration = item.get("duration_ms")
-            duration_label = f" · {duration} ms" if duration is not None else ""
-
-            with st.chat_message(sender, avatar=str(item.get("sender_avatar") or "🧭")):
-                st.caption(f"Delegation to {receiver}{duration_label}")
-                st.markdown(str(item.get("question") or "Delegation request captured without readable text."))
-
-            with st.chat_message(receiver, avatar=str(item.get("receiver_avatar") or "🤖")):
-                status = str(item.get("status") or "running")
-                observer_summary = str(item.get("observer_summary") or "").strip()
-                if observer_summary:
-                    st.caption("Result summary" if status == "completed" else "Progress summary")
-                    st.markdown(observer_summary)
-                if status == "completed":
-                    st.caption(f"Response to {sender}")
-                    st.markdown(str(item.get("response") or "Completed without a response preview."))
-                elif status == "error":
-                    st.caption(f"Response to {sender}")
-                    st.error(str(item.get("response") or "The delegated work failed."))
-                elif status == "warning":
-                    st.caption(f"Response to {sender}")
-                    st.warning(str(item.get("response") or "The delegated work completed with warnings."))
-                else:
-                    if not observer_summary:
-                        st.caption(f"Working for {sender}")
-                        st.info(f"Awaiting {receiver}'s traced response to this delegation.")
-
-
 def _render_agent_interactions_panel(interactions: list[dict[str, Any]], *, live: bool = False) -> None:
     st.markdown(_compile_agent_dialogue_html(interactions, live=live), unsafe_allow_html=True)
 
 
 def _render_dialogue_body_html(preview_text: str, full_text: str | None = None) -> str:
-    md = MarkdownIt("gfm-like")
     preview_str = str(preview_text or "").strip()
     full_str = str(full_text or "").strip()
     
     if not full_str or len(full_str) <= len(preview_str):
-        return md.render(preview_str) if preview_str else ""
+        return _dialogue_text_html(preview_str) if preview_str else ""
         
-    preview_html = md.render(preview_str)
-    full_html = md.render(full_str)
+    preview_html = _dialogue_text_html(preview_str)
+    full_html = _dialogue_text_html(full_str)
     
-    import uuid
-    uniq = uuid.uuid4().hex[:6]
+    uniq = sha256(full_str.encode()).hexdigest()[:12]
     
     return f"""
-    <details class="agent-dialogue-expandable" id="details-{uniq}">
+    <details class="agent-dialogue-expandable" data-dialogue-key="{uniq}">
       <summary class="agent-dialogue-expand-trigger">
         <div class="agent-dialogue-preview-text">{preview_html}</div>
-        <span class="agent-dialogue-expand-label show-more">[Show full message ({len(full_str) - len(preview_str)} more chars)]</span>
-        <span class="agent-dialogue-expand-label show-less" style="display: none;">[Hide full message]</span>
+        <span class="agent-dialogue-expand-label show-more">Read full message</span>
+        <span class="agent-dialogue-expand-label show-less" style="display: none;">Show less</span>
       </summary>
       <div class="agent-dialogue-full-text">{full_html}</div>
     </details>
     """
+
+
+def _agent_initials(label: str) -> str:
+    known = {"Orchestrator": "OR", "Study Advisor": "SA", "Grade Optimization Specialist": "GO",
+             "MOSES Module Researcher": "MO", "Degree Regulations Specialist": "DR",
+             "ISIS Course Info Specialist": "IS", "Course Commitment Specialist": "CC"}
+    return known.get(label) or "".join(word[0] for word in label.split()[:2]).upper() or "AI"
 
 
 def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bool = False) -> str:
@@ -2229,14 +2158,14 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
         )
 
     exchange_html = ""
-    for interaction in interactions:
+    for exchange_index, interaction in enumerate(interactions, 1):
         item = _normalize_interaction_status(interaction)
         sender = str(item.get("sender") or "Orchestrator")
         receiver = str(item.get("receiver") or "Specialist Agent")
         sender_class = str(item.get("sender_class") or "orchestrator")
         receiver_class = str(item.get("receiver_class") or "specialist")
-        sender_avatar = str(item.get("sender_avatar") or "🧭")
-        receiver_avatar = str(item.get("receiver_avatar") or "🤖")
+        sender_avatar = _agent_initials(sender)
+        receiver_avatar = _agent_initials(receiver)
         
         question_html = _render_dialogue_body_html(
             item.get("question") or "Delegation request captured without readable text.",
@@ -2246,8 +2175,8 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
         response_full = item.get("response_full")
         status = str(item.get("status") or "running")
         duration = item.get("duration_ms")
-        duration_html = f'<span>{html.escape(str(duration))} ms</span>' if duration is not None else ""
-        status_label = "working" if status == "running" else status
+        duration_html = f'<span class="agent-dialogue-duration">{_format_trace_duration(duration)}</span>' if duration is not None else ""
+        status_label = {"running": "Working", "completed": "Completed", "error": "Failed", "warning": "Warning"}.get(status, status.title())
         observer_summary = str(item.get("observer_summary") or "").strip()
         observer_label = "Result summary" if status == "completed" else "Progress summary"
         observer_html = (
@@ -2268,13 +2197,13 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
             response_html = observer_html or '<em>Delegated task active; awaiting its traced tool or response event.</em>'
         exchange_html += f"""
         <div class="agent-dialogue-pair">
+          <div class="agent-exchange-heading"><span class="agent-exchange-number">{exchange_index:02d}</span><strong class="agent-identity {html.escape(sender_class)}">{html.escape(sender)}</strong><span aria-hidden="true">→</span><strong class="agent-identity {html.escape(receiver_class)}">{html.escape(receiver)}</strong>{duration_html}<span class="trace-status {html.escape(status)}">{html.escape(status_label)}</span></div>
           <div class="agent-dialogue-message request {html.escape(sender_class)}">
             <div class="agent-dialogue-avatar">{html.escape(sender_avatar)}</div>
             <div class="agent-dialogue-bubble">
               <div class="agent-dialogue-meta">
                 <strong>{html.escape(sender)}</strong>
-                <span>to {html.escape(receiver)}</span>
-                {duration_html}
+                <span>Request</span>
               </div>
               <div class="agent-dialogue-body">{question_html}</div>
             </div>
@@ -2284,7 +2213,7 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
             <div class="agent-dialogue-bubble">
               <div class="agent-dialogue-meta">
                 <strong>{html.escape(receiver)}</strong>
-                <span>{html.escape(status_label)}</span>
+                <span>Response</span>
               </div>
               <div class="agent-dialogue-body">{response_html}</div>
             </div>
@@ -2307,9 +2236,10 @@ def _compile_agent_dialogue_html(interactions: list[dict[str, Any]], *, live: bo
 
 
 def _dialogue_text_html(text: str) -> str:
-    # Kept as fallback for any external caller, but dialogue body html now renders markdown.
-    md = MarkdownIt("gfm-like")
-    return md.render(text or "")
+    md = MarkdownIt("gfm-like", {"html": False})
+    rendered = md.render(text or "")
+    # HTML whitespace cleanup must not remove indentation in fenced code.
+    return re.sub(r"<pre>.*?</pre>", lambda match: match[0].replace("\n", "&#10;"), rendered, flags=re.S)
 
 
 def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False) -> None:
@@ -2319,7 +2249,8 @@ def _render_live_trace(events: list[dict[str, Any]], *, completed: bool = False)
 
 def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool, live: bool = False) -> None:
     title = "Agent activity & trace" if not live else "Live Agent activity & trace"
-    with st.expander(title, expanded=expanded):
+    with st.expander(title, expanded=expanded, icon=":material/hub:"):
+        st.markdown('<span class="chat-trace-marker" aria-hidden="true"></span>', unsafe_allow_html=True)
         dashboard_tab, dialogue_tab, raw_tab = st.tabs(
             ["Orchestration & Topology", "Internal Agent Chat (A2A)", "Raw Trace & Tool I/O"]
         )
@@ -2331,40 +2262,102 @@ def _render_trace_panel(workbench: dict[str, Any], *, expanded: bool, live: bool
             _render_raw_trace_tab(workbench, live=live)
 
 
+def _format_trace_duration(value: Any) -> str:
+    try:
+        milliseconds = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    if milliseconds < 1000:
+        return f"{milliseconds:,.0f} ms"
+    if milliseconds < 60000:
+        return f"{milliseconds / 1000:.1f} s"
+    minutes, seconds = divmod(int(milliseconds / 1000), 60)
+    return f"{minutes}m {seconds:02d}s"
+
+
+def _trace_output(call: dict[str, Any]) -> tuple[str, str | None, bool]:
+    """Preserve complete captured output, falling back to older preview-only traces."""
+    full = call.get("output")
+    value = full if full is not None else call.get("output_preview")
+    truncated = full is None and bool(call.get("output_truncated"))
+    if value is None or value == "":
+        return "", None, truncated
+    if not isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False, indent=2, default=str), "json", truncated
+    # Preserve the exact captured text; syntax highlighting does not reformat it.
+    try:
+        json.loads(value)
+    except (TypeError, ValueError):
+        return value, None, truncated
+    return value, "json", truncated
+
+
 def _render_raw_trace_tab(workbench: dict[str, Any], *, live: bool = False) -> None:
     groups = workbench.get("groups") or []
     events = workbench.get("latest_events") or []
-    calls = _all_tool_calls(workbench)
+    calls = sorted(_all_tool_calls(workbench), key=lambda item: _safe_int(item.get("call_id")))
     llm_calls = sum(int(group.get("llm_calls") or 0) for group in groups)
     total_tokens = sum(int(group.get("total_tokens") or 0) for group in groups)
+    stats = [("Events", int(workbench.get("event_count") or len(events))), ("LLM calls", llm_calls),
+             ("Tool calls", len(calls)), ("Observed tokens", f"{total_tokens:,}" if total_tokens else "—")]
+    st.markdown('<div class="trace-stat-strip">' + ''.join(
+        f'<div><strong>{value}</strong><span>{label}</span></div>' for label, value in stats
+    ) + '</div>', unsafe_allow_html=True)
 
-    col_events, col_llm, col_tools, col_tokens = st.columns(4)
-    col_events.metric("Trace events", int(workbench.get("event_count") or len(events)))
-    col_llm.metric("LLM calls", llm_calls)
-    col_tools.metric("Tool calls", len(calls))
-    col_tokens.metric("Observed tokens", total_tokens or "—")
-
-    st.caption(
-        "Technical runtime view. Status is derived from CrewAI lifecycle events; tool inputs and outputs follow the configured trace redaction/preview level."
-    )
-    if calls:
-        for call in sorted(calls, key=lambda item: _safe_int(item.get("call_id"))):
-            label = (
-                f"#{_safe_int(call.get('call_id'))} · {call.get('agent_label') or 'Unknown Agent'} · "
-                f"{call.get('tool_name') or 'Unknown Tool'} · {call.get('status') or 'unknown'}"
+    for call in calls:
+        status = str(call.get("status") or "unknown")
+        status_label, icon = {
+            "ok": ("Success", "check_circle"), "completed": ("Success", "check_circle"),
+            "error": ("Failed", "error"), "warning": ("Warning", "warning"),
+            "running": ("Running", "pending"),
+        }.get(status, (status.title(), "help"))
+        name = str(call.get("tool_name") or "Unknown tool")
+        duration = _format_trace_duration(call.get("duration_ms"))
+        label = f"{name} · {status_label} · {duration}"
+        with st.expander(label, expanded=False, icon=f":material/{icon}:"):
+            st.markdown(
+                f'<div class="trace-call-heading"><span class="trace-status {html.escape(status)}">{status_label}</span>'
+                f'<strong>{html.escape(str(call.get("agent_label") or "Unknown agent"))}</strong>'
+                f'<span>Call #{_safe_int(call.get("call_id"))} · {duration}</span></div>',
+                unsafe_allow_html=True,
             )
-            with st.expander(label, expanded=False):
-                st.markdown("**Input**")
-                st.json(call.get("tool_input") or {}, expanded=1)
-                st.markdown("**Output preview**")
-                st.markdown(str(call.get("output_preview") or "*(No output captured yet.)*"))
-    elif live:
-        st.info("No tool call has been emitted yet. Intent classification or manager reasoning may still be running.")
-    else:
-        st.caption("No tool calls were captured for this route.")
+            output_tab, input_tab, metadata_tab = st.tabs(["Output", "Input", "Call metadata"])
+            with output_tab:
+                output, language, truncated = _trace_output(call)
+                if truncated:
+                    st.caption(f"Captured preview · {len(output):,} of {int(call.get('output_chars') or len(output)):,} characters")
+                if output:
+                    estimated_lines = sum(max(1, ceil(len(line) / 60)) for line in output.splitlines())
+                    st.code(output, language=language, wrap_lines=True,
+                            height="content" if estimated_lines <= 10 else 360)
+                    if language is None:
+                        with st.expander("Formatted output", expanded=False):
+                            st.markdown(output)
+                else:
+                    st.caption("Waiting for output…" if status == "running" else "No output was captured.")
+            with input_tab:
+                tool_input = call.get("tool_input")
+                st.code(json.dumps(tool_input if tool_input is not None else {}, ensure_ascii=False, indent=2, default=str),
+                        language="json", wrap_lines=True, height="content")
+            with metadata_tab:
+                st.json({key: value for key, value in call.items() if key not in {"tool_input", "output", "output_preview"}}, expanded=1)
+    if not calls:
+        st.caption("Waiting for the first tool call…" if live else "No tool calls in this run.")
 
-    with st.expander("Latest normalized lifecycle events", expanded=False):
+    with st.expander("Lifecycle events", expanded=False, icon=":material/timeline:"):
         st.json(events, expanded=1)
+    artifacts = {key: value for key, value in (workbench.get("artifacts") or {}).items() if value}
+    if artifacts:
+        with st.expander("Trace files", expanded=False, icon=":material/folder_open:"):
+            for name, path in artifacts.items():
+                st.caption(str(name).replace("_", " ").title())
+                st.code(str(path), language=None, wrap_lines=True)
+    if not live:
+        trace_json = json.dumps(workbench, ensure_ascii=False, indent=2, default=str)
+        trace_key = sha256(trace_json.encode()).hexdigest()[:16]
+        st.download_button("Download captured trace", data=trace_json, mime="application/json",
+                           file_name=f"study-trace-{workbench.get('run_id') or trace_key}.json",
+                           key=f"chat_trace_download_{trace_key}", icon=":material/download:", on_click="ignore")
 
 
 def _clean_html(html_str: str) -> str:
@@ -3700,7 +3693,7 @@ def _now_iso() -> str:
 
 
 def inject_chat_css() -> None:
-    st.markdown(
+    st.html(
         """
         <style>
         [data-testid="stMainBlockContainer"] {
@@ -5162,5 +5155,8 @@ def inject_chat_css() -> None:
         }
         </style>
         """,
-        unsafe_allow_html=True,
     )
+    stylesheet = Path(__file__).resolve().parents[1] / "assets" / "chat.css"
+    st.html(f"<style>{stylesheet.read_text(encoding='utf-8')}</style>")
+    interaction_script = stylesheet.with_name("chat-interactions.js").read_text(encoding="utf-8")
+    st.html(f"<span hidden></span><script>{interaction_script}</script>", unsafe_allow_javascript=True)

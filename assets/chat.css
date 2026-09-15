@@ -1,0 +1,239 @@
+/* Study Chat: presentation only. Runtime and trace data stay in ui/chat.py. */
+html[data-theme] .stApp [data-testid="stMainBlockContainer"]:has(.chat-hero) {
+  max-width:1240px;padding-top:2rem!important;padding-bottom:7rem!important;
+}
+html[data-theme] .chat-hero {padding-bottom:.3rem}
+html[data-theme] .chat-hero h1 {margin-bottom:.4rem}
+html[data-theme] .chat-hero p {font-size:.9rem;color:var(--muted)}
+.chat-toolbar-spacer {height:.25rem}
+html[data-theme] .st-key-chat_toolbar {padding:0 0 1.1rem;border-bottom:1px solid var(--border)}
+html[data-theme] .st-key-chat_toolbar button {min-height:44px;white-space:nowrap}
+html[data-theme] .st-key-chat_conversation {gap:1.15rem}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] {
+  padding:1rem 0 1.5rem;background:transparent;border:0;gap:.8rem;min-width:0;
+}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"]:has(.chat-message-header[data-role="user"]) {
+  width:fit-content;max-width:85%;margin-left:auto;padding:1rem 1.15rem;
+  background:var(--surface-2);border:1px solid var(--border);border-radius:18px 18px 4px 18px;
+  flex-direction:row-reverse;text-align:left;box-shadow:0 2px 5px #00000005;
+}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"]:has(.chat-message-header[data-role="user"]) div {text-align:left}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"]:has(.chat-message-header[data-role="user"]) > [data-testid*="Avatar"] {display:none}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] > [data-testid*="Avatar"] {
+  background:var(--surface);color:var(--muted);border:1px solid var(--border);border-radius:10px;width:34px;height:34px;
+}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessageContent"] {min-width:0;overflow-wrap:anywhere}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessageContent"] > [data-testid="stVerticalBlock"] {gap:.6rem}
+.chat-message-header {display:flex;align-items:center;gap:.75rem;min-height:28px;line-height:1.3;margin:0 0 .2rem}
+.chat-message-header strong {font-size:.83rem;font-weight:650;color:var(--ink)}
+.chat-message-header time {font-size:.72rem;color:var(--muted)}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {line-height:1.7}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] p,
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] li {line-height:1.7;font-size:.98rem}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] h1,
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] h2 {font-size:1.2rem!important;line-height:1.35!important;margin:1.4rem 0 .7rem!important;padding:0!important}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] h3 {font-size:1.05rem!important;margin:1.1rem 0 .5rem!important;padding:0!important}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] h1:first-child,
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] h2:first-child {margin-top:.25rem!important}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] table {display:block;max-width:100%;overflow:auto;border-collapse:collapse;font-size:.85rem;border-radius:8px}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] th {background:var(--surface-2);font-weight:650}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] th,
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] td {padding:.7rem .85rem;border-color:var(--border)}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] blockquote {border-color:var(--border);color:var(--muted);background:var(--surface);border-radius:0 8px 8px 0;padding:.7rem 1rem}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] pre {max-width:100%;overflow:auto}
+/* Keep the native composer, keyboard behavior and streaming semantics. */
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stBottom"] {background:linear-gradient(180deg,transparent,var(--bg) 24%)!important}
+/* Streamlit adds an unlabelled, opaque theme layer around the bottom block. */
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stBottom"] > div {background:transparent!important}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stBottomBlockContainer"] {
+  max-width:1240px;padding:1rem 2.5rem max(1.15rem,env(safe-area-inset-bottom))!important;
+  background:transparent!important;
+}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInput"] {
+  border:1px solid var(--border)!important;border-radius:16px!important;background:var(--surface)!important;
+  box-shadow:0 6px 26px #00000012!important;min-height:62px;transition:border-color .18s,box-shadow .18s;
+}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInput"]:focus-within {border-color:color-mix(in srgb,var(--primary) 65%,var(--border))!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--primary) 9%,transparent)!important}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInput"] textarea {font-size:1rem!important;line-height:1.5!important;color:var(--ink)!important;caret-color:var(--primary)}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInputSubmitButton"] {border-radius:10px;min-width:38px;min-height:38px;color:var(--primary)}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInputSubmitButton"]:disabled {color:var(--muted);opacity:.45}
+/* Activity is a wide inspector; conversation typography does not bleed into it. */
+.chat-trace-marker {display:none}
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) {background:var(--surface)!important;border-radius:12px!important;margin:.15rem 0}
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) > details > summary {padding:.8rem 1rem;min-height:48px}
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) [data-baseweb="tab-list"] {gap:1.15rem}
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) [data-baseweb="tab"] p {font-size:.8rem}
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) [data-testid="stCode"] {border:1px solid var(--border);border-radius:10px;background:var(--bg)}
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) [data-testid="stCode"] pre {background:var(--bg)!important;font-size:.79rem;line-height:1.55}
+.trace-stat-strip {display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-bottom:1px solid var(--border);gap:1rem;padding:.5rem 0 1.2rem;margin-bottom:.4rem}
+.trace-stat-strip > div {display:flex;flex-direction:column;gap:.15rem}
+.trace-stat-strip strong {font-size:1.45rem;letter-spacing:-.025em;font-weight:650;color:var(--ink)}
+.trace-stat-strip span {font-size:.78rem;color:var(--muted)}
+.trace-call-heading {display:flex;align-items:center;flex-wrap:wrap;gap:.65rem;padding:.25rem 0 .2rem;font-size:.8rem;color:var(--muted)}
+.trace-call-heading strong {color:var(--ink);font-weight:600}
+.trace-status {--status-color:var(--muted);font-size:.7rem;font-weight:600;white-space:nowrap;line-height:1.4;padding:.2rem .5rem;border-radius:6px;background:color-mix(in srgb,var(--status-color) 10%,transparent);color:var(--status-color)}
+.trace-status.ok,.trace-status.completed {--status-color:var(--success)}
+.trace-status.running {--status-color:var(--info)}
+.trace-status.warning {--status-color:var(--warning)}
+.trace-status.error,.trace-status.failed {--status-color:var(--danger)}
+/* Agent exchanges remain grouped with their trace. */
+html[data-theme] .agent-dialogue-panel {border:0;border-radius:0;background:transparent;margin:0;overflow:visible}
+html[data-theme] .agent-dialogue-header {background:transparent;padding:.5rem 0 .85rem;border:0}
+html[data-theme] .agent-dialogue-title {font-size:.95rem;font-weight:650}
+html[data-theme] .agent-dialogue-count {border:0;background:var(--surface-2);font-weight:500}
+html[data-theme] .agent-dialogue-live {border:0;color:var(--info);background:color-mix(in srgb,var(--info) 10%,transparent)}
+html[data-theme] .agent-dialogue-list {gap:1.2rem;padding:0}
+html[data-theme] .agent-dialogue-pair {gap:0;border:1px solid var(--border);border-radius:12px;overflow:hidden;background:var(--surface)}
+.agent-exchange-heading {display:flex;align-items:center;flex-wrap:wrap;gap:.5rem;padding:.8rem 1rem;border-bottom:1px solid var(--border);font-size:.77rem;color:var(--muted);background:var(--surface-2)}
+.agent-exchange-heading strong {font-weight:600;color:var(--ink)}
+.agent-exchange-number {font-variant-numeric:tabular-nums;font-size:.68rem;color:var(--muted);margin-right:.2rem}
+.agent-exchange-heading .agent-dialogue-duration {margin-left:auto;font-size:.72rem}
+html[data-theme] .agent-dialogue-message {display:block;max-width:100%;padding:1rem 1.1rem}
+html[data-theme] .agent-dialogue-message.response {margin:0;border-top:1px solid var(--border)}
+html[data-theme] .agent-dialogue-avatar {display:none}
+html[data-theme] .agent-dialogue-message .agent-dialogue-bubble {background:transparent!important;border:0!important;border-radius:0;box-shadow:none;padding:0}
+html[data-theme] .agent-dialogue-meta {gap:.6rem;margin-bottom:.6rem}
+html[data-theme] .agent-dialogue-meta strong {font-size:.8rem;font-weight:650}
+html[data-theme] .agent-dialogue-meta > span {font-size:.72rem;color:var(--muted)}
+html[data-theme] .agent-dialogue-body {font-size:.86rem;line-height:1.65;overflow-wrap:anywhere}
+html[data-theme] .agent-dialogue-body p {font-size:inherit;line-height:inherit;margin:.35rem 0 .65rem}
+html[data-theme] .agent-dialogue-body h1,html[data-theme] .agent-dialogue-body h2,html[data-theme] .agent-dialogue-body h3 {font-size:.95rem;margin:1rem 0 .5rem;line-height:1.45}
+html[data-theme] .agent-dialogue-body table {display:block;max-width:100%;overflow:auto}
+html[data-theme] .agent-dialogue-body pre {background:var(--bg);color:var(--ink);border:1px solid var(--border);padding:.8rem;border-radius:8px;overflow:auto;white-space:pre-wrap;word-break:normal;overflow-wrap:anywhere}
+html[data-theme] .agent-dialogue-observer-summary {background:var(--surface-2);border:0;border-left:2px solid var(--info);border-radius:0 6px 6px 0;padding:.7rem .9rem;margin:0 0 .8rem}
+html[data-theme] .agent-dialogue-observer-summary > span {color:var(--muted);font-size:.7rem;letter-spacing:0;text-transform:none}
+html[data-theme] .agent-dialogue-expand-trigger {list-style:none;cursor:pointer}
+html[data-theme] .agent-dialogue-expand-trigger::-webkit-details-marker {display:none}
+html[data-theme] .agent-dialogue-expand-label {display:inline-flex;padding:.4rem 0;color:var(--info);font-size:.78rem;font-weight:600;min-height:36px;align-items:center}
+html[data-theme] .agent-dialogue-expand-label::after {content:' ↓';margin-left:.4rem}
+html[data-theme] .agent-dialogue-expandable[open] .show-more,html[data-theme] .agent-dialogue-expandable[open] .agent-dialogue-preview-text {display:none}
+html[data-theme] .agent-dialogue-expandable[open] .show-less {display:inline-flex!important}
+html[data-theme] .agent-dialogue-expandable[open] .show-less::after {content:' ↑'}
+html[data-theme] .agent-dialogue-expand-trigger:focus-visible {outline:2px solid var(--info);outline-offset:4px;border-radius:4px}
+html[data-theme] .tool-log-code,html[data-theme] .tool-log-output-markdown pre {background:var(--bg);color:var(--ink);border-color:var(--border);word-break:normal;overflow-wrap:anywhere}
+html[data-theme] .artifacts-container {overflow-wrap:anywhere;background:var(--surface-2);color:var(--muted)}
+html[data-theme] .artifacts-container code {white-space:normal;overflow-wrap:anywhere}
+html[data-theme] .st-key-chat_prompt_starters {padding:2.5rem 0;max-width:none}
+html[data-theme] .prompt-starters-heading h2 {font-size:1.3rem;font-weight:650}
+html[data-theme] .st-key-chat_prompt_starters [class*="st-key-example_btn_"] button {padding:1rem!important;border:1px solid var(--border)!important;border-radius:12px!important;background:var(--surface)!important;min-height:88px;transition:transform .18s,border-color .18s}
+html[data-theme] .st-key-chat_prompt_starters [class*="st-key-example_btn_"] button:hover {border-color:var(--primary)!important;transform:translateY(-2px)}
+@media(max-width:900px) {
+  html[data-theme] .stApp [data-testid="stMainBlockContainer"]:has(.chat-hero) {padding:1.25rem 1rem 6.5rem!important}
+  html[data-theme] .stApp:has(.chat-hero) [data-testid="stBottomBlockContainer"] {padding:.75rem 1rem max(.8rem,env(safe-area-inset-bottom))!important}
+}
+@media(max-width:700px) {
+  html[data-theme] .st-key-chat_toolbar {padding-bottom:.9rem}
+  html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] {gap:.6rem;padding:.65rem 0 1.15rem}
+  html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] > [data-testid*="Avatar"] {display:none}
+  html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"]:has(.chat-message-header[data-role="user"]) {max-width:94%;padding:.85rem 1rem}
+  html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] p,html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"] li {font-size:.94rem}
+  html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) > details > summary {padding:.7rem .65rem}
+  html[data-theme] .st-key-chat_conversation [data-testid="stExpander"]:has(.chat-trace-marker) [data-baseweb="tab-list"] {gap:.9rem}
+  .trace-stat-strip {grid-template-columns:repeat(2,minmax(0,1fr));gap:.7rem;padding:.4rem 0 1rem}
+  .trace-stat-strip strong {font-size:1.2rem}
+  .agent-exchange-heading {padding:.7rem;gap:.35rem;font-size:.72rem}
+  .agent-exchange-number {display:none}
+  .agent-exchange-heading .agent-dialogue-duration {margin-left:0}
+  html[data-theme] .agent-dialogue-message {padding:.8rem}
+  html[data-theme] .agent-dialogue-meta {flex-wrap:wrap}
+  html[data-theme] .st-key-chat_prompt_starters {padding:1.5rem 0}
+}
+@media(prefers-reduced-motion:reduce) {
+  html[data-theme] .st-key-chat_prompt_starters button,html[data-theme] [data-testid="stChatInput"] {transition:none!important;transform:none!important}
+}
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"] summary,
+html[data-theme] .st-key-chat_conversation [data-testid="stExpander"] summary:hover {color:var(--ink)!important}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessage"]:has(.chat-message-header[data-role="assistant"]) [data-testid="stChatMessageContent"] {max-width:94ch}
+html[data-theme] .agent-dialogue-body {font-size:.9rem}
+/* Primary actions sit beside the title; the conversation has its own selector. */
+html[data-theme] .st-key-chat_header .chat-hero {padding:0;margin:0}
+html[data-theme] .st-key-chat_header .chat-hero h1 {margin:0;padding:0}
+html[data-theme] .st-key-chat_header button {min-height:44px;white-space:nowrap}
+html[data-theme] .st-key-chat_toolbar {margin-top:.3rem}
+html[data-theme] .stApp .st-key-chat_toolbar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"]:first-child {grid-column:auto!important}
+/* Identity accents are independent of the semantic result-status badges. */
+.agent-dialogue-message,.agent-identity {--agent-color:var(--muted)}
+.agent-dialogue-message.orchestrator,.agent-identity.orchestrator {--agent-color:#7560ad}
+.agent-dialogue-message.study-advisor,.agent-identity.study-advisor {--agent-color:#2d69b5}
+.agent-dialogue-message.grade-optimization,.agent-identity.grade-optimization {--agent-color:#0c7a79}
+.agent-dialogue-message.moses,.agent-identity.moses {--agent-color:#926414}
+.agent-dialogue-message.degree-regulations,.agent-identity.degree-regulations {--agent-color:#5c67ad}
+.agent-dialogue-message.isis,.agent-identity.isis {--agent-color:#007799}
+.agent-dialogue-message.commitment,.agent-identity.commitment {--agent-color:#9e568a}
+html[data-theme="dark"] .agent-dialogue-message.orchestrator,html[data-theme="dark"] .agent-identity.orchestrator {--agent-color:#bbacf1}
+html[data-theme="dark"] .agent-dialogue-message.study-advisor,html[data-theme="dark"] .agent-identity.study-advisor {--agent-color:#8cb7ff}
+html[data-theme="dark"] .agent-dialogue-message.grade-optimization,html[data-theme="dark"] .agent-identity.grade-optimization {--agent-color:#7fd0c5}
+html[data-theme="dark"] .agent-dialogue-message.moses,html[data-theme="dark"] .agent-identity.moses {--agent-color:#dec28a}
+html[data-theme="dark"] .agent-dialogue-message.degree-regulations,html[data-theme="dark"] .agent-identity.degree-regulations {--agent-color:#aab9ee}
+html[data-theme="dark"] .agent-dialogue-message.isis,html[data-theme="dark"] .agent-identity.isis {--agent-color:#82cce2}
+html[data-theme="dark"] .agent-dialogue-message.commitment,html[data-theme="dark"] .agent-identity.commitment {--agent-color:#dcacd0}
+html[data-theme] .agent-exchange-heading .agent-identity {color:var(--agent-color)}
+html[data-theme] .agent-dialogue-message {display:grid;grid-template-columns:32px minmax(0,1fr);gap:.8rem;border-left:3px solid color-mix(in srgb,var(--agent-color) 65%,transparent)}
+html[data-theme] .agent-dialogue-avatar {display:flex;width:32px;height:32px;border-radius:9px;font-size:.67rem;font-weight:750;letter-spacing:.03em;background:color-mix(in srgb,var(--agent-color) 10%,var(--surface));color:var(--agent-color);border:1px solid color-mix(in srgb,var(--agent-color) 22%,var(--border))}
+html[data-theme] .agent-dialogue-meta strong {color:var(--agent-color)}
+html[data-theme] .phases-timeline {display:grid;grid-template-columns:repeat(auto-fit,minmax(125px,1fr));gap:.5rem}
+html[data-theme] .phase-node {min-width:0;gap:.5rem;padding:.65rem .6rem}
+html[data-theme] .phase-num {flex:0 0 20px;width:20px;height:20px}
+html[data-theme] .phase-txt {overflow-wrap:normal;word-break:normal;line-height:1.35}
+@media(max-width:700px) {
+  html[data-theme] .stApp .st-key-chat_header > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {display:grid!important;grid-template-columns:minmax(0,1fr) 44px 106px!important;gap:.5rem!important;align-items:center}
+  html[data-theme] .stApp .st-key-chat_header [data-testid="stColumn"] {min-width:0!important;width:100%!important}
+  html[data-theme] .st-key-chat_header .chat-hero h1 {font-size:1.42rem!important;white-space:nowrap}
+  html[data-theme] .st-key-chat_header [data-testid="stPopoverButton"] [data-testid="stMarkdownContainer"] {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+  html[data-theme] .st-key-chat_header button {padding:.4rem .5rem!important}
+  html[data-theme] .st-key-chat_header button p {font-size:.8rem!important}
+  html[data-theme] .agent-dialogue-message {gap:.55rem;padding:.75rem .65rem;grid-template-columns:28px minmax(0,1fr)}
+  html[data-theme] .agent-dialogue-avatar {width:28px;height:28px;font-size:.62rem;border-radius:8px}
+  html[data-theme] .phases-timeline {grid-template-columns:1fr}
+  html[data-theme] .phase-node {padding:.55rem .7rem}
+}
+
+html[data-theme] .st-key-chat_header [data-testid="stPopoverButton"] > div > div[aria-hidden="true"] {display:none}
+html[data-theme] .stApp .st-key-chat_header > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {display:grid!important;grid-template-columns:minmax(0,1fr) 160px 132px;gap:1rem!important;align-items:center}
+html[data-theme] .stApp .st-key-chat_header [data-testid="stColumn"],html[data-theme] .stApp .st-key-chat_toolbar [data-testid="stColumn"] {width:100%!important;min-width:0!important}
+html[data-theme] .agent-dialogue-expandable {border:0!important;border-radius:0!important;background:transparent!important;padding:0!important}
+html[data-theme] .agent-dialogue-expand-trigger {background:transparent!important;padding:0!important;box-shadow:none!important}
+html[data-theme] .agent-dialogue-expand-label {text-decoration:none}
+@media(max-width:700px) {
+  html[data-theme] .stApp .st-key-chat_header > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {grid-template-columns:minmax(0,1fr) 44px 106px!important;gap:.5rem!important}
+}
+/* Copy controls must also work without hovering, especially on phones. */
+html[data-theme] .st-key-chat_conversation [data-testid="stCode"] > div:has([data-testid="stElementToolbarButton"]) {visibility:visible!important;opacity:1!important}
+html[data-theme] .st-key-chat_conversation [data-testid="stCode"] pre {padding-right:3rem!important}
+html[data-theme] .st-key-chat_conversation [data-testid="stCode"] [data-testid="stBaseButton-elementToolbar"] {min-width:34px;min-height:34px;border-radius:7px;color:var(--muted);background:var(--surface)}
+@media(max-width:700px) {
+  html[data-theme] .st-key-chat_conversation [data-testid="stCode"] [data-testid="stBaseButton-elementToolbar"] {min-width:40px;min-height:40px}
+}
+html[data-theme] .st-key-chat_conversation [data-testid="stChatMessageContent"] {margin:0!important}
+/* Explicit conversation actions, with no overflow menu. */
+html[data-theme] .stApp .st-key-chat_toolbar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {display:grid!important;grid-template-columns:minmax(0,1fr) 132px!important;gap:.6rem!important}
+html[data-theme] .st-key-chat_toolbar button {padding:.4rem .75rem!important}
+html[data-theme] .chat-message-header strong {font-size:.96rem}
+html[data-theme] .agent-dialogue-meta strong {font-size:1.02rem;line-height:1.4;font-weight:680}
+html[data-theme] .agent-dialogue-meta {align-items:baseline;margin-bottom:.65rem}
+html[data-theme] .agent-exchange-heading {font-size:.82rem}
+html[data-theme] .stApp .agent-dialogue-panel details.agent-dialogue-expandable {border:0!important;outline:0!important;box-shadow:none!important}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInput"] > div {background:transparent!important;border-color:transparent!important;border-radius:inherit}
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInput"] [data-baseweb="textarea"],
+html[data-theme] .stApp:has(.chat-hero) [data-testid="stChatInput"] [data-baseweb="base-input"] {background:transparent!important;border-color:transparent!important}
+.chat-settings-marker {display:none}
+html[data-theme] [data-testid="stPopoverBody"]:has(.chat-settings-marker) {width:min(560px,calc(100vw - 32px))!important;max-width:calc(100vw - 32px)!important;max-height:calc(100dvh - 100px);overflow-y:auto}
+html[data-theme] [data-testid="stPopoverBody"]:has(.chat-settings-marker) [data-baseweb="tab-list"] {gap:1.15rem}
+html[data-theme] [data-testid="stPopoverBody"]:has(.chat-settings-marker) [data-testid="stExpander"] {background:transparent!important}
+@media(max-width:700px) {
+  html[data-theme] .stApp .st-key-chat_toolbar > [data-testid="stLayoutWrapper"] > [data-testid="stHorizontalBlock"] {grid-template-columns:minmax(0,1fr) 106px!important}
+  html[data-theme] .agent-dialogue-meta strong {font-size:.98rem}
+  html[data-theme] .st-key-chat_toolbar button p {font-size:.8rem!important}
+  html[data-theme] [data-testid="stPopoverBody"]:has(.chat-settings-marker) {max-height:calc(100dvh - 115px);padding:1rem!important}
+}
+html[data-theme] .st-key-chat_toolbar button:disabled {opacity:.45!important;box-shadow:none!important;cursor:default}
+@media(max-width:700px) {
+  html[data-theme] .st-key-chat_prompt_starters {margin:.5rem 0 0;padding:1rem 0}
+  html[data-theme] .stApp .st-key-chat_prompt_starters [data-testid="stHorizontalBlock"] {display:grid!important;grid-template-columns:minmax(0,1fr)!important;gap:.65rem!important}
+  html[data-theme] .st-key-chat_prompt_starters [data-testid="stColumn"] {width:100%!important;min-width:0!important}
+  html[data-theme] .st-key-chat_prompt_starters [class*="st-key-example_btn_"] button {min-height:60px;text-align:left}
+}
+
+/* Hidden scope markers must not create empty layout rows. */
+html[data-theme] [data-testid="stElementContainer"]:has(.chat-settings-marker),
+html[data-theme] [data-testid="stElementContainer"]:has(.chat-trace-marker) {display:none}

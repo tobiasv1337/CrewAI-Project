@@ -29,7 +29,7 @@ UPLOAD_DIR = "data/uploads"
 _MAX_INLINE_PDF_BYTES = 12 * 1024 * 1024
 
 def _module_label(module: Module) -> str:
-    short_id = module.id[:6] if module.id else "na"
+    short_id = module.id.removeprefix("mod_") if module.id else "na"
     term_label = module.term or "Unknown"
     prog = short_program_label(module.program_key)
     prog_part = f" • {prog}" if prog else ""
@@ -617,19 +617,19 @@ def render_details_page() -> None:
         st.info("No modules available yet.")
         return
 
-    label_map: Dict[str, str] = {_module_label(module): module.id for module in modules}
-    labels = list(label_map.keys())
+    label_map = {module.id: _module_label(module) for module in modules}
+    module_ids = list(label_map)
 
     query_id = _get_query_module_id() or st.session_state.get("selected_module_id")
     default_index = 0
     if query_id:
-        for idx, label in enumerate(labels):
-            if label_map[label] == query_id:
+        for idx, module_id in enumerate(module_ids):
+            if module_id == query_id:
                 default_index = idx
                 break
 
-    if st.session_state.get("details_query_seen") != query_id or st.session_state.get("details_module_picker") not in labels:
-        st.session_state["details_module_picker"] = labels[default_index]
+    if st.session_state.get("details_query_seen") != query_id or st.session_state.get("details_module_picker") not in module_ids:
+        st.session_state["details_module_picker"] = module_ids[default_index]
     st.session_state["details_query_seen"] = query_id
 
     with st.container(key="module_detail_toolbar"):
@@ -644,12 +644,11 @@ def render_details_page() -> None:
             st.html(f'<a class="back-link" href="{back_url}" target="_self">← {back_label}</a>')
         with toolbar_right:
             with st.popover("Switch module", icon=":material/swap_horiz:", width="stretch"):
-                selected_label = st.selectbox("Select module", labels, index=None, key="details_module_picker")
-    if selected_label is None:
+                selected_id = st.selectbox("Select module", module_ids, format_func=label_map.get, index=None, key="details_module_picker")
+    if selected_id is None:
         st.info("Select a module to see its details.")
         return
 
-    selected_id = label_map[selected_label]
     if st.session_state.get("selected_module_id") != selected_id:
         st.session_state["selected_module_id"] = selected_id
     _set_detail_query_params(module_id=selected_id, program_view=str(view_param))

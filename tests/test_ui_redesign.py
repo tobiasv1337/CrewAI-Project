@@ -78,11 +78,11 @@ def test_details_deep_link_replaces_previous_module_selection():
     app.query_params["module_id"] = "done"
     app.run()
     assert not app.exception
-    assert "Completed module" in app.selectbox(key="details_module_picker").value
+    assert app.selectbox(key="details_module_picker").value == "done"
     app.query_params["module_id"] = "planned"
     app.run()
     assert not app.exception
-    assert "Planned module" in app.selectbox(key="details_module_picker").value
+    assert app.selectbox(key="details_module_picker").value == "planned"
 
 
 def test_attachment_edit_preserves_modules_outside_selected_degree():

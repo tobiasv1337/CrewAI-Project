@@ -1,5 +1,6 @@
 import base64
 import html
+from collections import Counter
 
 # Apply context propagation patches early in application lifecycle
 import crew.runtime
@@ -145,6 +146,15 @@ def _switch_profile(slug: str) -> None:
     st.session_state.pop("modules", None)
     st.session_state.pop("managers", None)
     st.session_state.pop("relevant_programs", None)
+    st.session_state.pop("sidebar_profile_select", None)
+    # Filters and edit drafts belong to the records that were just unloaded.
+    for key in list(st.session_state):
+        if key.startswith(("modules_filter_", "plan_filter_", "details_", "edit_")) or key in {
+            "module_search", "modules_topic_focus", "selected_module_id", "plan_planning_mode",
+        }:
+            st.session_state.pop(key, None)
+    st.session_state["program_view"] = PROGRAM_VIEW_ALL
+    _set_query_params(page=st.session_state.get("page", "Dashboard"), program_view=PROGRAM_VIEW_ALL)
     st.rerun()
 
 
@@ -219,10 +229,7 @@ def _dialog_add_person() -> None:
             return
         profile = add_profile(name, is_primary=is_primary)
         st.session_state["profiles"] = load_profiles()
-        if is_primary:
-            _switch_profile(profile.slug)
-        else:
-            st.rerun()
+        _switch_profile(profile.slug)
     if col2.button("Cancel", width="stretch"):
         st.rerun()
 
@@ -344,16 +351,22 @@ with st.sidebar:
         st.title("Study Manager")
 
     # ── Profile selector ───────────────────────────────────────────────────
-    profile_display_names = [p.display_name for p in profiles]
-    active_profile_obj = next((p for p in profiles if p.slug == active_slug), profiles[0] if profiles else None)
-    active_display = active_profile_obj.display_name if active_profile_obj else active_slug
+    profile_slugs = [profile.slug for profile in profiles]
+    name_counts = Counter(profile.display_name for profile in profiles)
+    profile_labels = {
+        profile.slug: profile.display_name if name_counts[profile.display_name] == 1 else f"{profile.display_name} · {profile.slug}"
+        for profile in profiles
+    }
+    if st.session_state.get("sidebar_profile_select") not in profile_slugs:
+        st.session_state.pop("sidebar_profile_select", None)
 
     profile_col, add_col = st.columns([4, 1], vertical_alignment="bottom")
     with profile_col:
-        selected_display = st.selectbox(
+        selected_slug = st.selectbox(
             "Active profile",
-            profile_display_names,
-            index=profile_display_names.index(active_display) if active_display in profile_display_names else 0,
+            profile_slugs,
+            format_func=profile_labels.__getitem__,
+            index=profile_slugs.index(active_slug) if active_slug in profile_slugs else 0,
             help="Switch between separate study profiles. Each profile has its own module data.",
             key="sidebar_profile_select",
         )
@@ -362,9 +375,8 @@ with st.sidebar:
             _dialog_add_person()
 
     # Switch profile if the user picked a different one.
-    selected_profile_obj = next((p for p in profiles if p.display_name == selected_display), None)
-    if selected_profile_obj and selected_profile_obj.slug != active_slug:
-        _switch_profile(selected_profile_obj.slug)
+    if selected_slug and selected_slug != active_slug:
+        _switch_profile(selected_slug)
 
     # ── Program view selector ──────────────────────────────────────────────
     view_options = [PROGRAM_VIEW_ALL] + relevant_programs if relevant_programs else [PROGRAM_VIEW_ALL]

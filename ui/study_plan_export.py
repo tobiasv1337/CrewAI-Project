@@ -183,6 +183,7 @@ def build_study_plan_pdf(
     include_possible_candidates: bool = True,
     include_details: bool = False,
     generated_at: datetime | None = None,
+    orientation: str = "portrait",
 ) -> bytes:
     """Compatibility entry point for callers of the original PDF exporter."""
     from ui.study_report import build_report, render_pdf
@@ -197,7 +198,7 @@ def build_study_plan_pdf(
         report.sections = [section for section in report.sections if not section.title.startswith(("Requirements ·", "Grade calculation ·", "Grade planning ·"))]
     if not include_topic_map:
         report.topics = []
-    return render_pdf(report)
+    return render_pdf(report, orientation=orientation)
 
 
 def _format_datetime(value: datetime) -> str:

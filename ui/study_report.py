@@ -276,10 +276,10 @@ def workload_rows(modules: list[Module]):
     return [(term, buckets[term]) for term in sorted(buckets, key=term_sort_key)]
 
 
-def render_pdf(report: StudyReport) -> bytes:
+def render_pdf(report: StudyReport, *, orientation: str = "portrait") -> bytes:
     """Flowing, searchable A4 document with repeated table headers and embedded fonts."""
     from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import ParagraphStyle
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -347,7 +347,10 @@ def render_pdf(report: StudyReport) -> bytes:
                     yield rich(content,"h3" if heading else "body")
             elif token.type in {"fence","code_block"}:
                 yield p(token.content)
-    width, height = A4
+    if orientation not in {"portrait", "landscape"}:
+        raise ValueError(f"Unsupported PDF orientation: {orientation}")
+    page_size = landscape(A4) if orientation == "landscape" else A4
+    width, height = page_size
     margin = 45
     usable = width - margin * 2
     buffer = BytesIO()
@@ -358,7 +361,7 @@ def render_pdf(report: StudyReport) -> bytes:
                 self._section_index = getattr(self, "_section_index", 0) + 1
                 self.canv.bookmarkPage(key)
                 self.canv.addOutlineEntry(flowable.getPlainText(), key, level=0, closed=False)
-    doc = ReportDoc(buffer, pagesize=A4, rightMargin=margin, leftMargin=margin, topMargin=44,
+    doc = ReportDoc(buffer, pagesize=page_size, rightMargin=margin, leftMargin=margin, topMargin=44,
                     bottomMargin=46, title=f"{report.title} - {report.profile_name}", author=report.profile_name,
                     subject=report.scope, creator="Study Manager", pageCompression=1, allowSplitting=1)
     def page_chrome(canvas, _doc):
@@ -508,8 +511,9 @@ def render_pdf(report: StudyReport) -> bytes:
             for start in range(0,len(report.degrees),4):
                 story += [p("Grade scenarios" if start == 0 else "Grade scenarios (continued)","h2"),GradeChart(report.degrees[start:start+4])]
         workload=workload_rows(report.modules)
-        for start in range(0,len(workload),20):
-            story += [p("Semester workload" if start == 0 else "Semester workload (continued)","h2"),WorkloadChart(workload[start:start+20])]
+        workload_page_size = max(1, min(20, int((doc.height - 146) // 21)))
+        for start in range(0,len(workload),workload_page_size):
+            story += [p("Semester workload" if start == 0 else "Semester workload (continued)","h2"),WorkloadChart(workload[start:start+workload_page_size])]
     if report.kind != "plan" and report.topics:
         story.append(p("Academic focus", "h2"))
         palette=[blue,teal,colors.HexColor("#7762A2"),colors.HexColor("#447C9B")]
@@ -537,7 +541,7 @@ def render_pdf(report: StudyReport) -> bytes:
             # Reserve the heading, column labels and first row, then let the rest flow.
             # Keeping a heading with an entire long table otherwise wastes most of a page.
             first_row = table(section.headers, section.rows[:1])
-            minimum_height = min(650, first_row.wrap(usable, 10000)[1] + 65)
+            minimum_height = min(doc.height - 20, first_row.wrap(usable, 10000)[1] + 65)
             heading.keepWithNext = False
         if previous_kind != "section":
             story.append(CondPageBreak(minimum_height))

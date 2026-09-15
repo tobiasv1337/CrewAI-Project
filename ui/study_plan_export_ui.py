@@ -306,9 +306,12 @@ def render_study_plan_export_button(
                 if value == "visible":
                     return "Current Study Plan filters"
                 return value
-            scope = st.selectbox("Degree / scope", options,
+            scope_column, orientation_column = st.columns([2.4, 1])
+            scope = scope_column.selectbox("Degree / scope", options,
                 index=options.index(current_view) if current_view in options else 0,
                 format_func=scope_label, key=f"{key_prefix}_scope")
+            orientation = orientation_column.selectbox("PDF orientation", ["portrait", "landscape"],
+                format_func=str.title, index=0, key=f"{key_prefix}_orientation")
             degree_scope = current_view if scope == "visible" else scope
             chosen_programs = programs if degree_scope == "All" else [degree_scope]
             full_scope = modules_for_program_view(degree_scope, programs, all_modules)
@@ -324,7 +327,7 @@ def render_study_plan_export_button(
                 st.info("No courses match this document. Choose another document type or degree.")
             with st.spinner("Preparing document…"):
                 try:
-                    pdf = render_pdf(report)
+                    pdf = render_pdf(report, orientation=orientation)
                 except Exception:
                     import logging
                     logging.getLogger(__name__).exception("Could not build study report")
@@ -332,7 +335,7 @@ def render_study_plan_export_button(
             pages = f" · {report.page_count} {'page' if report.page_count == 1 else 'pages'}" if pdf else ""
             preview.html(
                 '<div class="sm-export-preview">'
-                f'<div class="sm-export-document"><span>PDF · A4{pages}</span><h3>{html.escape(report.title)}</h3><p>{html.escape(profile_name)}</p></div>'
+                f'<div class="sm-export-document"><span>PDF · A4 · {orientation.title()}{pages}</span><h3>{html.escape(report.title)}</h3><p>{html.escape(profile_name)}</p></div>'
                 f'<div class="sm-export-facts"><div><strong>{course_count}</strong><span>courses</span></div>'
                 f'<div><strong>{completed_cp:g} LP</strong><span>completed</span></div>'
                 f'<div><strong>{len(degrees)}</strong><span>{"degree summary" if len(degrees) == 1 else "degree summaries"}</span></div></div></div>'
@@ -340,7 +343,7 @@ def render_study_plan_export_button(
             filename = study_plan_export_filename(profile_name, scope_label(scope), "pdf").replace("study_plan_", f"{kind}_", 1)
             left, right = st.columns([1.6, 1])
             if pdf is not None:
-                left.download_button("Download PDF", data=pdf, mime="application/pdf", file_name=filename,
+                left.download_button("Download PDF", data=pdf, mime="application/pdf", file_name=filename.removesuffix(".pdf") + f"_{orientation}.pdf",
                     icon=":material/download:", type="primary", width="stretch", on_click="ignore", key=f"{key_prefix}_pdf_download")
             else:
                 left.error("The PDF could not be prepared. Markdown is still available.")

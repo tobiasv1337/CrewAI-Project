@@ -72,23 +72,26 @@ def test_portfolio_does_not_export_forecasts_or_private_notes():
 
 
 @pytest.mark.parametrize("kind", ["plan", "portfolio", "record"])
-def test_pdf_preserves_text_handles_long_content_and_paginates(kind):
+@pytest.mark.parametrize("orientation", ["portrait", "landscape"])
+def test_pdf_preserves_text_handles_long_content_and_paginates(kind, orientation):
     records = [module(str(i), name=f"Übung {i}: " + "Long course title & software engineering " * 7,
                       description="## Outcomes\n\nLearn **algorithms** and <safe text>.\n\n" + "Detailed content. " * 150,
                       url="https://example.com/course?a=1&b=2", module_types=["PJ"]) for i in range(9)]
     result = report(records, kind=kind)
-    data = render_pdf(result)
+    data = render_pdf(result, orientation=orientation)
     with pdfplumber.open(BytesIO(data)) as pdf:
         assert len(pdf.pages) > 1
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         for index in range(9):
             assert f"Übung {index}:" in text
         for page in pdf.pages:
-            assert abs(page.width - 595.28) < 1
-            assert abs(page.height - 841.89) < 1
+            expected_width, expected_height = (595.28, 841.89) if orientation == "portrait" else (841.89, 595.28)
+            assert abs(page.width - expected_width) < 1
+            assert abs(page.height - expected_height) < 1
             assert "Personal study record" in (page.extract_text() or "")
             # All text stays inside the physical page, including lengthy table cells.
             assert all(-.5 <= char["x0"] < page.width and char["x1"] <= page.width + .5 for char in page.chars)
+            assert all(-.5 <= char["top"] < page.height and char["bottom"] <= page.height + .5 for char in page.chars)
     assert "Alex Müller" in text
     if kind == "record":
         assert "Learn algorithms and <safe text>." in text
@@ -105,7 +108,13 @@ def test_other_degrees_and_empty_records_export(program, kind):
         assert result.title.casefold() in pdf_text(data).casefold()
 
 
-def test_export_dialog_has_document_and_scope_choices_without_section_toggles():
+def test_export_dialog_has_document_and_scope_choices_without_section_toggles(monkeypatch):
+    from ui import study_report
+    orientations = []
+    def capture_render(report, *, orientation="portrait"):
+        orientations.append(orientation)
+        return render_pdf(report, orientation=orientation)
+    monkeypatch.setattr(study_report, "render_pdf", capture_render)
     record = module().model_dump(mode="json")
     script = f'''
 import streamlit as st
@@ -125,6 +134,8 @@ render_study_plan_export_button(st.session_state["modules"], counted_ids={{"done
     assert not app.exception
     assert not app.toggle
     assert app.selectbox(key="review_export_scope").options == ["All degrees", PROGRAM]
+    assert app.selectbox(key="review_export_orientation").value == "portrait"
+    assert orientations[-1] == "portrait"
     assert len(app.get("download_button")) == 2
     app.get("button_group")[0].set_value("portfolio")
     # AppTest reruns the whole script; production widget changes rerun the dialog fragment.
@@ -132,6 +143,29 @@ render_study_plan_export_button(st.session_state["modules"], counted_ids={{"done
     assert not app.exception
     assert app.session_state["review_export_document"] == "portfolio"
     assert any("Completed coursework" in item.value for item in app.caption)
+    app.selectbox(key="review_export_orientation").set_value("landscape")
+    app.button(key="review_export_open_dialog").click().run()
+    assert not app.exception
+    assert orientations[-1] == "landscape"
+
+
+@pytest.mark.parametrize("orientation", ["portrait", "landscape"])
+def test_long_workload_charts_fit_selected_page_height(orientation):
+    records = [module(str(i), term=f"SS {10+i:02d}") for i in range(26)]
+    data = render_pdf(report(records), orientation=orientation)
+    with pdfplumber.open(BytesIO(data)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        assert "Semester workload (continued)" in text
+        for i in range(26):
+            assert f"SS {10+i:02d}" in text
+        for page in pdf.pages:
+            assert all(40 <= char["top"] and char["bottom"] < page.height - 40
+                       for char in page.chars if char.get("size", 0) >= 8)
+
+
+def test_pdf_defaults_to_portrait():
+    with pdfplumber.open(BytesIO(render_pdf(report([module()])))) as pdf:
+        assert all(page.width < page.height for page in pdf.pages)
 
 
 def test_complete_record_preserves_structured_metadata_and_safe_work_links():

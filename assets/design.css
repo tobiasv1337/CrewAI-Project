@@ -345,6 +345,7 @@ html[data-theme] .st-key-plan_filters_bar {padding:.1rem 0 .5rem}
 }
 /* A planning summary can contain six values; wrap instead of truncating credits. */
 html[data-theme] .st-key-plan_summary [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]:nth-child(5)) {display:grid!important;grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:1rem!important}
+html[data-theme] .st-key-plan_summary [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]:nth-child(5)) > [data-testid="stColumn"] {width:100%!important;min-width:0!important}
 html[data-theme] .st-key-plan_summary [data-testid="stMetricValue"] {white-space:normal!important;overflow:visible!important;text-overflow:clip!important}
 @media(max-width:700px) {
   html[data-theme] .st-key-plan_summary [data-testid="stHorizontalBlock"]:has(> [data-testid="stColumn"]:nth-child(5)) {grid-template-columns:repeat(2,minmax(0,1fr))!important}
